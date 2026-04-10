@@ -1,11 +1,73 @@
 const mongoose = require('mongoose');
 const validator = require('validator');
 const Shuttle = require('../models/Shuttle');
+const User = require('../models/User');
+const Trip = require('../models/Trip');
+const Community = require('../models/Community');
+const PickupRequest = require('../models/PickupRequest');
+const PassengerRide = require('../models/PassengerRide');
 const { isLocationInBoundary } = require('../services/geofence');
+
+const AUTO_PICKUP_RADIUS_METERS = 120;
+const AUTO_UNBOARD_RADIUS_METERS = Math.max(
+  10,
+  Math.min(20, Number(process.env.AUTO_UNBOARD_RADIUS_METERS || 15))
+);
+const MAX_WRITE_CONFLICT_RETRIES = 3;
+
+const AUTO_DIAGNOSTIC_STATES = {
+  READY: 'ready',
+  WAITING: 'waiting',
+  BLOCKED: 'blocked',
+  EXECUTED: 'executed',
+};
+
+const isPlatformAdmin = (req) => req.user?.role === 'admin';
+
+const resolveCommunityScopeId = (req, requestedCommunityId, options = {}) => {
+  const { allowAll = false } = options;
+  const ownCommunityId = String(req.user.communityId);
+
+  if (!requestedCommunityId || requestedCommunityId === 'own') {
+    if (allowAll && isPlatformAdmin(req)) {
+      return null;
+    }
+    return ownCommunityId;
+  }
+
+  if (requestedCommunityId === 'all') {
+    if (allowAll && isPlatformAdmin(req)) {
+      return null;
+    }
+    return { error: 'Access denied. communityId is outside your scope.' };
+  }
+
+  if (!mongoose.Types.ObjectId.isValid(requestedCommunityId)) {
+    return { error: 'Invalid communityId.' };
+  }
+
+  if (String(requestedCommunityId) === ownCommunityId || isPlatformAdmin(req)) {
+    return String(requestedCommunityId);
+  }
+
+  return { error: 'Access denied. communityId is outside your scope.' };
+};
 
 const parseCoordinate = (value) => {
   const num = Number(value);
   return Number.isFinite(num) ? num : null;
+};
+
+const isRetryableMongoWriteConflict = (error) => {
+  const responseLabels = error?.errorResponse?.errorLabels || [];
+  const labelSet = error?.errorLabelSet;
+
+  return (
+    error?.code === 112 ||
+    error?.codeName === 'WriteConflict' ||
+    responseLabels.includes('TransientTransactionError') ||
+    (typeof labelSet?.has === 'function' && labelSet.has('TransientTransactionError'))
+  );
 };
 
 const validateCoordinates = (latitude, longitude) => {
@@ -27,13 +89,362 @@ const validateCoordinates = (latitude, longitude) => {
   return { valid: true, lat, lng };
 };
 
+const createOptionalSession = async () => {
+  if (process.env.NODE_ENV === 'test') {
+    return undefined;
+  }
+
+  return mongoose.startSession();
+};
+
+const applySession = (query, session) => (session ? query.session(session) : query);
+
+const claimNearbyPickupRequests = async ({ session, shuttle, maxCount }) => {
+  const claimed = [];
+
+  for (let i = 0; i < maxCount; i += 1) {
+    let request = null;
+
+    for (let attempt = 1; attempt <= MAX_WRITE_CONFLICT_RETRIES; attempt += 1) {
+      try {
+        request = await PickupRequest.findOneAndUpdate(
+          {
+            communityId: shuttle.communityId,
+            status: 'pending',
+            expiresAt: { $gt: new Date() },
+            location: {
+              $near: {
+                $geometry: shuttle.location,
+                $maxDistance: AUTO_PICKUP_RADIUS_METERS,
+              },
+            },
+          },
+          { $set: { status: 'claimed' } },
+          {
+            session,
+            sort: { createdAt: 1 },
+            new: true,
+          }
+        );
+        break;
+      } catch (error) {
+        if (isRetryableMongoWriteConflict(error) && attempt < MAX_WRITE_CONFLICT_RETRIES) {
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    if (!request) break;
+    claimed.push(request);
+  }
+
+  return claimed;
+};
+
+const autoBoardNearbyPickups = async ({ session, shuttle, driverId }) => {
+  if (!shuttle?.location?.coordinates || shuttle.location.coordinates.length !== 2) {
+    return { autoBoardedCount: 0, trip: null, claimedRequests: [] };
+  }
+
+  const availableSeats = Math.max(0, shuttle.maxCapacity - shuttle.currentCapacity);
+  if (availableSeats === 0) {
+    return { autoBoardedCount: 0, trip: null, claimedRequests: [] };
+  }
+
+  const nearbyRequests = await claimNearbyPickupRequests({
+    session,
+    shuttle,
+    maxCount: availableSeats,
+  });
+
+  if (nearbyRequests.length === 0) {
+    return { autoBoardedCount: 0, trip: null, claimedRequests: [] };
+  }
+
+  let activeTrip = await Trip.findOne({
+    communityId: shuttle.communityId,
+    shuttleId: shuttle._id,
+    driverId,
+    status: 'active',
+  }).session(session);
+
+  if (!activeTrip) {
+    const community = await Community.findById(shuttle.communityId).select('baseFare').session(session);
+    if (!community) {
+      throw new Error('Community not found for auto-boarding.');
+    }
+
+    [activeTrip] = await Trip.create([{
+      communityId: shuttle.communityId,
+      shuttleId: shuttle._id,
+      driverId,
+      fareAtTime: community.baseFare,
+      passengersBoarded: 0,
+      revenueCollected: 0,
+    }], { session });
+  }
+
+  const boardedAt = new Date();
+  await PassengerRide.insertMany(
+    nearbyRequests.map((request) => ({
+      communityId: shuttle.communityId,
+      passengerId: request.passengerId,
+      shuttleId: shuttle._id,
+      driverId,
+      tripId: activeTrip._id,
+      fareAtBoarding: activeTrip.fareAtTime,
+      pickupLocation: request.location,
+      destinationType: request.destinationType || 'fixed',
+      destinationLabel: request.destinationLabel || 'Destination',
+      destinationLocation: request.destinationLocation || request.location,
+      requestedAt: request.createdAt,
+      boardedAt,
+      status: 'boarded',
+    })),
+    { session }
+  );
+
+  activeTrip.passengersBoarded += nearbyRequests.length;
+  activeTrip.revenueCollected = activeTrip.passengersBoarded * activeTrip.fareAtTime;
+  await activeTrip.save({ session });
+
+  shuttle.currentCapacity += nearbyRequests.length;
+  if (shuttle.status === 'idle') {
+    shuttle.status = 'en_route';
+  }
+
+  return {
+    autoBoardedCount: nearbyRequests.length,
+    trip: activeTrip,
+    claimedRequests: nearbyRequests.map((request) => ({
+      requestId: request._id,
+      passengerId: request.passengerId,
+    })),
+  };
+};
+
+const autoUnboardArrivedPassengers = async ({ session, shuttle }) => {
+  const activeTrip = await Trip.findOne({
+    communityId: shuttle.communityId,
+    shuttleId: shuttle._id,
+    status: 'active',
+  }).select('_id');
+
+  if (!activeTrip) {
+    return { autoUnboardedCount: 0, unboardedRideIds: [] };
+  }
+
+  const arrivedRides = await PassengerRide.find({
+    tripId: activeTrip._id,
+    shuttleId: shuttle._id,
+    status: 'boarded',
+    destinationLocation: {
+      $near: {
+        $geometry: shuttle.location,
+        $maxDistance: AUTO_UNBOARD_RADIUS_METERS,
+      },
+    },
+  })
+    .select('_id')
+    .session(session);
+
+  if (arrivedRides.length === 0) {
+    return { autoUnboardedCount: 0, unboardedRideIds: [] };
+  }
+
+  const unboardedRideIds = arrivedRides.map((ride) => ride._id);
+  const now = new Date();
+
+  await PassengerRide.updateMany(
+    { _id: { $in: unboardedRideIds }, status: 'boarded' },
+    {
+      $set: {
+        status: 'unboarded',
+        unboardedAt: now,
+        unboardLocation: shuttle.location,
+      },
+    },
+    { session }
+  );
+
+  const effectiveUnboardCount = unboardedRideIds.length;
+  shuttle.currentCapacity = Math.max(0, shuttle.currentCapacity - effectiveUnboardCount);
+  if (shuttle.currentCapacity === 0 && shuttle.status !== 'maintenance') {
+    shuttle.status = 'idle';
+  }
+
+  return {
+    autoUnboardedCount: effectiveUnboardCount,
+    unboardedRideIds,
+    activeTripId: activeTrip._id,
+  };
+};
+
+const buildAutomationDiagnostics = async ({
+  session,
+  shuttle,
+  actor,
+  autoBoardingResult,
+  autoUnboardingResult,
+}) => {
+  const baseDiagnostics = {
+    autoBoarding: {
+      state: AUTO_DIAGNOSTIC_STATES.WAITING,
+      reasonCode: 'no_nearby_pickups',
+      matchedCount: Number(autoBoardingResult?.autoBoardedCount || 0),
+      candidateCount: 0,
+    },
+    autoUnboarding: {
+      state: AUTO_DIAGNOSTIC_STATES.WAITING,
+      reasonCode: 'no_arrived_destinations',
+      matchedCount: Number(autoUnboardingResult?.autoUnboardedCount || 0),
+      candidateCount: 0,
+    },
+  };
+
+  if (actor?.role !== 'driver') {
+    return {
+      autoBoarding: {
+        ...baseDiagnostics.autoBoarding,
+        state: AUTO_DIAGNOSTIC_STATES.BLOCKED,
+        reasonCode: 'not_driver',
+      },
+      autoUnboarding: {
+        ...baseDiagnostics.autoUnboarding,
+        state: AUTO_DIAGNOSTIC_STATES.BLOCKED,
+        reasonCode: 'not_driver',
+      },
+    };
+  }
+
+  if (actor?.status !== 'driving') {
+    return {
+      autoBoarding: {
+        ...baseDiagnostics.autoBoarding,
+        state: AUTO_DIAGNOSTIC_STATES.BLOCKED,
+        reasonCode: 'driver_off_shift',
+      },
+      autoUnboarding: {
+        ...baseDiagnostics.autoUnboarding,
+        state: AUTO_DIAGNOSTIC_STATES.BLOCKED,
+        reasonCode: 'driver_off_shift',
+      },
+    };
+  }
+
+  if (!shuttle?.location?.coordinates || shuttle.location.coordinates.length !== 2) {
+    return {
+      autoBoarding: {
+        ...baseDiagnostics.autoBoarding,
+        state: AUTO_DIAGNOSTIC_STATES.BLOCKED,
+        reasonCode: 'location_unavailable',
+      },
+      autoUnboarding: {
+        ...baseDiagnostics.autoUnboarding,
+        state: AUTO_DIAGNOSTIC_STATES.BLOCKED,
+        reasonCode: 'location_unavailable',
+      },
+    };
+  }
+
+  const availableSeats = Math.max(0, Number(shuttle.maxCapacity || 0) - Number(shuttle.currentCapacity || 0));
+  if (availableSeats === 0) {
+    baseDiagnostics.autoBoarding.state = AUTO_DIAGNOSTIC_STATES.BLOCKED;
+    baseDiagnostics.autoBoarding.reasonCode = 'shuttle_full';
+  } else if (baseDiagnostics.autoBoarding.matchedCount > 0) {
+    baseDiagnostics.autoBoarding.state = AUTO_DIAGNOSTIC_STATES.EXECUTED;
+    baseDiagnostics.autoBoarding.reasonCode = 'auto_boarded';
+  } else {
+    const nearbyPendingCount = await applySession(
+      PickupRequest.countDocuments({
+        communityId: shuttle.communityId,
+        status: 'pending',
+        expiresAt: { $gt: new Date() },
+        location: {
+          $near: {
+            $geometry: shuttle.location,
+            $maxDistance: AUTO_PICKUP_RADIUS_METERS,
+          },
+        },
+      }),
+      session
+    );
+
+    baseDiagnostics.autoBoarding.candidateCount = nearbyPendingCount;
+    baseDiagnostics.autoBoarding.state = AUTO_DIAGNOSTIC_STATES.WAITING;
+    baseDiagnostics.autoBoarding.reasonCode = nearbyPendingCount > 0
+      ? 'nearby_pickups_pending'
+      : 'no_nearby_pickups';
+  }
+
+  if (baseDiagnostics.autoUnboarding.matchedCount > 0) {
+    baseDiagnostics.autoUnboarding.state = AUTO_DIAGNOSTIC_STATES.EXECUTED;
+    baseDiagnostics.autoUnboarding.reasonCode = 'auto_unboarded';
+    return baseDiagnostics;
+  }
+
+  const activeTrip = await applySession(
+    Trip.findOne({
+      communityId: shuttle.communityId,
+      shuttleId: shuttle._id,
+      status: 'active',
+    }).select('_id'),
+    session
+  );
+
+  if (!activeTrip) {
+    baseDiagnostics.autoUnboarding.state = AUTO_DIAGNOSTIC_STATES.WAITING;
+    baseDiagnostics.autoUnboarding.reasonCode = 'no_active_trip';
+    return baseDiagnostics;
+  }
+
+  const boardedCount = await applySession(
+    PassengerRide.countDocuments({
+      tripId: activeTrip._id,
+      shuttleId: shuttle._id,
+      status: 'boarded',
+    }),
+    session
+  );
+
+  if (boardedCount === 0) {
+    baseDiagnostics.autoUnboarding.state = AUTO_DIAGNOSTIC_STATES.WAITING;
+    baseDiagnostics.autoUnboarding.reasonCode = 'no_onboard_passengers';
+    return baseDiagnostics;
+  }
+
+  const arrivedCount = await applySession(
+    PassengerRide.countDocuments({
+      tripId: activeTrip._id,
+      shuttleId: shuttle._id,
+      status: 'boarded',
+      destinationLocation: {
+        $near: {
+          $geometry: shuttle.location,
+          $maxDistance: AUTO_UNBOARD_RADIUS_METERS,
+        },
+      },
+    }),
+    session
+  );
+
+  baseDiagnostics.autoUnboarding.candidateCount = arrivedCount;
+  baseDiagnostics.autoUnboarding.state = AUTO_DIAGNOSTIC_STATES.WAITING;
+  baseDiagnostics.autoUnboarding.reasonCode = arrivedCount > 0
+    ? 'arrivals_pending_retry'
+    : 'no_arrived_destinations';
+
+  return baseDiagnostics;
+};
+
 /**
  * POST /api/shuttles
  * Admin creates a shuttle in their own community.
  */
 const createShuttle = async (req, res) => {
   try {
-    const { plateNumber, maxCapacity, label } = req.body;
+    const { plateNumber, maxCapacity, label, communityId } = req.body;
 
     if (!plateNumber || maxCapacity === undefined) {
       return res.status(400).json({ error: 'plateNumber and maxCapacity are required.' });
@@ -48,8 +459,13 @@ const createShuttle = async (req, res) => {
       return res.status(400).json({ error: 'maxCapacity must be an integer between 1 and 50.' });
     }
 
+    const scopedCommunityId = resolveCommunityScopeId(req, communityId, { allowAll: false });
+    if (typeof scopedCommunityId !== 'string') {
+      return res.status(403).json({ error: scopedCommunityId.error });
+    }
+
     const shuttle = await Shuttle.create({
-      communityId: req.user.communityId,
+      communityId: scopedCommunityId,
       plateNumber: String(plateNumber).trim().toUpperCase(),
       maxCapacity: parsedCapacity,
       label: label ? String(label).trim() : '',
@@ -77,10 +493,17 @@ const createShuttle = async (req, res) => {
 const listShuttles = async (req, res) => {
   try {
     const onlyActive = req.query.active !== 'false';
+    const scopedCommunityId = resolveCommunityScopeId(req, req.query.communityId, { allowAll: true });
 
-    const query = {
-      communityId: req.user.communityId,
-    };
+    if (scopedCommunityId && typeof scopedCommunityId !== 'string') {
+      return res.status(403).json({ error: scopedCommunityId.error });
+    }
+
+    const query = {};
+
+    if (scopedCommunityId) {
+      query.communityId = scopedCommunityId;
+    }
 
     if (onlyActive) {
       query.isActive = true;
@@ -88,7 +511,32 @@ const listShuttles = async (req, res) => {
 
     const shuttles = await Shuttle.find(query)
       .populate('driverId', 'firstName lastName status')
+      .populate('communityId', 'name')
       .sort({ updatedAt: -1 });
+
+    if (req.user.role === 'passenger') {
+      const passengerSafeShuttles = shuttles.map((doc) => {
+        const shuttle = doc.toObject({ virtuals: true });
+        const driverStatus = shuttle?.driverId && typeof shuttle.driverId === 'object'
+          ? shuttle.driverId.status
+          : null;
+
+        if (driverStatus !== 'driving') {
+          shuttle.location = {
+            type: 'Point',
+            coordinates: [],
+          };
+          shuttle.lastLocationUpdate = null;
+          if (shuttle.status !== 'maintenance') {
+            shuttle.status = 'idle';
+          }
+        }
+
+        return shuttle;
+      });
+
+      return res.status(200).json({ count: passengerSafeShuttles.length, shuttles: passengerSafeShuttles });
+    }
 
     return res.status(200).json({ count: shuttles.length, shuttles });
   } catch (error) {
@@ -102,6 +550,9 @@ const listShuttles = async (req, res) => {
  * Driver updates shuttle GPS. Rejects out-of-bound coordinates and flags shuttle status.
  */
 const updateShuttleLocation = async (req, res) => {
+  const session = await createOptionalSession();
+  if (session) session.startTransaction();
+
   try {
     const { id } = req.params;
     const { latitude, longitude } = req.body;
@@ -115,17 +566,20 @@ const updateShuttleLocation = async (req, res) => {
       return res.status(400).json({ error: coords.message });
     }
 
-    const shuttle = await Shuttle.findById(id);
+    const shuttle = await Shuttle.findById(id).session(session);
     if (!shuttle || !shuttle.isActive) {
+      if (session) await session.abortTransaction();
       return res.status(404).json({ error: 'Shuttle not found.' });
     }
 
-    if (shuttle.communityId.toString() !== req.user.communityId.toString()) {
+    if (!isPlatformAdmin(req) && shuttle.communityId.toString() !== req.user.communityId.toString()) {
+      if (session) await session.abortTransaction();
       return res.status(403).json({ error: 'Access denied. Shuttle is outside your community.' });
     }
 
     if (req.user.role === 'driver') {
       if (!shuttle.driverId || shuttle.driverId.toString() !== req.user._id.toString()) {
+        if (session) await session.abortTransaction();
         return res.status(403).json({ error: 'Access denied. This shuttle is not assigned to you.' });
       }
     }
@@ -139,7 +593,8 @@ const updateShuttleLocation = async (req, res) => {
     if (!insideBoundary) {
       shuttle.status = 'out_of_bounds';
       shuttle.lastLocationUpdate = new Date();
-      await shuttle.save();
+      await shuttle.save({ session });
+      if (session) await session.commitTransaction();
 
       return res.status(403).json({
         error: 'Location rejected. Coordinate is outside the community boundary.',
@@ -156,23 +611,97 @@ const updateShuttleLocation = async (req, res) => {
       shuttle.status = 'en_route';
     }
 
-    await shuttle.save();
+    const autoBoardingResult = req.user.role === 'driver' && req.user.status === 'driving'
+      ? await autoBoardNearbyPickups({
+        session,
+        shuttle,
+        driverId: req.user._id,
+      })
+      : { autoBoardedCount: 0, trip: null, claimedRequests: [] };
+
+    const autoUnboardingResult = req.user.role === 'driver' && req.user.status === 'driving'
+      ? await autoUnboardArrivedPassengers({ session, shuttle })
+      : { autoUnboardedCount: 0, unboardedRideIds: [] };
+
+    const automationDiagnostics = await buildAutomationDiagnostics({
+      session,
+      shuttle,
+      actor: req.user,
+      autoBoardingResult,
+      autoUnboardingResult,
+    });
+
+    await shuttle.save({ session });
+    if (session) await session.commitTransaction();
 
     const io = req.app.get('io');
-    io.emit('shuttle:location-updated', {
+    const communityRoom = `community:${String(shuttle.communityId)}`;
+    const shouldBroadcastPreciseLocation = req.user.role !== 'driver' || req.user.status === 'driving';
+
+    io.to(communityRoom).emit('shuttle:location-updated', {
       shuttleId: shuttle._id,
       communityId: shuttle.communityId,
-      location: shuttle.location,
+      location: shouldBroadcastPreciseLocation
+        ? shuttle.location
+        : { type: 'Point', coordinates: [] },
       status: shuttle.status,
       currentCapacity: shuttle.currentCapacity,
       maxCapacity: shuttle.maxCapacity,
       updatedAt: shuttle.lastLocationUpdate,
     });
 
-    return res.status(200).json({ message: 'Location updated.', shuttle });
+    if (autoBoardingResult.autoBoardedCount > 0) {
+      io.to(communityRoom).emit('trip:passenger-boarded', {
+        tripId: autoBoardingResult.trip?._id || null,
+        shuttleId: shuttle._id,
+        communityId: shuttle.communityId,
+        boardedCount: autoBoardingResult.autoBoardedCount,
+        passengersBoarded: autoBoardingResult.trip?.passengersBoarded || 0,
+        revenueCollected: autoBoardingResult.trip?.revenueCollected || 0,
+        currentCapacity: shuttle.currentCapacity,
+        maxCapacity: shuttle.maxCapacity,
+        source: 'auto-nearby-pickup',
+      });
+
+      for (const claimed of autoBoardingResult.claimedRequests) {
+        io.to(communityRoom).emit('trip:pickup-claimed', {
+          requestId: claimed.requestId,
+          passengerId: claimed.passengerId,
+          shuttleId: shuttle._id,
+          tripId: autoBoardingResult.trip?._id || null,
+          source: 'auto-nearby-pickup',
+        });
+      }
+    }
+
+    if (autoUnboardingResult.autoUnboardedCount > 0) {
+      io.to(communityRoom).emit('trip:passenger-auto-unboarded', {
+        tripId: autoUnboardingResult.activeTripId || null,
+        shuttleId: shuttle._id,
+        communityId: shuttle.communityId,
+        unboardCount: autoUnboardingResult.autoUnboardedCount,
+        currentCapacity: shuttle.currentCapacity,
+        maxCapacity: shuttle.maxCapacity,
+        rideIds: autoUnboardingResult.unboardedRideIds,
+      });
+    }
+
+    return res.status(200).json({
+      message: 'Location updated.',
+      shuttle,
+      autoBoardedCount: autoBoardingResult.autoBoardedCount,
+      autoUnboardedCount: autoUnboardingResult.autoUnboardedCount,
+      automationDiagnostics,
+    });
   } catch (error) {
+    if (session) await session.abortTransaction();
+    if (isRetryableMongoWriteConflict(error)) {
+      return res.status(409).json({ error: 'Location update conflicted with another write. Please retry.' });
+    }
     console.error('Update shuttle location error:', error);
     return res.status(500).json({ error: 'Failed to update location.' });
+  } finally {
+    if (session) session.endSession();
   }
 };
 
@@ -220,7 +749,8 @@ const updateShuttleCapacity = async (req, res) => {
     await shuttle.save();
 
     const io = req.app.get('io');
-    io.emit('shuttle:capacity-updated', {
+    const communityRoom = `community:${String(shuttle.communityId)}`;
+    io.to(communityRoom).emit('shuttle:capacity-updated', {
       shuttleId: shuttle._id,
       communityId: shuttle.communityId,
       currentCapacity: shuttle.currentCapacity,
@@ -239,9 +769,67 @@ const updateShuttleCapacity = async (req, res) => {
   }
 };
 
+/**
+ * PATCH /api/shuttles/:id/assign-driver
+ * Admin assigns (or clears) a driver for a shuttle in the same community.
+ */
+const assignShuttleDriver = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { driverId } = req.body;
+    const requesterCommunityId = req.user?.communityId ? req.user.communityId.toString() : '';
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: 'Invalid shuttle ID.' });
+    }
+
+    const shuttle = await Shuttle.findById(id);
+    if (!shuttle || !shuttle.isActive) {
+      return res.status(404).json({ error: 'Shuttle not found.' });
+    }
+
+    if (!isPlatformAdmin(req) && shuttle.communityId.toString() !== requesterCommunityId) {
+      return res.status(403).json({ error: 'Access denied. Shuttle is outside your community.' });
+    }
+
+    if (driverId === null || driverId === '' || driverId === undefined) {
+      shuttle.driverId = null;
+      await shuttle.save();
+      await shuttle.populate('driverId', 'firstName lastName status');
+      return res.status(200).json({ message: 'Driver assignment cleared.', shuttle });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(driverId)) {
+      return res.status(400).json({ error: 'Invalid driver ID.' });
+    }
+
+    const driver = await User.findById(driverId).select('_id role communityId isActive');
+    if (!driver || !driver.isActive || driver.role !== 'driver') {
+      return res.status(404).json({ error: 'Driver not found.' });
+    }
+
+    if (driver.communityId.toString() !== shuttle.communityId.toString()) {
+      return res.status(403).json({ error: 'Driver must belong to the same community as the shuttle.' });
+    }
+
+    shuttle.driverId = driver._id;
+    await shuttle.save();
+    await shuttle.populate('driverId', 'firstName lastName status');
+
+    return res.status(200).json({
+      message: 'Driver assigned successfully.',
+      shuttle,
+    });
+  } catch (error) {
+    console.error('Assign shuttle driver error:', error);
+    return res.status(500).json({ error: 'Failed to assign driver.' });
+  }
+};
+
 module.exports = {
   createShuttle,
   listShuttles,
   updateShuttleLocation,
   updateShuttleCapacity,
+  assignShuttleDriver,
 };

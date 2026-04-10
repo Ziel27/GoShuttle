@@ -4,6 +4,14 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import 'react-native-reanimated';
+import { 
+  useFonts,
+  Outfit_400Regular,
+  Outfit_500Medium,
+  Outfit_600SemiBold,
+  Outfit_700Bold,
+  Outfit_800ExtraBold 
+} from '@expo-google-fonts/outfit';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useAuthStore } from '@/store/auth';
@@ -22,12 +30,20 @@ export default function RootLayout() {
   const token = useAuthStore((state) => state.token);
   const hasSeenWelcome = useAuthStore((state) => state.hasSeenWelcome);
 
+  const [fontsLoaded] = useFonts({
+    Outfit_400Regular,
+    Outfit_500Medium,
+    Outfit_600SemiBold,
+    Outfit_700Bold,
+    Outfit_800ExtraBold,
+  });
+
   useEffect(() => {
     hydrate();
     hydratePreferences();
   }, [hydrate, hydratePreferences]);
 
-  if (!hydrated || !preferencesHydrated) {
+  if (!hydrated || !preferencesHydrated || !fontsLoaded) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
         <ActivityIndicator size="large" />

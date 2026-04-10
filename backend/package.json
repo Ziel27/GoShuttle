@@ -6,11 +6,17 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "test": "node --test --test-concurrency=1 tests/**/*.test.js",
-    "test:watch": "node --test --test-concurrency=1 --watch tests/**/*.test.js"
+    "test": "node --test --test-concurrency=1 tests/api.integration.test.js tests/security.integration.test.js",
+    "test:watch": "node --test --test-concurrency=1 --watch tests/api.integration.test.js tests/security.integration.test.js",
+    "create:admin": "node scripts/create-admin.js",
+    "seed:mock": "node scripts/seed-mock-data.js",
+    "reset:drivers": "node scripts/reset-drivers.js",
+    "reconcile:capacity": "node scripts/reconcile-capacity.js",
+    "migrate:trip-client-sync-index": "node scripts/migrate-trip-client-sync-index.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
+    "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",

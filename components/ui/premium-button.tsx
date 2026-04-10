@@ -1,5 +1,5 @@
 import { ThemedText } from '@/components/themed-text';
-import { DesignTokens } from '@/constants/theme';
+import { DesignTokens, OutfitFonts } from '@/constants/theme';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { ReactNode } from 'react';
 import { Pressable, StyleProp, StyleSheet, ViewStyle } from 'react-native';
@@ -38,6 +38,7 @@ export function PremiumButton({
     <Pressable
       disabled={disabled}
       onPress={onPress}
+      accessibilityRole="button"
       style={[
         styles.button,
         {
@@ -69,7 +70,8 @@ const styles = StyleSheet.create({
     gap: DesignTokens.spacing.xs,
   },
   buttonText: {
-    fontWeight: '700',
+    fontFamily: OutfitFonts.bold,
     fontSize: 14,
   },
 });
+

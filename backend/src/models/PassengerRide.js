@@ -47,6 +47,30 @@ const passengerRideSchema = new mongoose.Schema(
         required: true,
       },
     },
+    destinationType: {
+      type: String,
+      enum: ['fixed', 'home'],
+      required: true,
+      default: 'fixed',
+      index: true,
+    },
+    destinationLabel: {
+      type: String,
+      trim: true,
+      maxlength: [120, 'Destination label cannot exceed 120 characters.'],
+      required: true,
+    },
+    destinationLocation: {
+      type: {
+        type: String,
+        enum: ['Point'],
+        default: 'Point',
+      },
+      coordinates: {
+        type: [Number],
+        required: true,
+      },
+    },
     requestedAt: {
       type: Date,
       required: true,
@@ -56,10 +80,27 @@ const passengerRideSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    unboardedAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
+    unboardLocation: {
+      type: {
+        type: String,
+        enum: ['Point'],
+        default: 'Point',
+      },
+      coordinates: {
+        type: [Number],
+        default: null,
+      },
+    },
     status: {
       type: String,
-      enum: ['completed'],
-      default: 'completed',
+      enum: ['boarded', 'unboarded'],
+      default: 'boarded',
+      index: true,
     },
   },
   {
@@ -69,5 +110,7 @@ const passengerRideSchema = new mongoose.Schema(
 
 passengerRideSchema.index({ passengerId: 1, boardedAt: -1 });
 passengerRideSchema.index({ communityId: 1, boardedAt: -1 });
+passengerRideSchema.index({ status: 1, tripId: 1 });
+passengerRideSchema.index({ destinationLocation: '2dsphere' });
 
 module.exports = mongoose.model('PassengerRide', passengerRideSchema);

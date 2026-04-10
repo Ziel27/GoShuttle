@@ -12,6 +12,7 @@ const Community = require('../src/models/Community');
 const User = require('../src/models/User');
 const Shuttle = require('../src/models/Shuttle');
 const Trip = require('../src/models/Trip');
+const ShiftRemittance = require('../src/models/ShiftRemittance');
 const { app } = require('../src/server');
 
 let mongod;
@@ -22,6 +23,8 @@ let driverToken;
 let passengerToken;
 let community;
 let shuttle;
+let completedTrip;
+let submittedRemittance;
 
 const polygon = {
   type: 'Polygon',
@@ -223,6 +226,28 @@ test('POST /api/trips/shift-end completes active trip and resets shuttle capacit
   const dbShuttle = await Shuttle.findById(shuttle._id);
   assert.equal(dbShuttle.currentCapacity, 0);
   assert.equal(dbShuttle.status, 'idle');
+
+  completedTrip = await Trip.findById(response.body.summary.tripId);
+  assert.ok(completedTrip);
+});
+
+test('POST /api/trips/:tripId/remittance allows driver remittance submission', async () => {
+  const response = await request(app)
+    .post(`/api/trips/${completedTrip._id}/remittance`)
+    .set('Authorization', `Bearer ${driverToken}`)
+    .send({
+      actualAmount: 40,
+      driverNote: 'Cash handed over at end of shift.',
+    });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.remittance.expectedAmount, 40);
+  assert.equal(response.body.remittance.actualAmount, 40);
+  assert.equal(response.body.remittance.varianceAmount, 0);
+  assert.equal(response.body.remittance.status, 'pending');
+
+  submittedRemittance = await ShiftRemittance.findById(response.body.remittance._id);
+  assert.ok(submittedRemittance);
 });
 
 test('GET /api/trips/analytics returns community totals for admin', async () => {
@@ -237,6 +262,56 @@ test('GET /api/trips/analytics returns community totals for admin', async () => 
 
   const tripCount = await Trip.countDocuments({ communityId: community._id });
   assert.ok(tripCount >= 1);
+});
+
+test('PATCH /api/shuttles/:id/assign-driver assigns driver to shuttle as admin', async () => {
+  const response = await request(app)
+    .patch(`/api/shuttles/${shuttle._id}/assign-driver`)
+    .set('Authorization', `Bearer ${adminToken}`)
+    .send({ driverId: String(driverUser._id) });
+
+  assert.equal(response.status, 200);
+  assert.equal(String(response.body.shuttle.driverId._id), String(driverUser._id));
+});
+
+test('GET /api/trips/driver-analytics returns grouped metrics by driver', async () => {
+  const response = await request(app)
+    .get('/api/trips/driver-analytics')
+    .set('Authorization', `Bearer ${adminToken}`);
+
+  assert.equal(response.status, 200);
+  assert.ok(Array.isArray(response.body.drivers));
+  assert.ok(response.body.drivers.length >= 1);
+  assert.equal(response.body.drivers[0].tripCount >= 1, true);
+  assert.equal(response.body.drivers[0].totalPassengers >= 2, true);
+});
+
+test('GET /api/trips/remittance-summary returns expected vs remitted totals', async () => {
+  const response = await request(app)
+    .get('/api/trips/remittance-summary')
+    .set('Authorization', `Bearer ${adminToken}`);
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.totals.expectedAmount, 40);
+  assert.equal(response.body.totals.actualAmount, 40);
+  assert.equal(response.body.totals.varianceAmount, 0);
+  assert.equal(response.body.totals.pendingCount, 1);
+  assert.equal(response.body.totals.missingCount, 0);
+  assert.equal(response.body.totals.missingExpectedAmount, 0);
+  assert.ok(Array.isArray(response.body.series));
+  assert.ok(Array.isArray(response.body.drivers));
+  assert.ok(Array.isArray(response.body.missingByDriver));
+});
+
+test('PATCH /api/trips/remittances/:id/verify marks remittance as verified', async () => {
+  const response = await request(app)
+    .patch(`/api/trips/remittances/${submittedRemittance._id}/verify`)
+    .set('Authorization', `Bearer ${adminToken}`)
+    .send({ status: 'verified', adminNote: 'Cash count matched expected fare.' });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.remittance.status, 'verified');
+  assert.equal(response.body.remittance.adminNote, 'Cash count matched expected fare.');
 });
 
 test('POST /api/trips/pickup-intent creates a passenger pickup pin', async () => {

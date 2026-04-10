@@ -4,58 +4,71 @@ const communitySchema = new mongoose.Schema(
   {
     name: {
       type: String,
-      required: [true, 'Community name is required'],
+      required: [true, 'Community name is required.'],
       trim: true,
-      unique: true,
-      maxlength: [100, 'Community name cannot exceed 100 characters'],
+      maxlength: [120, 'Community name cannot exceed 120 characters.'],
     },
-
-    // GeoJSON Polygon — defines the exact geographic borders of the community
-    // Used by $geoIntersects to validate shuttle GPS positions
+    baseFare: {
+      type: Number,
+      default: 25,
+      min: [0, 'Base fare cannot be negative'],
+    },
     boundaries: {
       type: {
         type: String,
         enum: ['Polygon'],
-        required: true,
+        default: 'Polygon',
       },
       coordinates: {
-        type: [[[Number]]], // Array of arrays of [lng, lat] pairs
-        required: [true, 'Community boundaries are required'],
+        type: [[[Number]]],
+        default: undefined,
       },
     },
-
-    baseFare: {
-      type: Number,
-      required: [true, 'Base fare is required'],
-      min: [0, 'Base fare cannot be negative'],
-    },
-
-    // White-label customization per community
     branding: {
-      primaryColor: {
-        type: String,
-        default: '#1E3A5F', // Deep Navy
-      },
-      logoUrl: {
-        type: String,
-        default: '',
-      },
+      primaryColor: { type: String, default: '#6366f1' },
+      logoUrl: { type: String, default: '' },
     },
-
+    fixedDestinations: {
+      type: [{
+        name: {
+          type: String,
+          required: true,
+          trim: true,
+          maxlength: [120, 'Destination name cannot exceed 120 characters.'],
+        },
+        location: {
+          type: {
+            type: String,
+            enum: ['Point'],
+            default: 'Point',
+          },
+          coordinates: {
+            type: [Number],
+            required: true,
+          },
+        },
+        order: {
+          type: Number,
+          default: 0,
+        },
+        isActive: {
+          type: Boolean,
+          default: true,
+        },
+      }],
+      default: [],
+    },
     isActive: {
       type: Boolean,
       default: true,
     },
   },
   {
-    timestamps: true, // createdAt, updatedAt
+    timestamps: true,
   }
 );
 
-// 2dsphere index — required for $geoIntersects / $geoWithin queries
-communitySchema.index({ boundaries: '2dsphere' });
-
-// Compound index for active community lookups
-communitySchema.index({ isActive: 1, name: 1 });
+communitySchema.index({ isActive: 1 });
+communitySchema.index({ 'fixedDestinations.location': '2dsphere' });
 
 module.exports = mongoose.model('Community', communitySchema);

@@ -27,9 +27,53 @@ const generateToken = (user) => {
   );
 };
 
+/**
+ * Set HTTP-only, secure, sameSite cookie for auth token.
+ * Protects against XSS attacks by preventing JavaScript access.
+ */
+const setAuthTokenCookie = (res, token) => {
+  const isProduction = process.env.NODE_ENV === 'production';
+  res.cookie('auth_token', token, {
+    httpOnly: true, // Prevents JavaScript access (XSS protection)
+    secure: isProduction, // Only send over HTTPS in production
+    sameSite: 'strict', // CSRF protection
+    path: '/',
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+  });
+};
+
 const hashResetCode = (code) => {
-  const secret = process.env.JWT_SECRET || 'goshuttle-reset-secret';
+  // Use dedicated reset secret, not JWT_SECRET
+  const secret = process.env.JWT_RESET_SECRET || process.env.JWT_SECRET;
+  if (!secret) {
+    throw new Error('JWT_RESET_SECRET environment variable is required.');
+  }
   return crypto.createHash('sha256').update(`${code}:${secret}`).digest('hex');
+};
+
+/**
+ * Track password reset attempts (in-memory for now, should use Redis in production)
+ */
+const resetAttempts = new Map(); // {email: [{timestamp, attempts}]}
+
+const isResetAttemptAllowed = (email) => {
+  const now = Date.now();
+  const oneHourAgo = now - 60 * 60 * 1000;
+  
+  if (!resetAttempts.has(email)) {
+    resetAttempts.set(email, []);
+  }
+  
+  const attempts = resetAttempts.get(email);
+  const recentAttempts = attempts.filter(t => t > oneHourAgo);
+  
+  if (recentAttempts.length >= 3) {
+    return false;
+  }
+  
+  recentAttempts.push(now);
+  resetAttempts.set(email, recentAttempts);
+  return true;
 };
 
 const sendResetCodeEmail = async (email, code) => {
@@ -72,10 +116,21 @@ const register = async (req, res) => {
   try {
     const { firstName, lastName, email, password, communityId, phone } = req.body;
 
+    // ─── Resolve community assignment ─────────────────────────
+    let assignedCommunityId = communityId;
+    
+    if (!assignedCommunityId) {
+      const firstCommunity = await Community.findOne({ isActive: true }).select('_id');
+      if (!firstCommunity) {
+        return res.status(503).json({ error: 'System error: No active community found for registration.' });
+      }
+      assignedCommunityId = firstCommunity._id.toString();
+    }
+
     // ─── Input Validation ──────────────────────────────────────
-    if (!firstName || !lastName || !email || !password || !communityId) {
+    if (!firstName || !lastName || !email || !password) {
       return res.status(400).json({
-        error: 'All fields are required: firstName, lastName, email, password, communityId.',
+        error: 'Almost all fields are required: firstName, lastName, email, password.',
       });
     }
 
@@ -87,12 +142,12 @@ const register = async (req, res) => {
       return res.status(400).json({ error: 'Password must be at least 8 characters.' });
     }
 
-    if (!validator.isMongoId(communityId)) {
+    if (!validator.isMongoId(assignedCommunityId)) {
       return res.status(400).json({ error: 'Invalid community ID.' });
     }
 
     // ─── Verify community exists and is active ─────────────────
-    const community = await Community.findById(communityId);
+    const community = await Community.findById(assignedCommunityId);
     if (!community || !community.isActive) {
       return res.status(404).json({ error: 'Community not found or is inactive.' });
     }
@@ -109,13 +164,14 @@ const register = async (req, res) => {
       lastName: validator.trim(lastName),
       email: email.toLowerCase(),
       password, // Hashed by the pre-save hook in User model
-      communityId,
+      communityId: assignedCommunityId,
       phone: phone ? validator.trim(phone) : '',
       role: 'passenger', // Hardcoded — admin/driver accounts are created via admin endpoints
     });
 
     // ─── Generate token & respond ──────────────────────────────
     const token = generateToken(user);
+    setAuthTokenCookie(res, token);
 
     res.status(201).json({
       message: 'Registration successful.',
@@ -168,6 +224,7 @@ const login = async (req, res) => {
 
     // ─── Generate token & respond ──────────────────────────────
     const token = generateToken(user);
+    setAuthTokenCookie(res, token);
 
     res.status(200).json({
       message: 'Login successful.',
@@ -209,6 +266,12 @@ const requestPasswordReset = async (req, res) => {
     }
 
     const normalizedEmail = String(email).toLowerCase();
+
+    // Rate limit password reset attempts (3 per hour)
+    if (!isResetAttemptAllowed(normalizedEmail)) {
+      return res.status(429).json({ error: 'Too many password reset attempts. Please try again in an hour.' });
+    }
+
     const user = await User.findOne({ email: normalizedEmail }).select('+resetPasswordCodeHash +resetPasswordCodeExpiresAt');
 
     if (!user) {
@@ -247,6 +310,12 @@ const verifyPasswordResetCode = async (req, res) => {
     }
 
     const normalizedEmail = String(email).toLowerCase();
+
+    // Rate limit verification attempts (3 per hour per email)
+    if (!isResetAttemptAllowed(normalizedEmail)) {
+      return res.status(429).json({ error: 'Too many verification attempts. Please try again later.' });
+    }
+
     const user = await User.findOne({ email: normalizedEmail }).select('+resetPasswordCodeHash +resetPasswordCodeExpiresAt');
 
     if (!user || !user.resetPasswordCodeHash || !user.resetPasswordCodeExpiresAt) {
@@ -309,11 +378,22 @@ const resetPassword = async (req, res) => {
   }
 };
 
+/**
+ * POST /api/auth/logout
+ * Clears the authentication cookie.
+ */
+const logout = async (req, res) => {
+  res.clearCookie('auth_token', { path: '/' });
+  res.status(200).json({ message: 'Logged out successfully.' });
+};
+
 module.exports = {
   register,
   login,
+  logout,
   getMe,
   requestPasswordReset,
   verifyPasswordResetCode,
   resetPassword,
+  setAuthTokenCookie,
 };

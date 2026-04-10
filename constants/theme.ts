@@ -3,7 +3,7 @@
  * There are many other ways to style your app. For example, [Nativewind](https://www.nativewind.dev/), [Tamagui](https://tamagui.dev/), [unistyles](https://reactnativeunistyles.vercel.app), etc.
  */
 
-import { Platform } from 'react-native';
+
 
 const tintColorLight = '#0f172a';
 const tintColorDark = '#f8fafc';
@@ -81,13 +81,13 @@ export const DesignTokens = {
     },
   },
   typography: {
-    display: { fontSize: 34, lineHeight: 40, fontWeight: '800' as const },
-    title: { fontSize: 28, lineHeight: 34, fontWeight: '800' as const },
-    subtitle: { fontSize: 20, lineHeight: 26, fontWeight: '700' as const },
+    display: { fontSize: 36, lineHeight: 44, fontWeight: '800' as const, letterSpacing: -0.5 },
+    title: { fontSize: 32, lineHeight: 38, fontWeight: '700' as const, letterSpacing: -0.3 },
+    subtitle: { fontSize: 22, lineHeight: 28, fontWeight: '600' as const, letterSpacing: -0.2 },
     body: { fontSize: 16, lineHeight: 24, fontWeight: '400' as const },
     bodyStrong: { fontSize: 16, lineHeight: 24, fontWeight: '600' as const },
     caption: { fontSize: 13, lineHeight: 18, fontWeight: '500' as const },
-    overline: { fontSize: 11, lineHeight: 14, fontWeight: '700' as const, letterSpacing: 0.4 },
+    overline: { fontSize: 11, lineHeight: 14, fontWeight: '700' as const, letterSpacing: 0.8 },
   },
   motion: {
     quick: 140,
@@ -96,27 +96,12 @@ export const DesignTokens = {
   },
 };
 
-export const Fonts = Platform.select({
-  ios: {
-    /** iOS `UIFontDescriptorSystemDesignDefault` */
-    sans: 'system-ui',
-    /** iOS `UIFontDescriptorSystemDesignSerif` */
-    serif: 'ui-serif',
-    /** iOS `UIFontDescriptorSystemDesignRounded` */
-    rounded: 'ui-rounded',
-    /** iOS `UIFontDescriptorSystemDesignMonospaced` */
-    mono: 'ui-monospace',
-  },
-  default: {
-    sans: 'normal',
-    serif: 'serif',
-    rounded: 'normal',
-    mono: 'monospace',
-  },
-  web: {
-    sans: "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
-    serif: "Georgia, 'Times New Roman', serif",
-    rounded: "'SF Pro Rounded', 'Hiragino Maru Gothic ProN', Meiryo, 'MS PGothic', sans-serif",
-    mono: "SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
-  },
-});
+/** Unified Outfit font family map — used on iOS, Android, and Web alike. */
+export const OutfitFonts = {
+  regular:    'Outfit_400Regular',
+  medium:     'Outfit_500Medium',
+  semiBold:   'Outfit_600SemiBold',
+  bold:       'Outfit_700Bold',
+  extraBold:  'Outfit_800ExtraBold',
+} as const;
+
