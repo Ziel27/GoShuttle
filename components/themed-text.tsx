@@ -1,6 +1,6 @@
 import { StyleSheet, Text, type TextProps } from 'react-native';
 
-import { DesignTokens, Fonts } from '@/constants/theme';
+import { DesignTokens, OutfitFonts } from '@/constants/theme';
 import { useThemeColor } from '@/hooks/use-theme-color';
 
 export type ThemedTextProps = TextProps & {
@@ -42,35 +42,37 @@ export function ThemedText({
 const styles = StyleSheet.create({
   display: {
     ...DesignTokens.typography.display,
-    fontFamily: Fonts?.rounded,
+    fontFamily: OutfitFonts.extraBold,
   },
   default: {
     ...DesignTokens.typography.body,
-    fontFamily: Fonts?.sans,
+    fontFamily: OutfitFonts.regular,
   },
   defaultSemiBold: {
     ...DesignTokens.typography.bodyStrong,
-    fontFamily: Fonts?.sans,
+    fontFamily: OutfitFonts.semiBold,
   },
   title: {
     ...DesignTokens.typography.title,
-    fontFamily: Fonts?.rounded,
+    fontFamily: OutfitFonts.bold,
   },
   subtitle: {
     ...DesignTokens.typography.subtitle,
-    fontFamily: Fonts?.sans,
+    fontFamily: OutfitFonts.semiBold,
   },
   caption: {
     ...DesignTokens.typography.caption,
-    fontFamily: Fonts?.sans,
+    fontFamily: OutfitFonts.medium,
   },
   overline: {
     ...DesignTokens.typography.overline,
     textTransform: 'uppercase',
-    fontFamily: Fonts?.sans,
+    fontFamily: OutfitFonts.bold,
   },
   link: {
     ...DesignTokens.typography.bodyStrong,
+    fontFamily: OutfitFonts.semiBold,
     textDecorationLine: 'underline',
   },
 });
+

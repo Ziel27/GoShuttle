@@ -1,11 +1,11 @@
 import { Link, router, type Href } from 'expo-router';
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Pressable, StyleSheet } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { AuthShell } from '@/components/ui/auth-shell';
 import { ThemedInput } from '@/components/ui/themed-input';
-import { DesignTokens } from '@/constants/theme';
+import { DesignTokens, OutfitFonts } from '@/constants/theme';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { useAuthStore } from '@/store/auth';
 
@@ -13,6 +13,7 @@ export default function LoginScreen() {
   const login = useAuthStore((state) => state.login);
   const loading = useAuthStore((state) => state.loading);
   const error = useAuthStore((state) => state.error);
+  const clearError = useAuthStore((state) => state.clearError);
   const tint = useThemeColor({}, 'tint');
   const danger = useThemeColor({}, 'danger');
   const onTint = useThemeColor({}, 'background');
@@ -20,7 +21,11 @@ export default function LoginScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
 
-  const onSubmit = async () => {
+  useEffect(() => {
+    clearError();
+  }, [clearError]);
+
+  const onSubmit = useCallback(async () => {
     if (!email || !password) {
       return;
     }
@@ -31,7 +36,7 @@ export default function LoginScreen() {
     } catch {
       // Error is handled by the auth store state.
     }
-  };
+  }, [email, password, login]);
 
   return (
     <AuthShell
@@ -62,7 +67,7 @@ export default function LoginScreen() {
             })
           }
           style={styles.forgotLink}>
-          <ThemedText style={[styles.forgotLinkText, { color: tint }]}>Forgot Password?</ThemedText>
+          <ThemedText type="defaultSemiBold" style={{ color: tint, fontSize: 13 }}>Forgot Password?</ThemedText>
         </Pressable>
 
         {error ? <ThemedText style={[styles.error, { color: danger }]}>{error}</ThemedText> : null}
@@ -71,11 +76,11 @@ export default function LoginScreen() {
           style={[styles.button, { backgroundColor: tint }, loading && styles.buttonDisabled]}
           onPress={onSubmit}
           disabled={loading}>
-          <ThemedText style={[styles.buttonText, { color: onTint }]}>{loading ? 'Signing in...' : 'Sign in'}</ThemedText>
+          <ThemedText type="defaultSemiBold" style={{ color: onTint }}>{loading ? 'Signing in...' : 'Sign in'}</ThemedText>
         </Pressable>
 
         <Link href={'/(auth)/register' as Href} style={styles.link}>
-          <ThemedText style={[styles.linkText, { color: tint }]}>Create an account</ThemedText>
+          <ThemedText type="link" style={{ color: tint }}>Create an account</ThemedText>
         </Link>
     </AuthShell>
   );
@@ -93,14 +98,14 @@ const styles = StyleSheet.create({
     opacity: 0.7,
   },
   buttonText: {
-    fontWeight: '800',
+    fontFamily: OutfitFonts.extraBold,
     fontSize: 16,
   },
   forgotLink: {
     alignSelf: 'flex-end',
   },
   forgotLinkText: {
-    fontWeight: '700',
+    fontFamily: OutfitFonts.bold,
     fontSize: 12,
   },
   link: {
@@ -108,9 +113,9 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
   },
   linkText: {
-    fontWeight: '700',
+    fontFamily: OutfitFonts.bold,
   },
   error: {
-    fontWeight: '600',
+    fontFamily: OutfitFonts.semiBold,
   },
 });

@@ -2,14 +2,18 @@ import { ThemedText } from '@/components/themed-text';
 import { PremiumButton } from '@/components/ui/premium-button';
 import { PremiumCard } from '@/components/ui/premium-card';
 import { AppPalette } from '@/constants/app-ui';
-import { DesignTokens } from '@/constants/theme';
+import { DesignTokens, OutfitFonts } from '@/constants/theme';
 import { useThemeColor } from '@/hooks/use-theme-color';
+import { getCommunityById } from '@/services/community';
+import { startShift, stopShift } from '@/services/trip';
+import { setHomeDestinationFromGps } from '@/services/user';
 import { useAuthStore } from '@/store/auth';
 import { usePreferencesStore } from '@/store/preferences';
 import { Ionicons } from '@expo/vector-icons';
+import * as Location from 'expo-location';
 import { router } from 'expo-router';
-import { useState } from 'react';
-import { Linking, Pressable, ScrollView, StyleSheet, Switch, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { Linking, Pressable, ScrollView, StyleSheet, Switch, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 export default function SettingsTabScreen() {
@@ -35,6 +39,47 @@ export default function SettingsTabScreen() {
   const setPrecisePickup = usePreferencesStore((state) => state.setPrecisePickup);
   const setThemeMode = usePreferencesStore((state) => state.setThemeMode);
   const [settingsFeedback, setSettingsFeedback] = useState('');
+  const [communityName, setCommunityName] = useState<string | null>(null);
+  const [shiftLoading, setShiftLoading] = useState(false);
+  const updateUserField = useAuthStore((state) => state.updateUserField);
+  const [savingHomeDestination, setSavingHomeDestination] = useState(false);
+  const [homeAddressInput, setHomeAddressInput] = useState('');
+
+  useEffect(() => {
+    if (!user?.communityId) return;
+    const loadCommunity = async () => {
+      try {
+        const community = await getCommunityById(user.communityId);
+        setCommunityName(community?.name ?? null);
+      } catch (error) {
+        console.error('Failed to load community:', error);
+      }
+    };
+    loadCommunity();
+  }, [user?.communityId]);
+
+  useEffect(() => {
+    if (!isPassenger) return;
+    setHomeAddressInput(user?.homeDestination?.label || '');
+  }, [isPassenger, user?.homeDestination?.label]);
+
+  const handleShiftToggle = async () => {
+    setShiftLoading(true);
+    try {
+      const newStatus = user?.status === 'driving' ? 'offline' : 'driving';
+      if (newStatus === 'driving') {
+        await startShift();
+      } else {
+        await stopShift();
+      }
+      updateUserField('status', newStatus);
+      setSettingsFeedback(newStatus === 'driving' ? 'Shift started!' : 'Shift ended!');
+    } catch (error) {
+      setSettingsFeedback(error instanceof Error ? error.message : 'Failed to update shift');
+    } finally {
+      setShiftLoading(false);
+    }
+  };
 
   const handleChangePassword = async () => {
     try {
@@ -58,6 +103,46 @@ export default function SettingsTabScreen() {
     router.replace('/(auth)/login');
   };
 
+  const handleSetHomeFromGps = async () => {
+    if (!isPassenger || savingHomeDestination) return;
+
+    const normalizedAddress = homeAddressInput.trim();
+    if (!normalizedAddress) {
+      setSettingsFeedback('Enter your home address first before saving GPS.');
+      return;
+    }
+
+    setSavingHomeDestination(true);
+    try {
+      const permission = await Location.requestForegroundPermissionsAsync();
+      if (permission.status !== 'granted') {
+        setSettingsFeedback('Location permission is required to save Home destination.');
+        return;
+      }
+
+      const position = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+
+      const updatedUser = await setHomeDestinationFromGps(
+        position.coords.latitude,
+        position.coords.longitude,
+        normalizedAddress
+      );
+
+      if (updatedUser?.homeDestination) {
+        updateUserField('homeDestination', updatedUser.homeDestination);
+      }
+
+      setSettingsFeedback('Home address and GPS location saved. Drivers will now see this address as your destination.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to save Home destination.';
+      setSettingsFeedback(message);
+    } finally {
+      setSavingHomeDestination(false);
+    }
+  };
+
   const textColor = useThemeColor({}, 'text');
   const mutedColor = useThemeColor({}, 'textMuted');
   const bgColor = useThemeColor({}, 'background');
@@ -78,9 +163,9 @@ export default function SettingsTabScreen() {
       <View style={styles.controlCopy}>
         <View style={styles.controlTitleRow}>
           <Ionicons name={icon} size={15} color={tint} />
-          <ThemedText style={[styles.controlTitle, { color: textColor }]}>{title}</ThemedText>
+          <ThemedText type="defaultSemiBold" style={{ color: textColor, fontSize: 13 }}>{title}</ThemedText>
         </View>
-        <ThemedText style={[styles.controlSubtitle, { color: mutedColor }]}>{subtitle}</ThemedText>
+        <ThemedText type="caption" style={{ color: mutedColor, fontSize: 11, lineHeight: 15 }}>{subtitle}</ThemedText>
       </View>
       <Switch value={value} onValueChange={onChange} trackColor={{ true: tint, false: AppPalette.switchTrackOff }} />
     </View>
@@ -94,15 +179,15 @@ export default function SettingsTabScreen() {
           <Ionicons name="person-circle-outline" size={22} color={onTint} />
         </View>
         <View style={styles.heroTextWrap}>
-            <ThemedText style={[styles.heroTitle, { color: onTint }]}>Account Settings</ThemedText>
-            <ThemedText style={[styles.heroSubtitle, { color: onTint }]}>Manage your profile and session</ThemedText>
+            <ThemedText type="subtitle" style={{ color: onTint }}>Account Settings</ThemedText>
+            <ThemedText type="caption" style={{ color: onTint, opacity: 0.9 }}>Manage your profile and session</ThemedText>
         </View>
         </PremiumCard>
 
         <PremiumCard style={styles.card}>
         <View style={styles.row}>
-          <ThemedText style={[styles.rowLabel, { color: mutedColor }]}>Name</ThemedText>
-          <ThemedText style={[styles.rowValue, { color: textColor }]}>
+          <ThemedText type="defaultSemiBold" style={{ color: mutedColor }}>Name</ThemedText>
+          <ThemedText type="defaultSemiBold" style={{ color: textColor, flexShrink: 1, textAlign: 'right' }}>
             {user?.firstName} {user?.lastName}
           </ThemedText>
         </View>
@@ -110,14 +195,14 @@ export default function SettingsTabScreen() {
         <View style={[styles.separator, { backgroundColor: borderColor }]} />
 
         <View style={styles.row}>
-          <ThemedText style={[styles.rowLabel, { color: mutedColor }]}>Email</ThemedText>
-          <ThemedText style={[styles.rowValue, { color: textColor }]}>{user?.email || '-'}</ThemedText>
+          <ThemedText type="defaultSemiBold" style={{ color: mutedColor }}>Email</ThemedText>
+          <ThemedText type="defaultSemiBold" style={{ color: textColor, flexShrink: 1, textAlign: 'right' }}>{user?.email || '-'}</ThemedText>
         </View>
 
         <View style={[styles.separator, { backgroundColor: borderColor }]} />
 
         <View style={styles.row}>
-          <ThemedText style={[styles.rowLabel, { color: mutedColor }]}>Role</ThemedText>
+          <ThemedText type="defaultSemiBold" style={{ color: mutedColor }}>Role</ThemedText>
           <View style={[styles.rolePill, { borderColor: tint, backgroundColor: surfaceMuted }]}> 
             <ThemedText style={[styles.roleText, { color: tint }]}>{user?.role || '-'}</ThemedText>
           </View>
@@ -126,29 +211,52 @@ export default function SettingsTabScreen() {
         <View style={[styles.separator, { backgroundColor: borderColor }]} />
 
         <View style={styles.row}>
-          <ThemedText style={[styles.rowLabel, { color: mutedColor }]}>Community</ThemedText>
-          <ThemedText style={[styles.rowValue, { color: textColor }]}>{user?.communityId || '-'}</ThemedText>
+          <ThemedText type="defaultSemiBold" style={{ color: mutedColor }}>Community</ThemedText>
+          <ThemedText type="defaultSemiBold" style={{ color: textColor, flexShrink: 1, textAlign: 'right' }}>{communityName || '-'}</ThemedText>
         </View>
         </PremiumCard>
 
         <PremiumCard style={styles.card}>
-          <ThemedText style={[styles.sectionTitle, { color: textColor }]}>Session</ThemedText>
+          <ThemedText type="subtitle" style={{ color: textColor }}>Session</ThemedText>
           <PremiumButton
             style={styles.secondaryAction}
             variant="secondary"
             onPress={handleChangePassword}
           >
             <Ionicons name="key-outline" size={16} color={tint} />
-            <ThemedText style={[styles.secondaryActionText, { color: tint }]}>Change Password</ThemedText>
+            <ThemedText type="defaultSemiBold" style={{ color: tint, fontSize: 14 }}>Change Password</ThemedText>
           </PremiumButton>
-          <PremiumButton style={styles.logoutBtn} onPress={handleLogout} variant="danger">
+          <PremiumButton style={[styles.logoutBtn, { backgroundColor: '#dc2626', borderColor: '#dc2626' }]} onPress={handleLogout} variant="danger">
             <Ionicons name="log-out-outline" size={16} color="#ffffff" />
-            <ThemedText style={styles.logoutText}>Logout</ThemedText>
+            <ThemedText type="defaultSemiBold" style={{ color: '#ffffff', fontSize: 16 }}>Logout</ThemedText>
           </PremiumButton>
         </PremiumCard>
 
+        {isDriver ? (
+          <PremiumCard style={styles.card}>
+            <View style={styles.shiftHeader}>
+              <ThemedText type="subtitle" style={{ color: textColor }}>Driver Shift</ThemedText>
+              <View style={[styles.statusBadge, { backgroundColor: user?.status === 'driving' ? AppPalette.success : AppPalette.slateBg, borderColor: user?.status === 'driving' ? AppPalette.success : AppPalette.slateBorder }]}> 
+                <ThemedText type="defaultSemiBold" style={{ color: user?.status === 'driving' ? '#ffffff' : mutedColor, fontSize: 11, textTransform: 'capitalize' }}>
+                  {user?.status || 'offline'}
+                </ThemedText>
+              </View>
+            </View>
+            <PremiumButton
+              style={[styles.shiftBtn, { borderColor: user?.status === 'driving' ? '#dc2626' : AppPalette.success, backgroundColor: user?.status === 'driving' ? '#dc2626' : AppPalette.success }]}
+              onPress={handleShiftToggle}
+              disabled={shiftLoading}
+            >
+              <Ionicons name={user?.status === 'driving' ? 'stop-circle-outline' : 'play-circle-outline'} size={16} color="#ffffff" />
+              <ThemedText type="defaultSemiBold" style={{ color: '#ffffff', fontSize: 14 }}>
+                {shiftLoading ? 'Updating...' : user?.status === 'driving' ? 'End Shift' : 'Start Shift'}
+              </ThemedText>
+            </PremiumButton>
+          </PremiumCard>
+        ) : null}
+
         <PremiumCard style={styles.card} muted>
-          <ThemedText style={[styles.sectionTitle, { color: textColor }]}>Notifications</ThemedText>
+          <ThemedText type="subtitle" style={{ color: textColor }}>Notifications</ThemedText>
           {settingRow(
             'notifications-outline',
             isDriver ? 'Driver Action Alerts' : 'Push Alerts',
@@ -175,7 +283,7 @@ export default function SettingsTabScreen() {
         </PremiumCard>
 
         <PremiumCard style={styles.card}>
-          <ThemedText style={[styles.sectionTitle, { color: textColor }]}>
+          <ThemedText type="subtitle" style={{ color: textColor }}>
             {isDriver ? 'Driver Experience' : 'Ride Experience'}
           </ThemedText>
           {isPassenger
@@ -209,7 +317,7 @@ export default function SettingsTabScreen() {
 
         {isPassenger ? (
           <PremiumCard style={styles.card} muted>
-            <ThemedText style={[styles.sectionTitle, { color: textColor }]}>Privacy</ThemedText>
+            <ThemedText type="subtitle" style={{ color: textColor }}>Privacy</ThemedText>
             {settingRow(
               'location-outline',
               'Precise Pickup Location',
@@ -217,11 +325,48 @@ export default function SettingsTabScreen() {
               precisePickup,
               setPrecisePickup
             )}
+            <View style={styles.homeAddressGroup}>
+              <ThemedText type="caption" style={{ color: mutedColor }}>
+                Home Address Label (shown to driver)
+              </ThemedText>
+              <TextInput
+                style={[
+                  styles.homeAddressInput,
+                  {
+                    color: textColor,
+                    borderColor,
+                    backgroundColor: surface,
+                  },
+                ]}
+                value={homeAddressInput}
+                onChangeText={setHomeAddressInput}
+                placeholder="e.g. Blk 10 Lot 5, Rose St, Sunridge"
+                placeholderTextColor={mutedColor}
+                autoCapitalize="words"
+                maxLength={120}
+              />
+            </View>
+            <PremiumButton
+              style={styles.secondaryAction}
+              variant="secondary"
+              onPress={handleSetHomeFromGps}
+              disabled={savingHomeDestination || !homeAddressInput.trim()}
+            >
+              <Ionicons name="home-outline" size={16} color={tint} />
+              <ThemedText type="defaultSemiBold" style={{ color: tint, fontSize: 14 }}>
+                {savingHomeDestination ? 'Saving Home...' : 'Save Home Address + GPS'}
+              </ThemedText>
+            </PremiumButton>
+            <ThemedText type="caption" style={{ color: mutedColor }}>
+              {user?.homeDestination?.location?.coordinates?.length === 2
+                ? `Saved Home: ${user.homeDestination.label} (${user.homeDestination.location.coordinates[1].toFixed(5)}, ${user.homeDestination.location.coordinates[0].toFixed(5)})`
+                : 'No Home destination saved yet.'}
+            </ThemedText>
           </PremiumCard>
         ) : null}
 
         <PremiumCard style={styles.card}>
-          <ThemedText style={[styles.sectionTitle, { color: textColor }]}>Appearance</ThemedText>
+          <ThemedText type="subtitle" style={{ color: textColor }}>Appearance</ThemedText>
           <View style={styles.appearanceRow}>
             {[
               { key: 'system' as const, label: 'System' },
@@ -238,13 +383,13 @@ export default function SettingsTabScreen() {
                     backgroundColor: appearance === item.key ? surfaceMuted : surface,
                   },
                 ]}>
-                <ThemedText style={{ color: appearance === item.key ? tint : mutedColor, fontWeight: '700', fontSize: 12 }}>
+                <ThemedText type="defaultSemiBold" style={{ color: appearance === item.key ? tint : mutedColor, fontSize: 12 }}>
                   {item.label}
                 </ThemedText>
               </Pressable>
             ))}
           </View>
-          <ThemedText style={[styles.note, { color: mutedColor }]}>Theme preference is saved and applied app-wide.</ThemedText>
+          <ThemedText type="caption" style={{ color: mutedColor }}>Theme preference is saved and applied app-wide.</ThemedText>
         </PremiumCard>
 
         {settingsFeedback ? <ThemedText style={[styles.note, { color: mutedColor }]}>{settingsFeedback}</ThemedText> : null}
@@ -295,31 +440,8 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: DesignTokens.spacing.xs,
   },
-  rowLabel: {
-    fontWeight: '700',
-  },
-  rowValue: {
-    fontWeight: '700',
-    flexShrink: 1,
-    textAlign: 'right',
-  },
   separator: {
     height: 1,
-  },
-  rolePill: {
-    borderRadius: DesignTokens.radius.pill,
-    borderWidth: 1,
-    paddingHorizontal: DesignTokens.spacing.xs,
-    paddingVertical: DesignTokens.spacing.xxs,
-  },
-  roleText: {
-    fontWeight: '700',
-    fontSize: 12,
-    textTransform: 'capitalize',
-  },
-  sectionTitle: {
-    fontWeight: '700',
-    fontSize: 15,
   },
   controlRow: {
     minHeight: 58,
@@ -341,13 +463,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 6,
   },
-  controlTitle: {
-    fontWeight: '700',
-    fontSize: 13,
+  rolePill: {
+    borderRadius: DesignTokens.radius.pill,
+    borderWidth: 1,
+    paddingHorizontal: DesignTokens.spacing.xs,
+    paddingVertical: DesignTokens.spacing.xxs,
   },
-  controlSubtitle: {
-    fontSize: 11,
-    lineHeight: 15,
+  roleText: {
+    fontFamily: OutfitFonts.bold,
+    fontSize: 12,
+    textTransform: 'capitalize',
   },
   appearanceRow: {
     flexDirection: 'row',
@@ -362,17 +487,43 @@ const styles = StyleSheet.create({
   secondaryAction: {
     marginTop: DesignTokens.spacing.xxs,
   },
-  secondaryActionText: {
-    fontWeight: '700',
-    fontSize: 14,
+  homeAddressGroup: {
+    gap: DesignTokens.spacing.xxs,
+  },
+  homeAddressInput: {
+    minHeight: 44,
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.md,
+    paddingHorizontal: DesignTokens.spacing.xs,
+    paddingVertical: DesignTokens.spacing.xs,
+    fontFamily: OutfitFonts.semiBold,
+    fontSize: 13,
   },
   logoutBtn: {
     marginTop: DesignTokens.spacing.xxs,
   },
-  logoutText: {
-    color: '#ffffff',
-    fontWeight: '800',
-    fontSize: 16,
+  shiftRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: 44,
+  },
+  statusBadge: {
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.pill,
+    paddingHorizontal: DesignTokens.spacing.sm,
+    paddingVertical: DesignTokens.spacing.xs,
+    marginTop: DesignTokens.spacing.xs,
+  },
+  shiftHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: DesignTokens.spacing.xs,
+    marginBottom: DesignTokens.spacing.sm,
+  },
+  shiftBtn: {
+    marginTop: DesignTokens.spacing.xs,
   },
   note: {
     fontSize: 12,

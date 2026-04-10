@@ -3,22 +3,21 @@ import { PremiumButton } from '@/components/ui/premium-button';
 import { PremiumCard } from '@/components/ui/premium-card';
 import { SectionHeader } from '@/components/ui/section-header';
 import { AppPalette } from '@/constants/app-ui';
-import { DesignTokens } from '@/constants/theme';
+import { DesignTokens, OutfitFonts } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { listPassengerRecentRides, PassengerRecentRide } from '@/services/trip';
 import { useAuthStore } from '@/store/auth';
 import { usePreferencesStore } from '@/store/preferences';
+import { formatMoney } from '@/utils/format';
 import { Ionicons } from '@expo/vector-icons';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { ActivityIndicator, FlatList, Modal, Pressable, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 type RideWindow = 'all' | '7d' | '30d';
 
-const formatMoney = (value: number) => {
-  return Number.isFinite(value) ? value.toFixed(2) : '0.00';
-};
+
 
 export default function RidesScreen() {
   const user = useAuthStore((state) => state.user);
@@ -197,47 +196,56 @@ export default function RidesScreen() {
         </View>
       </PremiumCard>
 
-      <ScrollView contentContainerStyle={styles.listWrap}>
-        {loading ? (
-          <PremiumCard style={styles.centerState} muted>
-            <ActivityIndicator color={tint} size="small" />
-            <ThemedText style={[styles.centerStateText, { color: mutedColor }]}>Loading recent rides...</ThemedText>
-          </PremiumCard>
-        ) : filteredRides.length === 0 ? (
-          <PremiumCard style={styles.centerState} muted>
-            <Ionicons name="trail-sign-outline" size={18} color={mutedColor} />
-            <ThemedText style={[styles.centerStateText, { color: mutedColor }]}>No rides match your filters yet.</ThemedText>
-          </PremiumCard>
-        ) : (
-          filteredRides.map((ride) => {
-            const requestedTime = new Date(ride.requestedAt).toLocaleString();
-            const boardedTime = new Date(ride.boardedAt).toLocaleString();
-            const [lng, lat] = ride.pickupLocation.coordinates;
+      <FlatList
+        data={filteredRides}
+        keyExtractor={(ride) => ride.rideId}
+        contentContainerStyle={styles.listWrap}
+        refreshing={loading}
+        onRefresh={loadRides}
+        ListEmptyComponent={
+          loading ? (
+            <PremiumCard style={styles.centerState} muted>
+              <ActivityIndicator color={tint} size="small" />
+              <ThemedText style={[styles.centerStateText, { color: mutedColor }]}>Loading recent rides...</ThemedText>
+            </PremiumCard>
+          ) : (
+            <PremiumCard style={styles.centerState} muted>
+              <Ionicons name="trail-sign-outline" size={18} color={mutedColor} />
+              <ThemedText style={[styles.centerStateText, { color: mutedColor }]}>No rides match your filters yet.</ThemedText>
+            </PremiumCard>
+          )
+        }
+        ListFooterComponent={
+          feedback ? <ThemedText style={[styles.feedback, { color: mutedColor }]}>{feedback}</ThemedText> : null
+        }
+        renderItem={({ item: ride }) => {
+          const requestedTime = new Date(ride.requestedAt).toLocaleString();
+          const boardedTime = new Date(ride.boardedAt).toLocaleString();
+          const [lng, lat] = ride.pickupLocation.coordinates;
 
-            return (
-              <Pressable key={ride.rideId} onPress={() => setSelectedRide(ride)}>
-                <PremiumCard style={styles.recentRideRow}>
-                  <Ionicons name="time-outline" size={14} color={tint} />
-                  <View style={styles.recentRideMeta}>
-                    <ThemedText style={[styles.recentRidePrimary, { color: textColor }]}>
-                      {ride.shuttle.plateNumber || 'Shuttle'}
-                      {ride.shuttle.label ? ` - ${ride.shuttle.label}` : ''}
-                    </ThemedText>
-                    <ThemedText style={[styles.recentRideSecondary, { color: mutedColor }]}>Boarded: {boardedTime}</ThemedText>
-                    <ThemedText style={[styles.recentRideSecondary, { color: mutedColor }]}>Requested: {requestedTime}</ThemedText>
-                    <ThemedText style={[styles.recentRideSecondary, { color: mutedColor }]}> 
-                      Fare: {ride.fareAtBoarding} · Pickup: {lat.toFixed(4)}, {lng.toFixed(4)}
-                    </ThemedText>
-                    <ThemedText style={[styles.recentRideHint, { color: tint }]}>Tap to view details</ThemedText>
-                  </View>
-                </PremiumCard>
-              </Pressable>
-            );
-          })
-        )}
-
-        {feedback ? <ThemedText style={[styles.feedback, { color: mutedColor }]}>{feedback}</ThemedText> : null}
-      </ScrollView>
+          return (
+            <Pressable onPress={() => setSelectedRide(ride)}>
+              <PremiumCard style={styles.recentRideRow}>
+                <View style={[styles.recentRideIconWrap, { backgroundColor: surfaceMutedColor }]}>
+                   <Ionicons name="time-outline" size={20} color={tint} />
+                </View>
+                <View style={styles.recentRideMeta}>
+                  <ThemedText type="defaultSemiBold" style={{ color: textColor }}>
+                    {ride.shuttle.plateNumber || 'Shuttle'}
+                    {ride.shuttle.label ? ` · ${ride.shuttle.label}` : ''}
+                  </ThemedText>
+                  <ThemedText type="caption" style={{ color: mutedColor }}>Boarded: {boardedTime}</ThemedText>
+                  <ThemedText type="caption" style={{ color: mutedColor }}>Requested: {requestedTime}</ThemedText>
+                  <ThemedText type="caption" style={{ color: mutedColor }}> 
+                    Fare: {ride.fareAtBoarding} · Pickup: {lat.toFixed(4)}, {lng.toFixed(4)}
+                  </ThemedText>
+                  <ThemedText type="overline" style={{ color: tint, marginTop: 4 }}>Tap to view details</ThemedText>
+                </View>
+              </PremiumCard>
+            </Pressable>
+          );
+        }}
+      />
 
       <Modal
         visible={Boolean(selectedRide)}
@@ -250,7 +258,12 @@ export default function RidesScreen() {
             <View style={[styles.rideModalCard, { backgroundColor: surfaceColor, borderColor }]}> 
               <View style={styles.rowBetween}>
                 <ThemedText style={[styles.rideModalTitle, { color: textColor }]}>Ride Detail</ThemedText>
-                <Pressable onPress={() => setSelectedRide(null)} style={[styles.rideModalCloseBtn, { borderColor, backgroundColor: bgColor }]}>
+                <Pressable
+                  onPress={() => setSelectedRide(null)}
+                  style={[styles.rideModalCloseBtn, { borderColor, backgroundColor: bgColor }]}
+                  accessibilityLabel="Close ride details"
+                  accessibilityRole="button"
+                >
                   <Ionicons name="close" size={16} color={tint} />
                 </Pressable>
               </View>
@@ -306,7 +319,7 @@ const styles = StyleSheet.create({
     borderRadius: DesignTokens.radius.md,
     minHeight: 44,
     paddingHorizontal: DesignTokens.spacing.xs,
-    fontWeight: '600',
+    fontFamily: OutfitFonts.semiBold,
   },
   rideFilterRow: {
     flexDirection: 'row',
@@ -322,7 +335,7 @@ const styles = StyleSheet.create({
   },
   rideFilterText: {
     fontSize: DesignTokens.typography.overline.fontSize,
-    fontWeight: '700',
+    fontFamily: OutfitFonts.bold,
   },
   rideFilterTextActive: {
   },
@@ -332,23 +345,23 @@ const styles = StyleSheet.create({
   },
   recentRideRow: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: DesignTokens.spacing.xs,
+    alignItems: 'center',
+    gap: DesignTokens.spacing.sm,
+  },
+  recentRideIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: DesignTokens.radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   recentRideMeta: {
     flex: 1,
-    gap: 2,
-  },
-  recentRidePrimary: {
-    fontWeight: '700',
-    fontSize: 12,
-  },
-  recentRideSecondary: {
-    fontSize: DesignTokens.typography.overline.fontSize,
+    gap: 1,
   },
   recentRideHint: {
     fontSize: 10,
-    fontWeight: '700',
+    fontFamily: OutfitFonts.bold,
     marginTop: 2,
   },
   centerState: {
@@ -360,7 +373,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: DesignTokens.spacing.sm,
   },
   centerStateText: {
-    fontWeight: '600',
+    fontFamily: OutfitFonts.semiBold,
   },
   feedback: {
     ...DesignTokens.typography.caption,
@@ -390,7 +403,7 @@ const styles = StyleSheet.create({
   },
   rideModalTitle: {
     fontSize: 16,
-    fontWeight: '800',
+    fontFamily: OutfitFonts.extraBold,
   },
   rideModalCloseBtn: {
     minWidth: 30,
@@ -404,6 +417,6 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   rideModalLine: {
-    fontWeight: '600',
+    fontFamily: OutfitFonts.semiBold,
   },
 });

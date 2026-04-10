@@ -21,7 +21,11 @@ export function SectionHeader({
   return (
     <View style={styles.row}>
       <View style={styles.copy}>
-        <ThemedText type="subtitle" style={[styles.title, titleColor ? { color: titleColor } : undefined]}>
+        <ThemedText
+          type="subtitle"
+          style={[styles.title, titleColor ? { color: titleColor } : undefined]}
+          accessibilityRole="header"
+        >
           {title}
         </ThemedText>
         {subtitle ? (

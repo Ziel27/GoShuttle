@@ -2,18 +2,25 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 
 /**
- * authenticate — Verifies the JWT from the Authorization header.
+ * authenticate — Verifies the JWT from HttpOnly cookie or Authorization header.
  * Attaches the full user document (minus password) to `req.user`.
  */
 const authenticate = async (req, res, next) => {
   try {
-    // Extract token from "Bearer <token>"
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'Authentication required. No token provided.' });
+    // Try to get token from HttpOnly cookie first (secure, XSS-proof)
+    let token = req.cookies?.auth_token;
+
+    // Fall back to Authorization header (Bearer token) for backward compatibility
+    if (!token) {
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        token = authHeader.split(' ')[1];
+      }
     }
 
-    const token = authHeader.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({ error: 'Authentication required. No token provided.' });
+    }
 
     // Verify token
     let decoded;

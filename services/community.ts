@@ -1,18 +1,28 @@
-import { api } from '@/services/api';
-import type { GeoPolygon } from '@/services/map-types';
+import { api } from './api';
 
-export type Community = {
+export interface CommunityBoundaries {
+  type: 'Polygon';
+  coordinates: [number, number][][];
+}
+
+export interface Community {
   _id: string;
   name: string;
-  boundaries: GeoPolygon;
-  baseFare: number;
-  branding?: {
-    primaryColor?: string;
-    logoUrl?: string;
-  };
-};
+  boundaries?: CommunityBoundaries;
+  fixedDestinations?: {
+    _id: string;
+    name: string;
+    location: {
+      type: 'Point';
+      coordinates: [number, number];
+    };
+    order?: number;
+    isActive?: boolean;
+  }[];
+}
 
-export const getCommunityById = async (communityId: string) => {
-  const response = await api.get(`/communities/${communityId}`);
-  return response.data?.community as Community;
+export const getCommunityById = async (communityId: string): Promise<Community | null> => {
+  if (!communityId) return null;
+  const { data } = await api.get<{ community: Community }>(`/communities/${communityId}`);
+  return data?.community ?? null;
 };

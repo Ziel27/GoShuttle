@@ -3,7 +3,7 @@ import { Pressable, StyleSheet, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { AuthShell } from '@/components/ui/auth-shell';
-import { DesignTokens } from '@/constants/theme';
+import { DesignTokens, OutfitFonts } from '@/constants/theme';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { useAuthStore } from '@/store/auth';
 
@@ -20,17 +20,17 @@ export default function WelcomeScreen() {
   return (
     <AuthShell icon="bus" title="GoShuttle" subtitle="Private rides for your community" heroHeight="58%">
       <View style={styles.sheet}>
-        <ThemedText style={styles.title}>Welcome</ThemedText>
+        <ThemedText type="title">Welcome</ThemedText>
         <ThemedText style={styles.copy}>
           Track shuttles in real time, request pickups, and board passengers with a fast, role-based experience.
         </ThemedText>
 
         <Pressable style={[styles.primaryButton, { backgroundColor: tint }]} onPress={() => goToAuth('/(auth)/register')}>
-          <ThemedText style={[styles.primaryText, { color: onTint }]}>Create account</ThemedText>
+          <ThemedText type="defaultSemiBold" style={{ color: onTint }}>Create account</ThemedText>
         </Pressable>
 
         <Pressable style={[styles.secondaryButton, { borderColor: tint }]} onPress={() => goToAuth('/(auth)/login')}>
-          <ThemedText style={[styles.secondaryText, { color: tint }]}>I already have an account</ThemedText>
+          <ThemedText type="defaultSemiBold" style={{ color: tint }}>I already have an account</ThemedText>
         </Pressable>
       </View>
     </AuthShell>
@@ -57,7 +57,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   primaryText: {
-    fontWeight: '800',
+    fontFamily: OutfitFonts.extraBold,
     fontSize: 16,
   },
   secondaryButton: {
@@ -68,7 +68,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   secondaryText: {
-    fontWeight: '800',
+    fontFamily: OutfitFonts.extraBold,
     fontSize: 16,
   },
 });

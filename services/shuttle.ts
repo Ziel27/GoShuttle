@@ -1,10 +1,17 @@
 import { api } from '@/services/api';
 import type { GeoPoint } from '@/services/map-types';
 
+export type Driver = {
+  _id: string;
+  firstName: string;
+  lastName: string;
+  status?: 'active' | 'offline' | 'driving';
+};
+
 export type Shuttle = {
   _id: string;
   communityId: string;
-  driverId: string | null;
+  driverId: string | Driver | null;
   plateNumber: string;
   label: string;
   maxCapacity: number;
@@ -13,6 +20,34 @@ export type Shuttle = {
   location: GeoPoint;
   capacityStatus?: 'available' | 'filling' | 'full';
   updatedAt?: string;
+};
+
+export type AutomationDiagnosticState = 'ready' | 'waiting' | 'blocked' | 'executed';
+
+export type AutomationDiagnosticReasonCode =
+  | 'not_driver'
+  | 'driver_off_shift'
+  | 'location_unavailable'
+  | 'shuttle_full'
+  | 'auto_boarded'
+  | 'nearby_pickups_pending'
+  | 'no_nearby_pickups'
+  | 'auto_unboarded'
+  | 'no_active_trip'
+  | 'no_onboard_passengers'
+  | 'arrivals_pending_retry'
+  | 'no_arrived_destinations';
+
+export type AutomationDiagnostic = {
+  state: AutomationDiagnosticState;
+  reasonCode: AutomationDiagnosticReasonCode;
+  matchedCount: number;
+  candidateCount: number;
+};
+
+export type AutomationDiagnostics = {
+  autoBoarding: AutomationDiagnostic;
+  autoUnboarding: AutomationDiagnostic;
 };
 
 export const listShuttles = async () => {
@@ -29,7 +64,12 @@ export const updateShuttleLocation = async (
     latitude,
     longitude,
   });
-  return response.data?.shuttle as Shuttle;
+  return {
+    shuttle: response.data?.shuttle as Shuttle,
+    autoBoardedCount: Number(response.data?.autoBoardedCount || 0),
+    autoUnboardedCount: Number(response.data?.autoUnboardedCount || 0),
+    automationDiagnostics: response.data?.automationDiagnostics as AutomationDiagnostics | undefined,
+  };
 };
 
 export const updateShuttleCapacity = async (shuttleId: string, delta: number) => {

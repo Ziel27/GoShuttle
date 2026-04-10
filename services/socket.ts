@@ -1,7 +1,22 @@
 import { io, Socket } from 'socket.io-client';
 
-const SOCKET_URL =
-  process.env.EXPO_PUBLIC_SOCKET_URL || process.env.EXPO_PUBLIC_API_URL?.replace('/api', '') || 'http://localhost:5000';
+const SOCKET_URL = (() => {
+  const explicitSocketUrl = process.env.EXPO_PUBLIC_SOCKET_URL?.trim();
+  if (explicitSocketUrl) {
+    return explicitSocketUrl;
+  }
+
+  const apiBaseUrl = process.env.EXPO_PUBLIC_API_URL?.trim();
+  if (apiBaseUrl) {
+    return apiBaseUrl.replace(/\/api\/?$/, '');
+  }
+
+  const fallbackSocketUrl = 'http://192.168.100.224:5000';
+  console.warn(
+    '[socket] EXPO_PUBLIC_SOCKET_URL and EXPO_PUBLIC_API_URL are missing. Falling back to http://192.168.100.224:5000 for development.'
+  );
+  return fallbackSocketUrl;
+})();
 
 let socket: Socket | null = null;
 

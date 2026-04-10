@@ -3,7 +3,14 @@ import { DesignTokens } from '@/constants/theme';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { Ionicons } from '@expo/vector-icons';
 import { ReactNode } from 'react';
-import { DimensionValue, StyleSheet, View } from 'react-native';
+import {
+  DimensionValue,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  View,
+} from 'react-native';
 
 type AuthShellProps = {
   icon: keyof typeof Ionicons.glyphMap;
@@ -32,11 +39,30 @@ export function AuthShell({
         <View style={[styles.heroIconWrap, { borderColor: border }]}>
           <Ionicons name={icon} size={24} color={onTint} />
         </View>
-        <ThemedText style={[styles.heroTitle, { color: onTint }]}>{title}</ThemedText>
+        <ThemedText 
+          type="display" 
+          style={[styles.heroTitle, { color: onTint }]}
+        >
+          {title}
+        </ThemedText>
         <ThemedText style={[styles.heroSubtitle, { color: onTint }]}>{subtitle}</ThemedText>
       </View>
 
-      <View style={[styles.sheet, { backgroundColor: surface, borderColor: border }]}>{children}</View>
+      <KeyboardAvoidingView
+        style={styles.kavWrap}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+      >
+        <ScrollView
+          style={[styles.sheet, { backgroundColor: surface, borderColor: border }]}
+          contentContainerStyle={styles.sheetContent}
+          keyboardShouldPersistTaps="handled"
+          bounces={false}
+          showsVerticalScrollIndicator={false}
+        >
+          {children}
+        </ScrollView>
+      </KeyboardAvoidingView>
     </View>
   );
 }
@@ -69,12 +95,17 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     opacity: 0.88,
   },
-  sheet: {
+  kavWrap: {
     flex: 1,
     marginTop: -DesignTokens.spacing.lg,
+  },
+  sheet: {
+    flex: 1,
     borderTopLeftRadius: DesignTokens.radius.xl,
     borderTopRightRadius: DesignTokens.radius.xl,
     borderWidth: 1,
+  },
+  sheetContent: {
     padding: DesignTokens.spacing.lg,
     gap: DesignTokens.spacing.sm,
   },

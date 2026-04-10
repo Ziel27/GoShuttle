@@ -10,6 +10,15 @@ type User = {
   email: string;
   role: 'admin' | 'driver' | 'passenger';
   communityId: string;
+  status?: 'active' | 'offline' | 'driving';
+  homeDestination?: {
+    label: string;
+    location: {
+      type: 'Point';
+      coordinates: [number, number];
+    };
+    updatedAt?: string | null;
+  };
 };
 
 type RegisterPayload = {
@@ -17,7 +26,7 @@ type RegisterPayload = {
   lastName: string;
   email: string;
   password: string;
-  communityId: string;
+  communityId?: string;
   phone?: string;
 };
 
@@ -34,6 +43,7 @@ type AuthState = {
   register: (payload: RegisterPayload) => Promise<void>;
   logout: () => Promise<void>;
   clearError: () => void;
+  updateUserField: <K extends keyof User>(field: K, value: User[K]) => void;
 };
 
 const TOKEN_KEY = 'goshuttle_token';
@@ -90,7 +100,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         setAuthToken(null);
         set({ token: null, user: null, hydrated: true, hasSeenWelcome: resolvedWelcomeSeen === 'true' });
       }
-    } catch (_error) {
+    } catch {
       setAuthToken(null);
       set({ token: null, user: null, hydrated: true, hasSeenWelcome: false });
     }
@@ -152,6 +162,19 @@ export const useAuthStore = create<AuthState>((set) => ({
 
   clearError: () => {
     set({ error: null });
+  },
+
+  updateUserField: (field, value) => {
+    set((state) => {
+      const nextUser = state.user ? { ...state.user, [field]: value } : null;
+      if (nextUser) {
+        void SecureStore.setItemAsync(USER_KEY, JSON.stringify(nextUser));
+      }
+
+      return {
+        user: nextUser,
+      };
+    });
   },
 }));
 

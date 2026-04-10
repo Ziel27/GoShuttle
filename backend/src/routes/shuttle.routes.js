@@ -4,6 +4,7 @@ const {
   listShuttles,
   updateShuttleLocation,
   updateShuttleCapacity,
+  assignShuttleDriver,
 } = require('../controllers/shuttle.controller');
 const { authenticate, authorize } = require('../middleware/auth');
 
@@ -15,5 +16,6 @@ router.get('/', listShuttles);
 router.post('/', authorize('admin'), createShuttle);
 router.put('/:id/location', authorize('driver', 'admin'), updateShuttleLocation);
 router.patch('/:id/capacity', authorize('driver', 'admin'), updateShuttleCapacity);
+router.patch('/:id/assign-driver', authorize('admin'), assignShuttleDriver);
 
 module.exports = router;

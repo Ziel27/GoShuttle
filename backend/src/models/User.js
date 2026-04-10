@@ -70,6 +70,44 @@ const userSchema = new mongoose.Schema(
       default: '',
     },
 
+    homeDestination: {
+      type: new mongoose.Schema(
+        {
+          label: {
+            type: String,
+            trim: true,
+            maxlength: [120, 'Home destination label cannot exceed 120 characters.'],
+            default: 'Home',
+          },
+          location: {
+            type: {
+              type: String,
+              enum: ['Point'],
+              required: true,
+            },
+            coordinates: {
+              type: [Number], // [longitude, latitude]
+              required: true,
+              validate: {
+                validator: (coords) =>
+                  Array.isArray(coords) &&
+                  coords.length === 2 &&
+                  Number.isFinite(coords[0]) &&
+                  Number.isFinite(coords[1]),
+                message: 'Home destination coordinates must be a valid [longitude, latitude] pair.',
+              },
+            },
+          },
+          updatedAt: {
+            type: Date,
+            default: null,
+          },
+        },
+        { _id: false }
+      ),
+      default: undefined,
+    },
+
     isActive: {
       type: Boolean,
       default: true,
@@ -95,6 +133,16 @@ const userSchema = new mongoose.Schema(
 // ─── Indexes ─────────────────────────────────────────────────────
 // Multi-tenant scoped queries: "all drivers in this community"
 userSchema.index({ communityId: 1, role: 1, isActive: 1 });
+userSchema.index(
+  { 'homeDestination.location': '2dsphere' },
+  {
+    sparse: true,
+    partialFilterExpression: {
+      'homeDestination.location.type': 'Point',
+      'homeDestination.location.coordinates.1': { $exists: true },
+    },
+  }
+);
 
 // ─── Pre-save: Hash password ─────────────────────────────────────
 userSchema.pre('save', async function (next) {

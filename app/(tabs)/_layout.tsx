@@ -4,7 +4,8 @@ import { Animated, StyleSheet } from 'react-native';
 
 import { HapticTab } from '@/components/haptic-tab';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Colors, DesignTokens, Fonts } from '@/constants/theme';
+import { AppPalette } from '@/constants/app-ui';
+import { Colors, DesignTokens, OutfitFonts } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useAuthStore } from '@/store/auth';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -13,13 +14,7 @@ type TabIconName = React.ComponentProps<typeof IconSymbol>['name'];
 type TabIconState = { color: string; focused: boolean };
 type TabLabelState = { color: string; focused: boolean };
 
-const palette = {
-  sky: '#e0f2fe',
-  mint: '#dcfce7',
-  amber: '#fef3c7',
-  indigo: '#e0e7ff',
-  emerald: '#047857',
-};
+
 
 function TabIconBubble({
   color,
@@ -108,15 +103,15 @@ export default function TabLayout() {
   const userRole = useAuthStore((state) => state.user?.role);
   const isPassenger = userRole === 'passenger';
   const isDriver = userRole === 'driver';
-  const activeTint = isDriver ? palette.emerald : Colors[theme].tint;
+  const activeTint = isDriver ? AppPalette.driverTint : Colors[theme].tint;
   const tabBg = Colors[theme].surface;
   const tabInactive = Colors[theme].icon;
   const textStrong = Colors[theme].text;
-  const homeActiveBg = isDark ? '#1e293b' : palette.sky;
-  const ridesActiveBg = isDark ? '#3f2f14' : palette.amber;
-  const fleetActiveBg = isDark ? '#1f2548' : palette.indigo;
-  const opsActiveBg = isDark ? '#113b2c' : palette.mint;
-  const settingsActiveBg = isDark ? '#1e293b' : palette.sky;
+  const homeActiveBg = isDark ? AppPalette.darkSkyBg : AppPalette.sky;
+  const ridesActiveBg = isDark ? AppPalette.darkAmberBg : AppPalette.amber;
+  const fleetActiveBg = isDark ? AppPalette.darkIndigoBg : AppPalette.indigo;
+  const opsActiveBg = isDark ? AppPalette.darkMintBg : AppPalette.mint;
+  const settingsActiveBg = isDark ? AppPalette.darkSkyBg : AppPalette.sky;
   const extraBottomInset = Math.max(insets.bottom, 0);
 
   return (
@@ -138,9 +133,8 @@ export default function TabLayout() {
         },
         tabBarLabelStyle: {
           fontSize: DesignTokens.typography.overline.fontSize,
-          fontWeight: '700',
+          fontFamily: OutfitFonts.bold,
           marginTop: -1,
-          fontFamily: Fonts?.sans,
         },
         tabBarItemStyle: {
           borderRadius: DesignTokens.radius.md,
@@ -155,7 +149,7 @@ export default function TabLayout() {
             <TabLabelBubble
               {...props}
               label={isDriver ? 'Driver' : 'Home'}
-              activeColor={isDriver ? palette.emerald : textStrong}
+              activeColor={isDriver ? AppPalette.driverTint : textStrong}
             />
           ),
           tabBarIcon: (props) =>
@@ -164,7 +158,7 @@ export default function TabLayout() {
               activeName="house.fill"
               inactiveName="house"
               activeBg={isDriver ? opsActiveBg : homeActiveBg}
-              activeColor={isDriver ? palette.emerald : textStrong}
+              activeColor={isDriver ? AppPalette.driverTint : textStrong}
             />,
         }}
       />
@@ -174,7 +168,7 @@ export default function TabLayout() {
           href: isPassenger ? undefined : null,
           title: 'Rides',
           tabBarLabel: (props) => (
-            <TabLabelBubble {...props} label="Rides" activeColor={isDark ? '#fbbf24' : '#92400e'} />
+            <TabLabelBubble {...props} label="Rides" activeColor={isDark ? AppPalette.darkAmberFg : AppPalette.amberStrong} />
           ),
           tabBarIcon: (props) => (
             <TabIconBubble
@@ -182,7 +176,7 @@ export default function TabLayout() {
               activeName="clock.fill"
               inactiveName="clock"
               activeBg={ridesActiveBg}
-              activeColor={isDark ? '#fbbf24' : '#92400e'}
+              activeColor={isDark ? AppPalette.darkAmberFg : AppPalette.amberStrong}
             />
           ),
         }}
@@ -195,13 +189,13 @@ export default function TabLayout() {
             <TabLabelBubble
               {...props}
               label={isDriver ? 'Ops' : 'Fleet'}
-              activeColor={isDriver ? palette.emerald : isDark ? '#a5b4fc' : '#3730a3'}
+              activeColor={isDriver ? AppPalette.driverTint : isDark ? AppPalette.darkIndigoFg : AppPalette.indigoStrong}
             />
           ),
           tabBarIcon: (props) =>
             isDriver
-              ? <TabIconBubble {...props} activeName="bus" inactiveName="bus" activeBg={opsActiveBg} activeColor={palette.emerald} />
-              : <TabIconBubble {...props} activeName="paperplane" inactiveName="paperplane" activeBg={fleetActiveBg} activeColor={isDark ? '#a5b4fc' : '#3730a3'} />,
+              ? <TabIconBubble {...props} activeName="bus" inactiveName="bus" activeBg={opsActiveBg} activeColor={AppPalette.driverTint} />
+              : <TabIconBubble {...props} activeName="paperplane" inactiveName="paperplane" activeBg={fleetActiveBg} activeColor={isDark ? AppPalette.darkIndigoFg : AppPalette.indigoStrong} />,
         }}
       />
       <Tabs.Screen
@@ -243,9 +237,8 @@ const styles = StyleSheet.create({
   },
   tabLabel: {
     fontSize: DesignTokens.typography.overline.fontSize,
-    fontWeight: '700',
     marginTop: -1,
     letterSpacing: 0.2,
-    fontFamily: Fonts?.sans,
+    fontFamily: OutfitFonts.bold,
   },
 });

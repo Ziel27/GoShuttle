@@ -71,7 +71,13 @@ const tripSchema = new mongoose.Schema(
     // to ensure idempotent upserts (no duplicate trip records).
     clientSyncId: {
       type: String,
-      default: null,
+      default: undefined,
+      trim: true,
+      set: (value) => {
+        if (value === null || value === undefined) return undefined;
+        const normalized = String(value).trim();
+        return normalized.length > 0 ? normalized : undefined;
+      },
     },
   },
   {
@@ -80,14 +86,31 @@ const tripSchema = new mongoose.Schema(
 );
 
 // ─── Indexes ─────────────────────────────────────────────────────
-// Analytics queries: "revenue for community X in date range"
-tripSchema.index({ communityId: 1, shiftStart: -1 });
+// Analytics queries: "revenue for community X in date range" (filtered by status)
+tripSchema.index({ communityId: 1, shiftStart: -1, status: 1 });
 
-// Driver shift history: "all trips by driver Y"
+// Driver shift history: "all trips by driver Y in date range"
 tripSchema.index({ driverId: 1, shiftStart: -1 });
 
-// Idempotent offline sync: prevent duplicate trip creation
-tripSchema.index({ clientSyncId: 1 }, { unique: true, sparse: true });
+// Shuttle trip history: "all trips for shuttle Z"
+tripSchema.index({ shuttleId: 1, shiftStart: -1 });
+
+// Idempotent offline sync: prevent duplicate trip creation only when clientSyncId is provided.
+tripSchema.index(
+  { clientSyncId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      clientSyncId: { $type: 'string' },
+    },
+  }
+);
+
+// Status-based queries: "all active trips"
+tripSchema.index({ status: 1, communityId: 1 });
+
+// Time-range queries: "trips within date range"
+tripSchema.index({ shiftStart: 1, shiftEnd: 1 });
 
 // ─── Virtual: calculated revenue (real-time check) ───────────────
 tripSchema.virtual('calculatedRevenue').get(function () {

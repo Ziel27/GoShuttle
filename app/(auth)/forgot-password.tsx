@@ -1,11 +1,11 @@
 import { router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { AuthShell } from '@/components/ui/auth-shell';
 import { ThemedInput } from '@/components/ui/themed-input';
-import { DesignTokens } from '@/constants/theme';
+import { DesignTokens, OutfitFonts } from '@/constants/theme';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { api } from '@/services/api';
 
@@ -30,22 +30,29 @@ export default function ForgotPasswordScreen() {
   const muted = useThemeColor({}, 'textMuted');
   const onTint = useThemeColor({}, 'background');
 
-  const handleCodeChange = (value: string) => {
+  const handleCodeChange = useCallback((value: string) => {
     const normalized = value.replace(/\D/g, '').slice(0, CODE_LENGTH);
     setCode(normalized);
-  };
+  }, []);
 
   useEffect(() => {
     if (resendCooldown <= 0) return;
 
     const timer = setInterval(() => {
-      setResendCooldown((current) => (current > 0 ? current - 1 : 0));
+      setResendCooldown((current) => {
+        if (current <= 1) {
+          clearInterval(timer);
+          return 0;
+        }
+        return current - 1;
+      });
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [resendCooldown]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resendCooldown > 0]);
 
-  const requestCode = async (isResend = false) => {
+  const requestCode = useCallback(async (isResend = false) => {
     if (!email.trim()) {
       setError('Email is required.');
       return;
@@ -69,9 +76,9 @@ export default function ForgotPasswordScreen() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [email]);
 
-  const verifyCode = async () => {
+  const verifyCode = useCallback(async () => {
     if (code.trim().length !== CODE_LENGTH) {
       setError(`Enter the ${CODE_LENGTH}-digit verification code.`);
       return;
@@ -95,9 +102,9 @@ export default function ForgotPasswordScreen() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [email, code]);
 
-  const changePassword = async () => {
+  const changePassword = useCallback(async () => {
     if (!newPassword || !confirmPassword) {
       setError('Please enter and confirm your new password.');
       return;
@@ -132,13 +139,13 @@ export default function ForgotPasswordScreen() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [email, code, newPassword, confirmPassword]);
 
   return (
     <AuthShell icon="key-outline" title="Forgot Password" subtitle="Recover your account securely" heroHeight="34%">
       <View style={styles.card}>
-        <ThemedText style={styles.title}>Forgot Password</ThemedText>
-        <ThemedText style={[styles.subtitle, { color: muted }]}> 
+        <ThemedText type="title">Forgot Password</ThemedText>
+        <ThemedText type="caption" style={{ color: muted, marginBottom: DesignTokens.spacing.xs }}> 
           {step === 'request'
             ? 'Enter your email to receive a verification code.'
             : step === 'verify'
@@ -233,7 +240,7 @@ export default function ForgotPasswordScreen() {
             (step === 'verify' && code.length !== CODE_LENGTH) ||
             (step === 'reset' && (!newPassword || !confirmPassword))
           }>
-          <ThemedText style={[styles.buttonText, { color: onTint }]}>
+          <ThemedText type="defaultSemiBold" style={{ color: onTint }}>
             {loading
               ? 'Please wait...'
               : step === 'request'
@@ -249,14 +256,14 @@ export default function ForgotPasswordScreen() {
             onPress={() => requestCode(true)}
             disabled={loading || resendCooldown > 0}
             style={[styles.resendLink, (loading || resendCooldown > 0) && styles.resendLinkDisabled]}>
-            <ThemedText style={[styles.resendLinkText, { color: tint }]}>
+            <ThemedText type="defaultSemiBold" style={{ color: tint, fontSize: 13 }}>
               {resendCooldown > 0 ? `Resend code in ${resendCooldown}s` : 'Resend verification code'}
             </ThemedText>
           </Pressable>
         ) : null}
 
         <Pressable onPress={() => router.replace('/(auth)/login')}>
-          <ThemedText style={[styles.backLink, { color: tint }]}>Back to Login</ThemedText>
+          <ThemedText type="link" style={{ color: tint, textAlign: 'center', marginTop: DesignTokens.spacing.sm }}>Back to Login</ThemedText>
         </Pressable>
       </View>
     </AuthShell>
@@ -293,7 +300,7 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
   },
   codeBoxText: {
-    fontWeight: '800',
+    fontFamily: OutfitFonts.extraBold,
     fontSize: 20,
   },
   hiddenCodeInput: {
@@ -304,7 +311,7 @@ const styles = StyleSheet.create({
   },
   codeHint: {
     fontSize: 11,
-    fontWeight: '600',
+    fontFamily: OutfitFonts.semiBold,
   },
   button: {
     marginTop: DesignTokens.spacing.xxs,
@@ -317,19 +324,19 @@ const styles = StyleSheet.create({
     opacity: 0.7,
   },
   buttonText: {
-    fontWeight: '800',
+    fontFamily: OutfitFonts.extraBold,
     fontSize: 15,
   },
   error: {
-    fontWeight: '700',
+    fontFamily: OutfitFonts.bold,
     fontSize: 12,
   },
   info: {
-    fontWeight: '600',
+    fontFamily: OutfitFonts.semiBold,
     fontSize: 12,
   },
   backLink: {
-    fontWeight: '700',
+    fontFamily: OutfitFonts.bold,
     textAlign: 'center',
     marginTop: DesignTokens.spacing.xxs,
   },
@@ -341,7 +348,7 @@ const styles = StyleSheet.create({
     opacity: 0.7,
   },
   resendLinkText: {
-    fontWeight: '700',
+    fontFamily: OutfitFonts.bold,
     fontSize: 12,
   },
 });

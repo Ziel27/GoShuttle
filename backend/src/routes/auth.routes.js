@@ -3,6 +3,7 @@ const rateLimit = require('express-rate-limit');
 const {
   register,
   login,
+  logout,
   getMe,
   requestPasswordReset,
   verifyPasswordResetCode,
@@ -31,5 +32,6 @@ router.post('/reset-password', authLimiter, resetPassword);
 
 // ─── Protected Routes ────────────────────────────────────────────
 router.get('/me', authenticate, getMe);
+router.post('/logout', authenticate, logout);
 
 module.exports = router;

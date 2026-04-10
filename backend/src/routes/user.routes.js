@@ -3,12 +3,21 @@ const {
   createManagedUser,
   listUsers,
   updateUserStatus,
+  updateOwnStatus,
+  updateOwnHomeDestination,
 } = require('../controllers/user.controller');
 const { authenticate, authorize } = require('../middleware/auth');
 
 const router = express.Router();
 
-router.use(authenticate, authorize('admin'));
+router.use(authenticate);
+
+// Public routes (authenticated users only)
+router.patch('/me', updateOwnStatus);
+router.patch('/me/home-destination', updateOwnHomeDestination);
+
+// Admin routes
+router.use(authorize('admin'));
 
 router.get('/', listUsers);
 router.post('/', createManagedUser);
