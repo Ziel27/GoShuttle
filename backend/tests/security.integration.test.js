@@ -22,7 +22,9 @@ let adminToken;
 let secondAdminToken;
 let driverToken;
 let passengerToken;
+let secondDriverToken;
 let shuttle;
+let secondShuttle;
 let socketBaseUrl;
 
 const withTimeout = (promise, ms = 3000, label = 'Timed out waiting for socket event') =>
@@ -111,6 +113,16 @@ test.before(async () => {
     communityId: community._id,
   });
 
+  const secondDriver = await User.create({
+    firstName: 'Driver',
+    lastName: 'Two',
+    email: 'driver-two-sec@test.local',
+    password: 'Password123!',
+    role: 'driver',
+    status: 'active',
+    communityId: community._id,
+  });
+
   await User.create({
     firstName: 'Passenger',
     lastName: 'User',
@@ -146,6 +158,11 @@ test.before(async () => {
     .send({ email: 'passenger-sec@test.local', password: 'Password123!' });
   passengerToken = loginPassenger.body.token;
 
+  const loginSecondDriver = await request(app)
+    .post('/api/auth/login')
+    .send({ email: 'driver-two-sec@test.local', password: 'Password123!' });
+  secondDriverToken = loginSecondDriver.body.token;
+
   const loginSecondAdmin = await request(app)
     .post('/api/auth/login')
     .send({ email: secondAdmin.email, password: 'Password123!' });
@@ -157,6 +174,14 @@ test.before(async () => {
     plateNumber: 'SEC-201',
     maxCapacity: 1,
     currentCapacity: 1,
+  });
+
+  secondShuttle = await Shuttle.create({
+    communityId: community._id,
+    driverId: secondDriver._id,
+    plateNumber: 'SEC-202',
+    maxCapacity: 2,
+    currentCapacity: 0,
   });
 
   await new Promise((resolve, reject) => {
@@ -202,6 +227,26 @@ test('Driver cannot access admin analytics endpoint', async () => {
   const response = await request(app)
     .get('/api/trips/analytics')
     .set('Authorization', `Bearer ${driverToken}`);
+
+  assert.equal(response.status, 403);
+  assert.match(response.body.error, /access denied/i);
+});
+
+test('Passenger cannot update own status endpoint', async () => {
+  const response = await request(app)
+    .patch('/api/users/me')
+    .set('Authorization', `Bearer ${passengerToken}`)
+    .send({ status: 'offline' });
+
+  assert.equal(response.status, 403);
+  assert.match(response.body.error, /access denied/i);
+});
+
+test('Driver cannot update home destination endpoint', async () => {
+  const response = await request(app)
+    .patch('/api/users/me/home-destination')
+    .set('Authorization', `Bearer ${driverToken}`)
+    .send({ latitude: 14.45, longitude: 121.25, label: 'Home' });
 
   assert.equal(response.status, 403);
   assert.match(response.body.error, /access denied/i);
@@ -330,4 +375,45 @@ test('Socket user cannot emit shuttle updates for another community', async () =
   socket.close();
 
   assert.match(String(payload?.error || ''), /access denied for this shuttle/i);
+});
+
+test('Socket driver cannot emit location for unassigned shuttle in same community', async () => {
+  const socket = await connectSocketWithToken(driverToken);
+
+  socket.emit('driver-location', {
+    shuttleId: String(secondShuttle._id),
+    latitude: 14.45,
+    longitude: 121.25,
+  });
+
+  const [payload] = await withTimeout(
+    once(socket, 'socket:error'),
+    3000,
+    'Unassigned-shuttle denial event timed out'
+  );
+
+  socket.close();
+
+  assert.match(String(payload?.error || ''), /not assigned to you/i);
+});
+
+test('Socket assigned driver can emit location update for own shuttle', async () => {
+  const socket = await connectSocketWithToken(secondDriverToken);
+  socket.emit('join-community', { communityId: String(community._id) });
+
+  socket.emit('driver-location', {
+    shuttleId: String(secondShuttle._id),
+    latitude: 14.45,
+    longitude: 121.25,
+  });
+
+  const [payload] = await withTimeout(
+    once(socket, 'shuttle:location-updated'),
+    3000,
+    'Assigned-shuttle location update event timed out'
+  );
+
+  socket.close();
+
+  assert.equal(String(payload?.shuttleId), String(secondShuttle._id));
 });

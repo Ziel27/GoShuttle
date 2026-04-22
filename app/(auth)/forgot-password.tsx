@@ -1,10 +1,12 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Pressable, StyleSheet, TextInput, View } from 'react-native';
+import { Pressable, StyleSheet, TextInput, useWindowDimensions, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
+import { AnimatedPressable } from '@/components/ui/animated-pressable';
 import { AuthShell } from '@/components/ui/auth-shell';
 import { ThemedInput } from '@/components/ui/themed-input';
+import { ROUTES } from '@/constants/routes';
 import { DesignTokens, OutfitFonts } from '@/constants/theme';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { api } from '@/services/api';
@@ -28,7 +30,11 @@ export default function ForgotPasswordScreen() {
   const danger = useThemeColor({}, 'danger');
   const text = useThemeColor({}, 'text');
   const muted = useThemeColor({}, 'textMuted');
+  const surface = useThemeColor({}, 'surface');
+  const border = useThemeColor({}, 'border');
   const onTint = useThemeColor({}, 'background');
+  const { height } = useWindowDimensions();
+  const isCompact = height < 740;
 
   const handleCodeChange = useCallback((value: string) => {
     const normalized = value.replace(/\D/g, '').slice(0, CODE_LENGTH);
@@ -132,7 +138,7 @@ export default function ForgotPasswordScreen() {
       });
 
       setInfo(response.data?.message || 'Password updated successfully.');
-      router.replace('/(auth)/login');
+      router.replace(ROUTES.authLogin);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to reset password.';
       setError(message);
@@ -142,9 +148,8 @@ export default function ForgotPasswordScreen() {
   }, [email, code, newPassword, confirmPassword]);
 
   return (
-    <AuthShell icon="key-outline" title="Forgot Password" subtitle="Recover your account securely" heroHeight="34%">
-      <View style={styles.card}>
-        <ThemedText type="title">Forgot Password</ThemedText>
+    <AuthShell icon="key-outline" title="Forgot Password" subtitle="Recover your account securely" heroHeight="40%">
+      <View style={[styles.card, isCompact && styles.cardCompact, { backgroundColor: surface, borderColor: border }]}>
         <ThemedText type="caption" style={{ color: muted, marginBottom: DesignTokens.spacing.xs }}> 
           {step === 'request'
             ? 'Enter your email to receive a verification code.'
@@ -165,7 +170,7 @@ export default function ForgotPasswordScreen() {
         {step !== 'request' ? (
           <View>
             <Pressable
-              style={styles.codeBoxesRow}
+              style={[styles.codeBoxesRow, isCompact && styles.codeBoxesRowCompact]}
               onPress={() => codeInputRef.current?.focus()}
               disabled={step !== 'verify' || loading}>
               {Array.from({ length: CODE_LENGTH }).map((_, index) => {
@@ -226,8 +231,8 @@ export default function ForgotPasswordScreen() {
         {error ? <ThemedText style={[styles.error, { color: danger }]}>{error}</ThemedText> : null}
         {info ? <ThemedText style={[styles.info, { color: muted }]}>{info}</ThemedText> : null}
 
-        <Pressable
-          style={[styles.button, { backgroundColor: tint }, loading && styles.buttonDisabled]}
+        <AnimatedPressable
+          style={[styles.button, isCompact && styles.buttonCompact, { backgroundColor: tint }, loading && styles.buttonDisabled]}
           onPress={
             step === 'request'
               ? () => requestCode(false)
@@ -239,7 +244,16 @@ export default function ForgotPasswordScreen() {
             loading ||
             (step === 'verify' && code.length !== CODE_LENGTH) ||
             (step === 'reset' && (!newPassword || !confirmPassword))
-          }>
+          }
+          accessibilityRole="button"
+          accessibilityLabel={
+            step === 'request'
+              ? 'Send verification code'
+              : step === 'verify'
+              ? 'Verify code'
+              : 'Change password'
+          }
+          haptic>
           <ThemedText type="defaultSemiBold" style={{ color: onTint }}>
             {loading
               ? 'Please wait...'
@@ -249,21 +263,23 @@ export default function ForgotPasswordScreen() {
               ? 'Verify Code'
               : 'Change Password'}
           </ThemedText>
-        </Pressable>
+        </AnimatedPressable>
 
         {step === 'verify' ? (
           <Pressable
             onPress={() => requestCode(true)}
             disabled={loading || resendCooldown > 0}
-            style={[styles.resendLink, (loading || resendCooldown > 0) && styles.resendLinkDisabled]}>
+            style={[styles.resendLink, isCompact && styles.resendLinkCompact, (loading || resendCooldown > 0) && styles.resendLinkDisabled]}
+            accessibilityRole="button"
+            accessibilityLabel={resendCooldown > 0 ? `Resend code available in ${resendCooldown} seconds` : 'Resend verification code'}>
             <ThemedText type="defaultSemiBold" style={{ color: tint, fontSize: 13 }}>
               {resendCooldown > 0 ? `Resend code in ${resendCooldown}s` : 'Resend verification code'}
             </ThemedText>
           </Pressable>
         ) : null}
 
-        <Pressable onPress={() => router.replace('/(auth)/login')}>
-          <ThemedText type="link" style={{ color: tint, textAlign: 'center', marginTop: DesignTokens.spacing.sm }}>Back to Login</ThemedText>
+        <Pressable onPress={() => router.replace(ROUTES.authLogin)} accessibilityRole="link" accessibilityLabel="Back to login">
+          <ThemedText type="link" style={{ color: tint, textAlign: 'center', marginTop: isCompact ? DesignTokens.spacing.xs : DesignTokens.spacing.sm }}>Back to Login</ThemedText>
         </Pressable>
       </View>
     </AuthShell>
@@ -272,7 +288,15 @@ export default function ForgotPasswordScreen() {
 
 const styles = StyleSheet.create({
   card: {
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.lg,
+    padding: DesignTokens.spacing.md,
     gap: DesignTokens.spacing.sm,
+    ...DesignTokens.elevation.card,
+  },
+  cardCompact: {
+    padding: DesignTokens.spacing.md - DesignTokens.spacing.xs,
+    gap: DesignTokens.spacing.xs,
   },
   title: {
     ...DesignTokens.typography.title,
@@ -288,10 +312,13 @@ const styles = StyleSheet.create({
     gap: DesignTokens.spacing.xs,
     marginTop: DesignTokens.spacing.xxs,
   },
+  codeBoxesRowCompact: {
+    marginTop: 0,
+  },
   codeBox: {
     flex: 1,
     minHeight: 52,
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderRadius: DesignTokens.radius.md,
     alignItems: 'center',
     justifyContent: 'center',
@@ -315,10 +342,13 @@ const styles = StyleSheet.create({
   },
   button: {
     marginTop: DesignTokens.spacing.xxs,
-    borderRadius: DesignTokens.radius.md,
-    minHeight: 50,
+    borderRadius: DesignTokens.radius.pill,
+    minHeight: 52,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  buttonCompact: {
+    minHeight: 50,
   },
   buttonDisabled: {
     opacity: 0.7,
@@ -343,6 +373,9 @@ const styles = StyleSheet.create({
   resendLink: {
     alignSelf: 'center',
     marginTop: 2,
+  },
+  resendLinkCompact: {
+    marginTop: 0,
   },
   resendLinkDisabled: {
     opacity: 0.7,

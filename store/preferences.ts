@@ -11,6 +11,7 @@ type PreferencesState = {
   quietMode: boolean;
   showEta: boolean;
   hapticsEnabled: boolean;
+  // TODO: Remove compactMapPins and precisePickup from preferences store - deferred because active screens still consume these flags.
   compactMapPins: boolean;
   precisePickup: boolean;
   hydrate: () => Promise<void>;

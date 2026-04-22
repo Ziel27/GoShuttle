@@ -1,35 +1,55 @@
 import { ThemedText } from '@/components/themed-text';
+import { MapIndicator, MapLoadingPlaceholder } from '@/components/ui/home-map-primitives';
+import {
+  FixedDestinationChip,
+  type FixedDestinationOption,
+} from '@/components/ui/home-screen-primitives';
 import { PremiumButton } from '@/components/ui/premium-button';
-import { PremiumCard } from '@/components/ui/premium-card';
 import { SectionHeader } from '@/components/ui/section-header';
+import { StatusBanner } from '@/components/ui/status-banner';
 import { AppPalette, getCapacityColor } from '@/constants/app-ui';
-import { DesignTokens, OutfitFonts } from '@/constants/theme';
+import { DesignTokens, OutfitFonts, SemanticColors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { getCommunityById } from '@/services/community';
-import { toLatLngPoint } from '@/services/map-types';
+import { syncOfflineBoardings } from '@/services/offline-boarding-queue';
 import {
-    AutomationDiagnostics,
-    listShuttles,
-    Shuttle,
-    updateShuttleLocation,
+  AutomationDiagnostics,
+  listShuttles,
+  Shuttle,
+  updateShuttleLocation,
 } from '@/services/shuttle';
 import { connectCommunitySocket } from '@/services/socket';
 import {
-    createPickupIntent,
-    listOnboardDestinations,
-    listPickupIntents,
-    OnboardDestinationPassenger,
-    PickupIntent,
-    unboardPassenger
+  boardPassenger,
+  cancelPickupIntent,
+  createPickupIntent,
+  listOnboardDestinations,
+  listPickupIntents,
+  OnboardDestinationPassenger,
+  PickupIntent,
+  unboardPassenger
 } from '@/services/trip';
 import { useAuthStore } from '@/store/auth';
 import { usePreferencesStore } from '@/store/preferences';
+import {
+  describeBoardingReason,
+  describeUnboardingReason,
+  getDistanceMeters,
+  isExpiredIntent,
+  type PickupIntentEventPayload,
+  toCommunityIdString,
+  toMaxZoomOutRegionFromBoundary,
+  toPickupIntent,
+  toRegionFromBoundary,
+  toShuttleCoordinate,
+  upsertPickupIntent,
+} from '@/utils/home-screen';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { type ComponentRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import MapView, { Callout, Circle, LatLng, Marker, Polygon, Region } from 'react-native-maps';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -43,6 +63,8 @@ const DRIVER_CONTINUOUS_MIN_SYNC_INTERVAL_MS = 5_000;
 const DRIVER_CONTINUOUS_MIN_MOVE_METERS = 15;
 const POLL_ERROR_NOTICE_COOLDOWN_MS = 120_000;
 const COMMUNITY_SETTINGS_SYNC_POLL_MS = 45_000;
+const AUTOMATION_STALE_MULTIPLIER = 2;
+const MANUAL_AUTOMATION_COOLDOWN_MS = 15_000;
 
 const palette = {
   navy: AppPalette.navy,
@@ -52,72 +74,6 @@ const palette = {
   slateText: AppPalette.slateText,
   white: AppPalette.white,
   rose: AppPalette.danger,
-};
-
-const toShuttleCoordinate = (shuttle: Shuttle): LatLng | null => {
-  return toLatLngPoint(shuttle.location?.coordinates || []);
-};
-
-const toRegionFromBoundary = (coordinates: LatLng[]): Region | null => {
-  if (coordinates.length < 3) return null;
-
-  const lats = coordinates.map((point) => point.latitude);
-  const lngs = coordinates.map((point) => point.longitude);
-
-  const minLat = Math.min(...lats);
-  const maxLat = Math.max(...lats);
-  const minLng = Math.min(...lngs);
-  const maxLng = Math.max(...lngs);
-
-  const latitudeDelta = Math.max((maxLat - minLat) * 1.4, 0.005);
-  const longitudeDelta = Math.max((maxLng - minLng) * 1.4, 0.005);
-
-  return {
-    latitude: (minLat + maxLat) / 2,
-    longitude: (minLng + maxLng) / 2,
-    latitudeDelta,
-    longitudeDelta,
-  };
-};
-
-const toMaxZoomOutRegionFromBoundary = (coordinates: LatLng[]): Region | null => {
-  if (coordinates.length < 3) return null;
-
-  const lats = coordinates.map((point) => point.latitude);
-  const lngs = coordinates.map((point) => point.longitude);
-
-  const minLat = Math.min(...lats);
-  const maxLat = Math.max(...lats);
-  const minLng = Math.min(...lngs);
-  const maxLng = Math.max(...lngs);
-
-  const latitudeDelta = Math.max((maxLat - minLat) * 1.05, 0.005);
-  const longitudeDelta = Math.max((maxLng - minLng) * 1.05, 0.005);
-
-  return {
-    latitude: (minLat + maxLat) / 2,
-    longitude: (minLng + maxLng) / 2,
-    latitudeDelta,
-    longitudeDelta,
-  };
-};
-
-type PickupIntentEventPayload = {
-  requestId?: string;
-  _id?: string;
-  passengerId?: string;
-  location?: {
-    type?: 'Point';
-    coordinates?: [number, number];
-  };
-  destinationType?: 'fixed' | 'home';
-  destinationLabel?: string;
-  destinationLocation?: {
-    type?: 'Point';
-    coordinates?: [number, number];
-  };
-  status?: PickupIntent['status'];
-  expiresAt?: string;
 };
 
 type PickupClaimedEventPayload = {
@@ -131,139 +87,28 @@ type PassengerAutoUnboardedPayload = {
   rideIds?: string[];
 };
 
+type PickupCancelledEventPayload = {
+  requestId?: string;
+  passengerId?: string;
+  status?: string;
+  cancelledBy?: string;
+  cancelledAt?: string;
+};
+
+type SocketErrorEventPayload = {
+  error?: string;
+  message?: string;
+};
+
 type AutomationDiagnostic = {
   state: 'ready' | 'waiting' | 'blocked';
   label: string;
   detail: string;
 };
 
-const describeBoardingReason = (
-  reasonCode: AutomationDiagnostics['autoBoarding']['reasonCode'],
-  candidateCount: number,
-  matchedCount: number
-) => {
-  if (reasonCode === 'driver_off_shift') return 'Driver is off shift. Start shift to enable automation.';
-  if (reasonCode === 'shuttle_full') return 'Shuttle is at full capacity.';
-  if (reasonCode === 'location_unavailable') return 'Location is unavailable. Sync GPS again.';
-  if (reasonCode === 'nearby_pickups_pending') {
-    return `${candidateCount} nearby pickup request${candidateCount === 1 ? '' : 's'} waiting.`;
-  }
-  if (reasonCode === 'auto_boarded') {
-    return `Auto-boarded ${matchedCount} pickup request${matchedCount === 1 ? '' : 's'} on last sync.`;
-  }
-  if (reasonCode === 'not_driver') return 'Automation requires a driver account.';
-  return 'No nearby pickup requests in the queue.';
-};
-
-const describeUnboardingReason = (
-  reasonCode: AutomationDiagnostics['autoUnboarding']['reasonCode'],
-  candidateCount: number,
-  matchedCount: number
-) => {
-  if (reasonCode === 'driver_off_shift') return 'Driver is off shift. Start shift to enable automation.';
-  if (reasonCode === 'location_unavailable') return 'Location is unavailable. Sync GPS again.';
-  if (reasonCode === 'auto_unboarded') {
-    return `Auto-unboarded ${matchedCount} passenger${matchedCount === 1 ? '' : 's'} on last sync.`;
-  }
-  if (reasonCode === 'no_active_trip') return 'No active trip found yet.';
-  if (reasonCode === 'no_onboard_passengers') return 'No onboard passengers to unboard.';
-  if (reasonCode === 'arrivals_pending_retry') {
-    return `${candidateCount} passenger${candidateCount === 1 ? '' : 's'} near destination. Next sync will finalize.`;
-  }
-  if (reasonCode === 'not_driver') return 'Automation requires a driver account.';
-  return 'No arrived destinations yet.';
-};
-
-const toPickupIntent = (payload: PickupIntentEventPayload): PickupIntent | null => {
-  const id = payload._id || payload.requestId;
-  const coordinates = payload.location?.coordinates;
-
-  if (!coordinates || coordinates.length !== 2) {
-    return null;
-  }
-
-  const [longitude, latitude] = coordinates;
-
-  const point = toLatLngPoint([longitude, latitude]);
-  if (!id || !point) {
-    return null;
-  }
-
-  return {
-    _id: id,
-    communityId: '',
-    passengerId: payload.passengerId || '',
-    location: {
-      type: 'Point',
-      coordinates: [point.longitude, point.latitude],
-    },
-    destinationType: payload.destinationType || 'fixed',
-    destinationLabel: payload.destinationLabel || 'Destination',
-    destinationLocation: payload.destinationLocation?.coordinates?.length === 2
-      ? {
-        type: 'Point',
-        coordinates: payload.destinationLocation.coordinates,
-      }
-      : {
-        type: 'Point',
-        coordinates: [point.longitude, point.latitude],
-      },
-    status: payload.status || 'pending',
-    expiresAt: payload.expiresAt || new Date(Date.now() + 10 * 60 * 1000).toISOString(),
-  };
-};
-
-const isExpiredIntent = (intent: PickupIntent) => new Date(intent.expiresAt).getTime() <= Date.now();
-
-const upsertPickupIntent = (items: PickupIntent[], nextItem: PickupIntent) => {
-  const withoutExisting = items.filter((item) => item._id !== nextItem._id && !isExpiredIntent(item));
-  return [nextItem, ...withoutExisting];
-};
-
-type MapIndicatorProps = {
-  iconName: keyof typeof Ionicons.glyphMap;
-};
-
-const MapIndicator = ({ iconName }: MapIndicatorProps) => (
-  <View style={styles.mapIndicatorWrapper}>
-    <View style={styles.mapIndicatorBubble}>
-      <Ionicons name={iconName} size={10} color={palette.navy} />
-    </View>
-  </View>
-);
-
 const lerp = (from: number, to: number, t: number) => from + (to - from) * t;
 
-const toRadians = (value: number) => (value * Math.PI) / 180;
-
-const getDistanceMeters = (from: LatLng, to: LatLng) => {
-  const earthRadius = 6_371_000;
-  const dLat = toRadians(to.latitude - from.latitude);
-  const dLng = toRadians(to.longitude - from.longitude);
-  const lat1 = toRadians(from.latitude);
-  const lat2 = toRadians(to.latitude);
-
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return earthRadius * c;
-};
-
-const toCommunityIdString = (communityId: unknown): string | null => {
-  if (typeof communityId === 'string' && communityId.trim().length > 0) {
-    return communityId;
-  }
-
-  if (communityId && typeof communityId === 'object') {
-    const candidate = (communityId as { _id?: unknown })._id;
-    if (typeof candidate === 'string' && candidate.trim().length > 0) {
-      return candidate;
-    }
-  }
-
-  return null;
-};
+type MapMarkerRef = ComponentRef<typeof Marker>;
 
 export default function HomeScreen() {
   const colorScheme = useColorScheme();
@@ -280,7 +125,7 @@ export default function HomeScreen() {
   const dangerColor = useThemeColor({}, 'danger');
   const pickupCtaBg = colorScheme === 'dark' ? successColor : tint;
   const capacityCardBackground = colorScheme === 'dark' ? AppPalette.darkMintBg : AppPalette.successMutedBackground;
-  const capacityCardBorder = colorScheme === 'dark' ? successColor : '#a7f3d0';
+  const capacityCardBorder = colorScheme === 'dark' ? successColor : SemanticColors.successLight;
   const hapticsEnabled = usePreferencesStore((state) => state.hapticsEnabled);
   const compactMapPins = usePreferencesStore((state) => state.compactMapPins);
   const showEta = usePreferencesStore((state) => state.showEta);
@@ -296,49 +141,52 @@ export default function HomeScreen() {
   const [driverRegion, setDriverRegion] = useState<Region | null>(null);
   const [pickupIntents, setPickupIntents] = useState<PickupIntent[]>([]);
   const [pickupSubmitting, setPickupSubmitting] = useState(false);
+  const [pickupCancelling, setPickupCancelling] = useState(false);
+  const [boardingSubmitting, setBoardingSubmitting] = useState(false);
   const [unboardingSubmitting, setUnboardingSubmitting] = useState(false);
   const [selectedDestinationType, setSelectedDestinationType] = useState<'fixed' | 'home' | null>(null);
   const [selectedFixedDestinationId, setSelectedFixedDestinationId] = useState('');
-  const [fixedDestinations, setFixedDestinations] = useState<{
-    _id: string;
-    name: string;
-    location: { type: 'Point'; coordinates: [number, number] };
-    isActive?: boolean;
-  }[]>([]);
+  const [fixedDestinations, setFixedDestinations] = useState<FixedDestinationOption[]>([]);
   const [communitySyncTick, setCommunitySyncTick] = useState(0);
   const [onboardDestinations, setOnboardDestinations] = useState<OnboardDestinationPassenger[]>([]);
   const [autoSyncStatus, setAutoSyncStatus] = useState<'idle' | 'syncing' | 'error'>('idle');
   const [lastAutoSyncAt, setLastAutoSyncAt] = useState<Date | null>(null);
   const [lastAutomationDiagnostics, setLastAutomationDiagnostics] = useState<AutomationDiagnostics | null>(null);
+  const [isManualAutomationCooldownActive, setIsManualAutomationCooldownActive] = useState(false);
   const [markerCoordinates, setMarkerCoordinates] = useState<Record<string, LatLng>>({});
   const [mapReady, setMapReady] = useState(false);
   const mapRef = useRef<MapView | null>(null);
   const driverMapRef = useRef<MapView | null>(null);
   const driverConstraintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const passengerConstraintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const markerRefs = useRef<Record<string, any>>({});
+  const markerRefs = useRef<Record<string, MapMarkerRef | null>>({});
   const previousMarkerCoords = useRef<Record<string, LatLng>>({});
   const markerAnimTimers = useRef<Record<string, ReturnType<typeof setTimeout> | null>>({});
   const locationSyncInFlightRef = useRef(false);
   const driverLocationWatchRef = useRef<Location.LocationSubscription | null>(null);
+  const driverFallbackIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const manualAutomationCooldownUntilRef = useRef(0);
+  const manualAutomationCooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastContinuousSyncRef = useRef<{ at: number; coords: LatLng } | null>(null);
   const pollErrorNoticeRef = useRef<{ pickup: number; onboard: number }>({
     pickup: 0,
     onboard: 0,
   });
+  const offlineSyncNoticeRef = useRef(0);
+  const recentPickupCancelEventRef = useRef<{ requestId: string; at: number } | null>(null);
 
-  const getDriverId = (driverId: any): string | null => {
+  const getDriverId = (driverId: Shuttle['driverId']): string | null => {
     if (typeof driverId === 'string') return driverId;
-    if (driverId && typeof driverId === 'object' && driverId._id) return driverId._id;
+    if (driverId && typeof driverId === 'object' && typeof driverId._id === 'string') return driverId._id;
     return null;
   };
 
-  const getShuttleDriverStatus = (driverId: Shuttle['driverId']) => {
+  const getShuttleDriverStatus = useCallback((driverId: Shuttle['driverId']) => {
     if (driverId && typeof driverId === 'object') {
       return driverId.status || 'offline';
     }
     return 'offline';
-  };
+  }, []);
 
   const isDriverOnShift = user?.role === 'driver' && user?.status === 'driving';
   const hasSavedHomeDestination = (user?.homeDestination?.location?.coordinates || []).length === 2;
@@ -349,6 +197,7 @@ export default function HomeScreen() {
     if (user.role !== 'driver') return null;
     return shuttles.find((item) => getDriverId(item.driverId) === user._id) || null;
   }, [shuttles, user]);
+  const assignedShuttleId = assignedShuttle?._id || null;
 
   const activePassengerPickupIntents = useMemo(() => {
     const myId = user?._id;
@@ -407,6 +256,12 @@ export default function HomeScreen() {
   const activePickupDestinationType = activePassengerPickupIntents[0]?.destinationType || selectedDestinationType || 'fixed';
   const activePickupDestinationAccent = activePickupDestinationType === 'home' ? successColor : tint;
 
+  const feedbackVariant = useMemo(() => {
+    if (feedback?.type === 'critical') return 'error' as const;
+    if (feedback?.type === 'service') return 'info' as const;
+    return 'success' as const;
+  }, [feedback?.type]);
+
   const isDestinationReady =
     selectedDestinationType === 'fixed'
       ? Boolean(selectedFixedDestinationId)
@@ -421,6 +276,14 @@ export default function HomeScreen() {
   );
 
   const autoBoardDiagnostic = useMemo<AutomationDiagnostic>(() => {
+    if (!isDriverOnShift) {
+      return {
+        state: 'blocked',
+        label: 'Auto-Boarding Blocked',
+        detail: 'Driver is off shift. Start shift to enable automation.',
+      };
+    }
+
     const serverDiagnostic = lastAutomationDiagnostics?.autoBoarding;
     if (serverDiagnostic) {
       const mappedState = serverDiagnostic.state === 'executed' ? 'ready' : serverDiagnostic.state;
@@ -448,14 +311,6 @@ export default function HomeScreen() {
       };
     }
 
-    if (!isDriverOnShift) {
-      return {
-        state: 'blocked',
-        label: 'Auto-Boarding Blocked',
-        detail: 'Driver is off shift. Start shift to enable automation.',
-      };
-    }
-
     if (assignedShuttle.currentCapacity >= assignedShuttle.maxCapacity) {
       return {
         state: 'blocked',
@@ -480,6 +335,14 @@ export default function HomeScreen() {
   }, [activeCommunityPickupIntents.length, assignedShuttle, isDriverOnShift, lastAutomationDiagnostics]);
 
   const autoUnboardDiagnostic = useMemo<AutomationDiagnostic>(() => {
+    if (!isDriverOnShift) {
+      return {
+        state: 'blocked',
+        label: 'Auto-Unboarding Blocked',
+        detail: 'Driver is off shift. Start shift to enable automation.',
+      };
+    }
+
     const serverDiagnostic = lastAutomationDiagnostics?.autoUnboarding;
     if (serverDiagnostic) {
       const mappedState = serverDiagnostic.state === 'executed' ? 'ready' : serverDiagnostic.state;
@@ -504,14 +367,6 @@ export default function HomeScreen() {
         state: 'blocked',
         label: 'Auto-Unboarding Blocked',
         detail: 'No shuttle is assigned to this driver.',
-      };
-    }
-
-    if (!isDriverOnShift) {
-      return {
-        state: 'blocked',
-        label: 'Auto-Unboarding Blocked',
-        detail: 'Driver is off shift. Start shift to enable automation.',
       };
     }
 
@@ -565,6 +420,36 @@ export default function HomeScreen() {
     return 'Low';
   }, [automationReliabilityScore]);
 
+  const isAutomationSyncStale = useMemo(() => {
+    if (!isDriverOnShift) return false;
+    if (!lastAutoSyncAt) return true;
+    return Date.now() - lastAutoSyncAt.getTime() > DRIVER_AUTO_SYNC_MS * AUTOMATION_STALE_MULTIPLIER;
+  }, [isDriverOnShift, lastAutoSyncAt]);
+
+  const manualBoardFallbackEnabled = useMemo(() => {
+    if (!isDriverOnShift || !assignedShuttle) return false;
+    if (autoSyncStatus === 'error' || isAutomationSyncStale) return true;
+    return autoBoardDiagnostic.state === 'blocked';
+  }, [assignedShuttle, autoBoardDiagnostic.state, autoSyncStatus, isAutomationSyncStale, isDriverOnShift]);
+
+  const manualUnboardFallbackEnabled = useMemo(() => {
+    if (!isDriverOnShift || !assignedShuttle) return false;
+    if (autoSyncStatus === 'error' || isAutomationSyncStale) return true;
+    return autoUnboardDiagnostic.state === 'blocked';
+  }, [assignedShuttle, autoSyncStatus, autoUnboardDiagnostic.state, isAutomationSyncStale, isDriverOnShift]);
+
+  const manualFallbackStatusCopy = useMemo(() => {
+    if (isManualAutomationCooldownActive) {
+      return 'Manual count recorded. Automation is briefly paused to prevent duplicate board/unboard updates.';
+    }
+
+    if (manualBoardFallbackEnabled || manualUnboardFallbackEnabled) {
+      return 'Manual fallback unlocked: automation needs assistance right now.';
+    }
+
+    return 'Manual controls unlock only when automation is blocked, stale, or sync reports an error.';
+  }, [isManualAutomationCooldownActive, manualBoardFallbackEnabled, manualUnboardFallbackEnabled]);
+
   const getDiagnosticColor = useCallback((state: AutomationDiagnostic['state']) => {
     if (state === 'ready') return successColor;
     if (state === 'blocked') return dangerColor;
@@ -585,14 +470,15 @@ export default function HomeScreen() {
   }, [compactMapPins, passengerFleet, shuttles]);
 
   const passengerStats = useMemo(() => {
-    const availableSeats = shuttles.reduce(
+    const activeShuttles = shuttles.filter(
+      (item) => item.driverId && typeof item.driverId === 'object' && item.driverId.status === 'driving'
+    );
+    const availableSeats = activeShuttles.reduce(
       (sum, item) => sum + Math.max(0, item.maxCapacity - item.currentCapacity),
       0
     );
-    const fullCount = shuttles.filter((item) => item.currentCapacity >= item.maxCapacity).length;
-    const activeShiftCount = shuttles.filter(
-      (item) => item.driverId && typeof item.driverId === 'object' && item.driverId.status === 'driving'
-    ).length;
+    const fullCount = activeShuttles.filter((item) => item.currentCapacity >= item.maxCapacity).length;
+    const activeShiftCount = activeShuttles.length;
     const offShiftCount = Math.max(0, shuttles.length - activeShiftCount);
 
     return {
@@ -619,6 +505,26 @@ export default function HomeScreen() {
     setFeedback({ message, type: channel });
   }, [pushAlerts, quietMode, serviceUpdates]);
 
+  const startManualAutomationCooldown = useCallback((durationMs: number = MANUAL_AUTOMATION_COOLDOWN_MS) => {
+    const normalizedDurationMs = Number.isFinite(durationMs)
+      ? Math.max(0, Math.floor(durationMs))
+      : MANUAL_AUTOMATION_COOLDOWN_MS;
+
+    manualAutomationCooldownUntilRef.current = Date.now() + normalizedDurationMs;
+    setIsManualAutomationCooldownActive(true);
+    setAutoSyncStatus('idle');
+
+    if (manualAutomationCooldownTimerRef.current) {
+      clearTimeout(manualAutomationCooldownTimerRef.current);
+    }
+
+    manualAutomationCooldownTimerRef.current = setTimeout(() => {
+      manualAutomationCooldownUntilRef.current = 0;
+      manualAutomationCooldownTimerRef.current = null;
+      setIsManualAutomationCooldownActive(false);
+    }, normalizedDurationMs);
+  }, []);
+
   const loadShuttles = useCallback(async () => {
     try {
       const items = await listShuttles();
@@ -629,6 +535,38 @@ export default function HomeScreen() {
       setPreferenceAwareFeedback(message, 'critical');
     }
   }, [setPreferenceAwareFeedback]);
+
+  const handleDriverMapRegionChange = useCallback((region: Region) => {
+    if (driverConstraintTimer.current) {
+      clearTimeout(driverConstraintTimer.current);
+    }
+
+    driverConstraintTimer.current = setTimeout(() => {
+      if (
+        maxZoomOutRegion &&
+        (region.latitudeDelta > maxZoomOutRegion.latitudeDelta ||
+          region.longitudeDelta > maxZoomOutRegion.longitudeDelta)
+      ) {
+        driverMapRef.current?.animateToRegion(maxZoomOutRegion, 600);
+      }
+    }, 100);
+  }, [maxZoomOutRegion]);
+
+  const handlePassengerMapRegionChange = useCallback((region: Region) => {
+    if (passengerConstraintTimer.current) {
+      clearTimeout(passengerConstraintTimer.current);
+    }
+
+    passengerConstraintTimer.current = setTimeout(() => {
+      if (
+        maxZoomOutRegion &&
+        (region.latitudeDelta > maxZoomOutRegion.latitudeDelta ||
+          region.longitudeDelta > maxZoomOutRegion.longitudeDelta)
+      ) {
+        mapRef.current?.animateToRegion(maxZoomOutRegion, 600);
+      }
+    }, 100);
+  }, [maxZoomOutRegion]);
 
   useEffect(() => {
     if (!activeCommunityId) return;
@@ -671,11 +609,15 @@ export default function HomeScreen() {
     };
 
     const onPickupClaimed = (payload: PickupClaimedEventPayload) => {
-      if (!payload.passengerId || payload.passengerId !== user?._id) return;
-      setPickupIntents((items) =>
-        items.filter((item) => item._id !== payload.requestId)
-      );
-      setPreferenceAwareFeedback('Pickup successful. You have boarded.', 'ride');
+      if (payload.requestId) {
+        setPickupIntents((items) =>
+          items.filter((item) => item._id !== payload.requestId)
+        );
+      }
+
+      if (payload.passengerId && payload.passengerId === user?._id) {
+        setPreferenceAwareFeedback('Pickup successful. You have boarded.', 'ride');
+      }
     };
 
     const onPassengerAutoUnboarded = (payload: PassengerAutoUnboardedPayload) => {
@@ -686,10 +628,51 @@ export default function HomeScreen() {
       }
     };
 
+    const onPickupIntentCancelled = (payload: PickupCancelledEventPayload) => {
+      if (!payload.requestId) return;
+
+      const requestId = String(payload.requestId);
+      const now = Date.now();
+      const recent = recentPickupCancelEventRef.current;
+      if (recent && recent.requestId === requestId && now - recent.at < 1200) {
+        return;
+      }
+      recentPickupCancelEventRef.current = { requestId, at: now };
+
+      setPickupIntents((items) => items.filter((item) => item._id !== requestId));
+
+      if (payload.passengerId && payload.passengerId === user?._id) {
+        setPreferenceAwareFeedback('Pickup request cancelled.', 'ride');
+        return;
+      }
+
+      if (user?.role === 'driver') {
+        setPreferenceAwareFeedback('A pickup request was cancelled by a passenger.', 'service');
+      }
+    };
+
+    const onSocketError = (payload: SocketErrorEventPayload | string) => {
+      const message =
+        typeof payload === 'string'
+          ? payload
+          : payload?.error || payload?.message;
+
+      if (!message) return;
+      setPreferenceAwareFeedback(`Realtime issue: ${message}`, 'critical');
+    };
+
     const onCommunitySettingsUpdated = (payload?: { communityId?: string; source?: string }) => {
       if (payload?.communityId && payload.communityId !== activeCommunityId) return;
       setCommunitySyncTick((current) => current + 1);
       setPreferenceAwareFeedback('Community map settings updated. Syncing latest geofence...', 'service');
+    };
+
+    const onAnnouncementNew = (payload: any) => {
+      const title = typeof payload?.title === 'string' ? payload.title.trim() : '';
+      const level = typeof payload?.level === 'string' ? payload.level : 'info';
+      if (!title) return;
+      const channel = level === 'critical' ? 'critical' : 'service';
+      setPreferenceAwareFeedback(`Announcement: ${title}`, channel);
     };
 
     socket.on('shuttle:location-updated', onLocationUpdated);
@@ -697,7 +680,11 @@ export default function HomeScreen() {
     socket.on('trip:pickup-intent', onPickupIntent);
     socket.on('trip:pickup-claimed', onPickupClaimed);
     socket.on('trip:passenger-auto-unboarded', onPassengerAutoUnboarded);
+    socket.on('pickup-intent:cancelled', onPickupIntentCancelled);
+    socket.on('trip:pickup-intent-cancelled', onPickupIntentCancelled);
+    socket.on('socket:error', onSocketError);
     socket.on('community:settings-updated', onCommunitySettingsUpdated);
+    socket.on('announcement:new', onAnnouncementNew);
 
     return () => {
       socket.off('shuttle:location-updated', onLocationUpdated);
@@ -705,7 +692,11 @@ export default function HomeScreen() {
       socket.off('trip:pickup-intent', onPickupIntent);
       socket.off('trip:pickup-claimed', onPickupClaimed);
       socket.off('trip:passenger-auto-unboarded', onPassengerAutoUnboarded);
+      socket.off('pickup-intent:cancelled', onPickupIntentCancelled);
+      socket.off('trip:pickup-intent-cancelled', onPickupIntentCancelled);
+      socket.off('socket:error', onSocketError);
       socket.off('community:settings-updated', onCommunitySettingsUpdated);
+      socket.off('announcement:new', onAnnouncementNew);
     };
   }, [activeCommunityId, loadShuttles, setPreferenceAwareFeedback, token, user?._id, user?.role]);
 
@@ -897,7 +888,7 @@ export default function HomeScreen() {
       }
 
       if (Platform.OS === 'android') {
-        markerRefs.current[shuttle._id]?.animateMarkerToCoordinate(coordinate, 800);
+          markerRefs.current[shuttle._id]?.animateMarkerToCoordinate?.(coordinate, 800);
       } else if (
         previous.latitude !== coordinate.latitude ||
         previous.longitude !== coordinate.longitude
@@ -974,6 +965,10 @@ export default function HomeScreen() {
     return () => {
       if (driverConstraintTimer.current) clearTimeout(driverConstraintTimer.current);
       if (passengerConstraintTimer.current) clearTimeout(passengerConstraintTimer.current);
+      if (manualAutomationCooldownTimerRef.current) {
+        clearTimeout(manualAutomationCooldownTimerRef.current);
+        manualAutomationCooldownTimerRef.current = null;
+      }
     };
   }, []);
 
@@ -1010,13 +1005,50 @@ export default function HomeScreen() {
     try {
       setUnboardingSubmitting(true);
       await unboardPassenger(assignedShuttle._id, 1);
+      startManualAutomationCooldown();
       await loadShuttles();
-      setPreferenceAwareFeedback('Passenger drop-off recorded.', 'ride');
+      setPreferenceAwareFeedback(
+        'Passenger drop-off recorded. Automation paused briefly to avoid duplicate unboarding.',
+        'ride'
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to record drop-off.';
       setPreferenceAwareFeedback(message, 'critical');
     } finally {
       setUnboardingSubmitting(false);
+    }
+  };
+
+  const handleManualBoardPassenger = async () => {
+    if (!assignedShuttle) {
+      setPreferenceAwareFeedback('No shuttle assigned to this driver account.', 'critical');
+      return;
+    }
+
+    if (!isDriverOnShift) {
+      setPreferenceAwareFeedback('Start your shift first before boarding passengers.', 'critical');
+      return;
+    }
+
+    if (assignedShuttle.currentCapacity >= assignedShuttle.maxCapacity) {
+      setPreferenceAwareFeedback('Shuttle is already full.', 'critical');
+      return;
+    }
+
+    try {
+      setBoardingSubmitting(true);
+      await boardPassenger(assignedShuttle._id, 1);
+      startManualAutomationCooldown();
+      await loadShuttles();
+      setPreferenceAwareFeedback(
+        'Passenger boarding recorded. Automation paused briefly to avoid duplicate boarding.',
+        'ride'
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to record boarding.';
+      setPreferenceAwareFeedback(message, 'critical');
+    } finally {
+      setBoardingSubmitting(false);
     }
   };
 
@@ -1026,13 +1058,33 @@ export default function HomeScreen() {
     skipPermissionRequest?: boolean;
   }) => {
     const silent = options?.silent === true;
-    if (!assignedShuttle || locationSyncInFlightRef.current) {
+    if (!assignedShuttleId || locationSyncInFlightRef.current) {
+      if (silent && !locationSyncInFlightRef.current) {
+        setAutoSyncStatus('idle');
+      }
       return;
     }
 
     if (user?.role === 'driver' && user?.status !== 'driving') {
+      if (silent) {
+        setAutoSyncStatus('idle');
+      }
       if (!silent) {
         setPreferenceAwareFeedback('Start your shift first before syncing location.', 'critical');
+      }
+      return;
+    }
+
+    const manualCooldownRemainingMs = Math.max(0, manualAutomationCooldownUntilRef.current - Date.now());
+    if (manualCooldownRemainingMs > 0) {
+      if (silent) {
+        setAutoSyncStatus('idle');
+      } else {
+        const secondsRemaining = Math.ceil(manualCooldownRemainingMs / 1000);
+        setPreferenceAwareFeedback(
+          `Auto-processing is paused for ${secondsRemaining}s after manual boarding/unboarding to prevent duplicate counts.`,
+          'service'
+        );
       }
       return;
     }
@@ -1041,6 +1093,8 @@ export default function HomeScreen() {
     if (silent) {
       setAutoSyncStatus('syncing');
     }
+    let silentSyncFailed = false;
+
     try {
       let latitude = options?.coords?.latitude;
       let longitude = options?.coords?.longitude;
@@ -1072,11 +1126,19 @@ export default function HomeScreen() {
       const normalizedLongitude = Number(longitude);
 
       const locationSync = await updateShuttleLocation(
-        assignedShuttle._id,
+        assignedShuttleId,
         normalizedLatitude,
         normalizedLongitude
       );
       setLastAutomationDiagnostics(locationSync.automationDiagnostics || null);
+
+      const backendManualCooldownSeconds = Math.max(
+        0,
+        Number(locationSync.manualAutomationCooldownSeconds || 0)
+      );
+      if (backendManualCooldownSeconds > 0) {
+        startManualAutomationCooldown(backendManualCooldownSeconds * 1000);
+      }
 
       if (locationSync.shuttle?._id) {
         setShuttles((current) =>
@@ -1094,9 +1156,6 @@ export default function HomeScreen() {
       const autoBoardedCount = locationSync.autoBoardedCount || 0;
       const autoUnboardedCount = locationSync.autoUnboardedCount || 0;
       setLastAutoSyncAt(new Date());
-      if (silent) {
-        setAutoSyncStatus('idle');
-      }
       if (autoBoardedCount > 0) {
         setPreferenceAwareFeedback(
           `GPS synced. Auto-boarded ${autoBoardedCount} pickup request${autoBoardedCount > 1 ? 's' : ''}.`,
@@ -1107,21 +1166,33 @@ export default function HomeScreen() {
           `GPS synced. Auto-unboarded ${autoUnboardedCount} passenger${autoUnboardedCount > 1 ? 's' : ''}.`,
           'ride'
         );
+      } else if (!silent && backendManualCooldownSeconds > 0) {
+        setPreferenceAwareFeedback(
+          `GPS synced. Automation remains paused for ${backendManualCooldownSeconds}s to prevent duplicate counts.`,
+          'service'
+        );
       } else if (!silent) {
         setPreferenceAwareFeedback('GPS synced successfully.', 'service');
       }
     } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      const isWriteConflict = /conflicted with another write/i.test(message);
       if (silent) {
-        setAutoSyncStatus('error');
+        silentSyncFailed = !isWriteConflict;
+        if (!isWriteConflict) {
+          setAutoSyncStatus('error');
+        }
       }
       if (!silent) {
-        const message = error instanceof Error ? error.message : 'Failed to sync location.';
-        setPreferenceAwareFeedback(message, 'critical');
+        setPreferenceAwareFeedback(message || 'Failed to sync location.', 'critical');
       }
     } finally {
+      if (silent && !silentSyncFailed) {
+        setAutoSyncStatus('idle');
+      }
       locationSyncInFlightRef.current = false;
     }
-  }, [assignedShuttle, setPreferenceAwareFeedback, user?.role, user?.status]);
+  }, [assignedShuttleId, setPreferenceAwareFeedback, startManualAutomationCooldown, user?.role, user?.status]);
 
   const handleSyncLocation = async () => {
     if (!assignedShuttle) {
@@ -1132,22 +1203,59 @@ export default function HomeScreen() {
   };
 
   useEffect(() => {
-    if (user?.role !== 'driver' || !assignedShuttle || user?.status !== 'driving') return;
+    if (user?.role !== 'driver') return;
+    if (user?.status === 'driving') return;
+
+    if (driverFallbackIntervalRef.current) {
+      clearInterval(driverFallbackIntervalRef.current);
+      driverFallbackIntervalRef.current = null;
+    }
+    if (driverLocationWatchRef.current) {
+      driverLocationWatchRef.current.remove();
+      driverLocationWatchRef.current = null;
+    }
+
+    setAutoSyncStatus('idle');
+    setLastAutoSyncAt(null);
+    setLastAutomationDiagnostics(null);
+    locationSyncInFlightRef.current = false;
+    lastContinuousSyncRef.current = null;
+    manualAutomationCooldownUntilRef.current = 0;
+    setIsManualAutomationCooldownActive(false);
+    if (manualAutomationCooldownTimerRef.current) {
+      clearTimeout(manualAutomationCooldownTimerRef.current);
+      manualAutomationCooldownTimerRef.current = null;
+    }
+  }, [user?.role, user?.status]);
+
+  useEffect(() => {
+    if (user?.role !== 'driver' || !assignedShuttleId || user?.status !== 'driving') return;
 
     // Continuous watcher for near-real-time movement updates + periodic fallback.
     let active = true;
-    let fallbackTimer: ReturnType<typeof setInterval> | null = null;
 
     const bootDriverTracking = async () => {
+      if (driverFallbackIntervalRef.current) {
+        clearInterval(driverFallbackIntervalRef.current);
+        driverFallbackIntervalRef.current = null;
+      }
+      if (driverLocationWatchRef.current) {
+        driverLocationWatchRef.current.remove();
+        driverLocationWatchRef.current = null;
+      }
+
       const permission = await Location.requestForegroundPermissionsAsync();
+      if (!active) return;
+
       if (permission.status !== 'granted') {
         setPreferenceAwareFeedback('Location permission is required for live driver tracking.', 'critical');
         return;
       }
 
       await syncDriverLocation({ silent: true, skipPermissionRequest: true });
+      if (!active) return;
 
-      fallbackTimer = setInterval(() => {
+      driverFallbackIntervalRef.current = setInterval(() => {
         void syncDriverLocation({ silent: true, skipPermissionRequest: true });
       }, DRIVER_AUTO_SYNC_MS);
 
@@ -1198,8 +1306,9 @@ export default function HomeScreen() {
 
     return () => {
       active = false;
-      if (fallbackTimer) {
-        clearInterval(fallbackTimer);
+      if (driverFallbackIntervalRef.current) {
+        clearInterval(driverFallbackIntervalRef.current);
+        driverFallbackIntervalRef.current = null;
       }
       if (driverLocationWatchRef.current) {
         driverLocationWatchRef.current.remove();
@@ -1207,7 +1316,67 @@ export default function HomeScreen() {
       }
       lastContinuousSyncRef.current = null;
     };
-  }, [assignedShuttle, setPreferenceAwareFeedback, syncDriverLocation, user?.role, user?.status]);
+  }, [assignedShuttleId, setPreferenceAwareFeedback, syncDriverLocation, user?.role, user?.status]);
+
+  useEffect(() => {
+    if (user?.role !== 'driver' || user?.status !== 'driving' || !assignedShuttle?._id) return;
+
+    let mounted = true;
+
+    const replayOfflineBoardings = async (periodic = false) => {
+      try {
+        const result = await syncOfflineBoardings(async (queuedShuttleId, boardedCount) => {
+          if (queuedShuttleId !== assignedShuttle._id) {
+            throw new Error('Queued boarding belongs to a different shuttle assignment.');
+          }
+
+          await boardPassenger(queuedShuttleId, boardedCount);
+        });
+
+        if (!mounted) return;
+
+        if (result.synced > 0) {
+          setPreferenceAwareFeedback(
+            `Recovered ${result.synced} offline boarding update${result.synced > 1 ? 's' : ''}.`,
+            periodic ? 'service' : 'ride'
+          );
+        }
+
+        if (result.failed > 0) {
+          const now = Date.now();
+          if (now - offlineSyncNoticeRef.current >= POLL_ERROR_NOTICE_COOLDOWN_MS) {
+            offlineSyncNoticeRef.current = now;
+            setPreferenceAwareFeedback(
+              `Offline queue still has ${result.failed} unsynced boarding update${result.failed > 1 ? 's' : ''}.`,
+              'service'
+            );
+          }
+        }
+      } catch (error) {
+        const now = Date.now();
+        if (now - offlineSyncNoticeRef.current < POLL_ERROR_NOTICE_COOLDOWN_MS) {
+          return;
+        }
+
+        offlineSyncNoticeRef.current = now;
+        const message =
+          error instanceof Error && error.message
+            ? `Offline queue sync failed: ${error.message}`
+            : 'Offline queue sync failed. Retrying automatically.';
+        setPreferenceAwareFeedback(message, 'service');
+      }
+    };
+
+    void replayOfflineBoardings(false);
+    const timer = setInterval(() => {
+      void replayOfflineBoardings(true);
+    }, DRIVER_AUTO_SYNC_MS);
+
+    return () => {
+      mounted = false;
+      clearInterval(timer);
+    };
+  }, [assignedShuttle?._id, setPreferenceAwareFeedback, user?.role, user?.status]);
 
   const handleRequestPickup = async () => {
     if (pickupDisabled) {
@@ -1278,29 +1447,102 @@ export default function HomeScreen() {
     }
   };
 
+  const handleCancelPickup = async () => {
+    const activeIntent = activePassengerPickupIntents[0];
+    if (!activeIntent || pickupCancelling) {
+      return;
+    }
+
+    try {
+      setPickupCancelling(true);
+      await cancelPickupIntent(activeIntent._id);
+      recentPickupCancelEventRef.current = { requestId: activeIntent._id, at: Date.now() };
+      setPickupIntents((items) => items.filter((item) => item._id !== activeIntent._id));
+      setPreferenceAwareFeedback('Pickup request cancelled.', 'ride');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to cancel pickup request.';
+      setPreferenceAwareFeedback(message, 'critical');
+    } finally {
+      setPickupCancelling(false);
+    }
+  };
+
   const onDriverUnboard = async () => {
+    if (!manualUnboardFallbackEnabled) {
+      setPreferenceAwareFeedback('Manual unboarding is locked while auto-unboarding is healthy.', 'service');
+      return;
+    }
+
     if (hapticsEnabled) {
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
     }
     await handleUnboardPassenger();
   };
 
+  const onDriverBoard = async () => {
+    if (!manualBoardFallbackEnabled) {
+      setPreferenceAwareFeedback('Manual boarding is locked while auto-boarding is healthy.', 'service');
+      return;
+    }
+
+    if (hapticsEnabled) {
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    }
+    await handleManualBoardPassenger();
+  };
+
+  const handleSelectFixedDestinationType = useCallback(() => {
+    setSelectedDestinationType('fixed');
+  }, []);
+
+  const handleSelectHomeDestinationType = useCallback(() => {
+    setSelectedDestinationType('home');
+  }, []);
+
+  const handleSelectFixedDestination = useCallback((destinationId: string) => {
+    setSelectedFixedDestinationId(destinationId);
+  }, []);
+
 
 
   return (
     <SafeAreaView style={[styles.root, { backgroundColor: bgColor }]} edges={['top', 'left', 'right']}>
-      <PremiumCard style={styles.topBar}>
+      <View style={[styles.topBar, { borderColor, backgroundColor: surfaceColor }]}>
         <SectionHeader
-          title="GoShuttle"
-          subtitle={`${user?.firstName} ${user?.lastName} · ${user?.role}`}
-          titleColor={palette.white}
-          subtitleColor="#cbd5e1"
+          title={`Welcome, ${user?.firstName || 'Member'}`}
+          subtitle={`${user?.role === 'driver' ? 'Driver Console' : 'Ride Dashboard'} · ${user?.lastName || 'GoShuttle'}`}
+          titleColor={textColor}
+          subtitleColor={mutedColor}
+          rightAction={
+            <Pressable
+              onPress={loadShuttles}
+              style={[styles.avatarBadge, { backgroundColor: tint }]}
+              accessibilityRole="button"
+              accessibilityLabel="Refresh fleet and map data"
+            >
+              <Ionicons name="refresh" size={18} color={palette.white} />
+            </Pressable>
+          }
         />
-      </PremiumCard>
+      </View>
+
+      <View style={[styles.locationPill, { backgroundColor: surfaceColor, borderColor }]}> 
+        <Ionicons name="location-outline" size={14} color={tint} />
+        <ThemedText style={[styles.locationPillText, { color: textColor }]}>
+          {activeCommunityId ? 'Community route active' : 'Locating community route'}
+        </ThemedText>
+      </View>
+
+      <StatusBanner
+        visible={Boolean(feedback)}
+        message={feedback?.message || ''}
+        variant={feedbackVariant}
+        onDismiss={() => setFeedback(null)}
+      />
 
       {user?.role === 'driver' ? (
         <View style={styles.driverLayout}>
-          <View style={styles.mapWrap}>
+          <View style={[styles.mapWrap, styles.driverMapWrap]}>
             {driverRegion ? (
               <MapView
                 ref={driverMapRef}
@@ -1311,19 +1553,7 @@ export default function HomeScreen() {
                 rotateEnabled={false}
                 pitchEnabled={false}
                 toolbarEnabled={false}
-                onRegionChange={(region) => {
-                  // Debounce the constraint check for smooth animation
-                  if (driverConstraintTimer.current) {
-                    clearTimeout(driverConstraintTimer.current);
-                  }
-                  driverConstraintTimer.current = setTimeout(() => {
-                    if (maxZoomOutRegion && (region.latitudeDelta > maxZoomOutRegion.latitudeDelta || region.longitudeDelta > maxZoomOutRegion.longitudeDelta)) {
-                      if (driverMapRef.current) {
-                        driverMapRef.current.animateToRegion(maxZoomOutRegion, 600);
-                      }
-                    }
-                  }, 100);
-                }}
+                onRegionChange={handleDriverMapRegionChange}
               >
                 {communityBoundary.length >= 3 ? (
                   <Polygon
@@ -1340,6 +1570,8 @@ export default function HomeScreen() {
                     title={assignedShuttle.plateNumber}
                     description={`${assignedShuttle.currentCapacity}/${assignedShuttle.maxCapacity} seated`}
                     anchor={{ x: 0.5, y: 0.5 }}
+                    accessible
+                    accessibilityLabel={`Assigned shuttle ${assignedShuttle.plateNumber}, ${assignedShuttle.currentCapacity} of ${assignedShuttle.maxCapacity} seats occupied`}
                   >
                     <MapIndicator iconName="bus" />
                   </Marker>
@@ -1368,6 +1600,8 @@ export default function HomeScreen() {
                         title="Pickup Request"
                         description="Passenger waiting"
                         anchor={{ x: 0.5, y: 0.5 }}
+                        accessible
+                        accessibilityLabel="Pending pickup request marker"
                       >
                         <MapIndicator iconName="person" />
                       </Marker>,
@@ -1383,16 +1617,17 @@ export default function HomeScreen() {
                       title={item.destinationLabel}
                       description={`${item.passengerName} destination`}
                       pinColor={palette.emerald}
+                      accessible
+                      accessibilityLabel={`Destination marker for ${item.passengerName} to ${item.destinationLabel}`}
                     />
                   );
                 })}
               </MapView>
             ) : (
-              <View style={styles.mapPlaceholder}>
-                <ActivityIndicator color={palette.white} size="small" />
-                <ThemedText style={styles.mapPlaceholderText}>Loading Fleet Map</ThemedText>
-                <ThemedText style={styles.mapPlaceholderHint}>Fetching geofence boundary</ThemedText>
-              </View>
+              <MapLoadingPlaceholder
+                title="Loading Fleet Map"
+                hint="Fetching geofence boundary"
+              />
             )}
 
             <View style={styles.mapLockBadge}>
@@ -1401,16 +1636,16 @@ export default function HomeScreen() {
             </View>
           </View>
 
-          <ScrollView contentContainerStyle={styles.driverInfoScroll} showsVerticalScrollIndicator={false}>
-            <PremiumCard style={[styles.driverInfoCard, { backgroundColor: surfaceColor, borderColor }]}>
+          <ScrollView
+            contentContainerStyle={styles.driverInfoScroll}
+            bounces={false}
+            showsVerticalScrollIndicator={false}
+            showsHorizontalScrollIndicator={false}
+          >
+            <View style={[styles.driverInfoCard, { backgroundColor: surfaceColor, borderColor }]}>
               <SectionHeader
                 title="Driver Operations"
                 subtitle={assignedShuttle ? `Assigned: ${assignedShuttle.plateNumber} · Auto Mode` : 'No assigned shuttle'}
-                rightAction={
-                  <PremiumButton style={styles.iconButton} onPress={loadShuttles} variant="secondary">
-                    <Ionicons name="refresh" size={18} color={tint} />
-                  </PremiumButton>
-                }
               />
 
               {assignedShuttle ? (
@@ -1456,13 +1691,15 @@ export default function HomeScreen() {
                     <View style={styles.rowBetween}>
                       <ThemedText style={[styles.metaText, { color: mutedColor }]}>Auto Sync</ThemedText>
                       <ThemedText style={[styles.valueSmallText, { color: textColor }]}>
-                        {autoSyncStatus === 'syncing'
-                          ? 'Syncing...'
-                          : autoSyncStatus === 'error'
-                            ? 'Retrying'
-                            : lastAutoSyncAt
-                              ? `Last ${lastAutoSyncAt.toLocaleTimeString()}`
-                              : 'Waiting'}
+                        {!isDriverOnShift
+                          ? 'Paused (Off Shift)'
+                          : autoSyncStatus === 'syncing'
+                            ? 'Syncing...'
+                            : autoSyncStatus === 'error'
+                              ? 'Retrying'
+                              : lastAutoSyncAt
+                                ? `Last ${lastAutoSyncAt.toLocaleTimeString()}`
+                                : 'Waiting'}
                       </ThemedText>
                     </View>
                   </View>
@@ -1501,7 +1738,11 @@ export default function HomeScreen() {
                   </View>
 
                   <View style={styles.quickActionRow}>
-                    <PremiumButton style={styles.quickActionBtn} onPress={handleSyncLocation} variant="secondary">
+                    <PremiumButton
+                      style={styles.quickActionBtn}
+                      onPress={handleSyncLocation}
+                      variant="secondary"
+                      disabled={!isDriverOnShift}>
                       <Ionicons name="locate-outline" size={16} color={tint} />
                       <ThemedText style={[styles.quickActionTxt, { color: tint }]}>Sync Now</ThemedText>
                     </PremiumButton>
@@ -1524,44 +1765,68 @@ export default function HomeScreen() {
                 </ThemedText>
               )}
 
-              {feedback ? (
-                <ThemedText
-                  style={[
-                    styles.feedback,
-                    {
-                      color:
-                        feedback.type === 'critical'
-                          ? dangerColor
-                          : successColor,
-                    },
-                  ]}
-                >
-                  {feedback.message}
-                </ThemedText>
-              ) : null}
-            </PremiumCard>
+            </View>
           </ScrollView>
 
           {assignedShuttle && (
-            <View style={styles.driverButtonRow}>
-              <Pressable
+            <>
+              <View style={styles.driverButtonRow}>
+                <Pressable
+                  style={[
+                    styles.driverActionButton,
+                    styles.driverBoardButton,
+                    { backgroundColor: tint, borderColor: tint },
+                    (boardingSubmitting || assignedShuttle.currentCapacity >= assignedShuttle.maxCapacity || !isDriverOnShift || !manualBoardFallbackEnabled) && styles.driverActionButtonDisabled,
+                  ]}
+                  onPress={onDriverBoard}
+                  disabled={boardingSubmitting || assignedShuttle.currentCapacity >= assignedShuttle.maxCapacity || !isDriverOnShift || !manualBoardFallbackEnabled}
+                  accessibilityRole="button"
+                  accessibilityLabel="Board one passenger"
+                >
+                  <Ionicons name={boardingSubmitting ? 'time-outline' : 'add-circle-outline'} size={18} color={palette.white} />
+                  <ThemedText style={[styles.driverActionButtonText, styles.driverActionButtonTextOnColor]}>
+                    {boardingSubmitting ? 'Recording...' : 'Board Passenger +1'}
+                  </ThemedText>
+                </Pressable>
+
+                <Pressable
+                  style={[
+                    styles.driverActionButton,
+                    styles.driverUnboardButton,
+                    { backgroundColor: surfaceColor, borderColor: dangerColor },
+                    (unboardingSubmitting || assignedShuttle.currentCapacity === 0 || !isDriverOnShift || !manualUnboardFallbackEnabled) && styles.driverActionButtonDisabled,
+                  ]}
+                  onPress={onDriverUnboard}
+                  disabled={unboardingSubmitting || assignedShuttle.currentCapacity === 0 || !isDriverOnShift || !manualUnboardFallbackEnabled}
+                  accessibilityRole="button"
+                  accessibilityLabel="Unboard one passenger"
+                >
+                  <Ionicons name={unboardingSubmitting ? 'time-outline' : 'remove-circle-outline'} size={18} color={dangerColor} />
+                  <ThemedText style={[styles.driverActionButtonText, { color: dangerColor }]}> 
+                    {unboardingSubmitting ? 'Recording...' : 'Unboard Passenger'}
+                  </ThemedText>
+                </Pressable>
+              </View>
+
+              <ThemedText
                 style={[
-                  styles.driverActionButton,
-                  { backgroundColor: palette.rose },
-                  (unboardingSubmitting || assignedShuttle.currentCapacity === 0 || !isDriverOnShift) && styles.driverActionButtonDisabled,
-                ]}
-                onPress={onDriverUnboard}
-                disabled={unboardingSubmitting || assignedShuttle.currentCapacity === 0 || !isDriverOnShift}
-              >
-                <Ionicons name={unboardingSubmitting ? 'time-outline' : 'remove-circle'} size={32} color={palette.white} />
-                <ThemedText style={styles.driverActionButtonText}>{unboardingSubmitting ? '...' : '-1'}</ThemedText>
-              </Pressable>
-            </View>
+                  styles.manualFallbackHint,
+                  {
+                    color: isManualAutomationCooldownActive
+                      ? tint
+                      : manualBoardFallbackEnabled || manualUnboardFallbackEnabled
+                        ? successColor
+                        : mutedColor,
+                  },
+                ]}>
+                {manualFallbackStatusCopy}
+              </ThemedText>
+            </>
           )}
         </View>
       ) : (
         <View style={styles.passengerLayout}>
-          <View style={styles.mapWrap}>
+          <View style={[styles.mapWrap, styles.passengerMapWrap]}>
             {passengerRegion ? (
               <MapView
                 ref={mapRef}
@@ -1573,19 +1838,7 @@ export default function HomeScreen() {
                 rotateEnabled={false}
                 pitchEnabled={false}
                 toolbarEnabled={false}
-                onRegionChange={(region) => {
-                  // Debounce the constraint check for smooth animation
-                  if (passengerConstraintTimer.current) {
-                    clearTimeout(passengerConstraintTimer.current);
-                  }
-                  passengerConstraintTimer.current = setTimeout(() => {
-                    if (maxZoomOutRegion && (region.latitudeDelta > maxZoomOutRegion.latitudeDelta || region.longitudeDelta > maxZoomOutRegion.longitudeDelta)) {
-                      if (mapRef.current) {
-                        mapRef.current.animateToRegion(maxZoomOutRegion, 600);
-                      }
-                    }
-                  }, 100);
-                }}
+                onRegionChange={handlePassengerMapRegionChange}
               >
                 {communityBoundary.length >= 3 ? (
                   <Polygon
@@ -1611,6 +1864,8 @@ export default function HomeScreen() {
                       title={item.plateNumber}
                       description={`${item.currentCapacity}/${item.maxCapacity} seated`}
                       anchor={{ x: 0.5, y: 0.5 }}
+                      accessible
+                      accessibilityLabel={`Shuttle ${item.label || item.plateNumber}, ${item.currentCapacity} of ${item.maxCapacity} seats occupied`}
                     >
                       <MapIndicator iconName="bus" />
                       <Callout tooltip>
@@ -1625,7 +1880,7 @@ export default function HomeScreen() {
                           <ThemedText
                             type="caption"
                             style={{
-                              color: item.currentCapacity >= item.maxCapacity ? '#ef4444' : '#10b981',
+                              color: item.currentCapacity >= item.maxCapacity ? SemanticColors.error : SemanticColors.success,
                               fontSize: 12,
                               marginTop: 4,
                             }}
@@ -1661,6 +1916,8 @@ export default function HomeScreen() {
                         title="Pickup Request"
                         description="Passenger waiting"
                         anchor={{ x: 0.5, y: 0.5 }}
+                        accessible
+                        accessibilityLabel="Your pickup request marker"
                       >
                         <MapIndicator iconName="person" />
                       </Marker>,
@@ -1668,11 +1925,10 @@ export default function HomeScreen() {
                   })}
               </MapView>
             ) : (
-              <View style={styles.mapPlaceholder}>
-                <ActivityIndicator color={palette.white} size="small" />
-                <ThemedText style={styles.mapPlaceholderText}>Loading Community Map</ThemedText>
-                <ThemedText style={styles.mapPlaceholderHint}>Fetching geofence boundary</ThemedText>
-              </View>
+              <MapLoadingPlaceholder
+                title="Loading Community Map"
+                hint="Fetching geofence boundary"
+              />
             )}
 
             <View style={styles.mapLockBadge}>
@@ -1681,16 +1937,18 @@ export default function HomeScreen() {
             </View>
           </View>
 
-          <ScrollView contentContainerStyle={styles.sheet}>
-            <PremiumCard style={styles.passengerHubCard}>
+          <ScrollView
+            style={styles.sheetWrap}
+            contentContainerStyle={styles.sheet}
+            bounces={false}
+            showsVerticalScrollIndicator={false}
+            showsHorizontalScrollIndicator={false}
+          >
+            <View style={[styles.sheetHandle, { backgroundColor: borderColor }]} />
+            <View style={[styles.passengerHubCard, { borderColor, backgroundColor: surfaceColor }]}>
               <SectionHeader
                 title="Ride Center"
                 subtitle="Live fleet and pickup status"
-                rightAction={
-                  <PremiumButton style={styles.iconButton} onPress={loadShuttles} variant="secondary">
-                    <Ionicons name="refresh" size={18} color={tint} />
-                  </PremiumButton>
-                }
               />
 
               <View style={[styles.fleetStatCard, { 
@@ -1724,34 +1982,115 @@ export default function HomeScreen() {
                 </View>
               </View>
 
-              <View style={styles.passengerStatsRow}>
+              <View style={styles.destinationTypeRow}>
                 <Pressable
-                  style={[
-                    styles.passengerStatPill,
-                    { borderColor, backgroundColor: bgColor },
-                    selectedDestinationType === 'fixed' && {
-                      borderColor: tint,
-                      backgroundColor: colorScheme === 'dark' ? AppPalette.darkSkyBg : AppPalette.sky,
-                    },
+                  accessibilityRole="button"
+                  accessibilityLabel="Choose fixed destination"
+                  accessibilityHint="Use destination points configured by your admin"
+                  accessibilityState={{ selected: selectedDestinationType === 'fixed' }}
+                  style={({ pressed }) => [
+                    styles.destinationTypeCard,
+                    selectedDestinationType === 'fixed'
+                      ? [styles.destinationTypeCardActive, { borderColor: tint, backgroundColor: tint }]
+                      : [
+                          styles.destinationTypeCardInactive,
+                          {
+                            borderColor: tint,
+                            backgroundColor: colorScheme === 'dark' ? AppPalette.darkSkyBg : AppPalette.sky,
+                          },
+                        ],
+                    pressed && styles.destinationTypeCardPressed,
                   ]}
-                  onPress={() => setSelectedDestinationType('fixed')}
+                  onPress={handleSelectFixedDestinationType}
                 >
-                  <Ionicons name="flag-outline" size={14} color={selectedDestinationType === 'fixed' ? tint : mutedColor} />
-                  <ThemedText style={[styles.passengerStatText, { color: textColor }]}>Fixed</ThemedText>
+                  <View style={styles.destinationTypeCardLead}>
+                    <View
+                      style={[
+                        styles.destinationTypeIconBubble,
+                        {
+                          backgroundColor:
+                            selectedDestinationType === 'fixed'
+                              ? 'rgba(255,255,255,0.22)'
+                              : colorScheme === 'dark'
+                                ? AppPalette.darkOverlaySoft
+                                : palette.white,
+                        },
+                      ]}>
+                      <Ionicons
+                        name="flag-outline"
+                        size={16}
+                        color={selectedDestinationType === 'fixed' ? palette.white : tint}
+                      />
+                    </View>
+                    <ThemedText
+                      numberOfLines={1}
+                      style={[
+                        styles.destinationTypeLabel,
+                        { color: selectedDestinationType === 'fixed' ? palette.white : tint },
+                      ]}>
+                      Fixed
+                    </ThemedText>
+                  </View>
+                  <Ionicons
+                    name={selectedDestinationType === 'fixed' ? 'checkmark-circle' : 'chevron-forward'}
+                    size={16}
+                    color={selectedDestinationType === 'fixed' ? palette.white : tint}
+                  />
                 </Pressable>
+
                 <Pressable
-                  style={[
-                    styles.passengerStatPill,
-                    { borderColor, backgroundColor: bgColor },
-                    selectedDestinationType === 'home' && {
-                      borderColor: successColor,
-                      backgroundColor: colorScheme === 'dark' ? AppPalette.darkMintBg : AppPalette.mint,
-                    },
+                  accessibilityRole="button"
+                  accessibilityLabel="Choose home destination"
+                  accessibilityHint="Request pickup to your saved home destination"
+                  accessibilityState={{ selected: selectedDestinationType === 'home' }}
+                  style={({ pressed }) => [
+                    styles.destinationTypeCard,
+                    selectedDestinationType === 'home'
+                      ? [styles.destinationTypeCardActive, { borderColor: successColor, backgroundColor: successColor }]
+                      : [
+                          styles.destinationTypeCardInactive,
+                          {
+                            borderColor: successColor,
+                            backgroundColor: colorScheme === 'dark' ? AppPalette.darkMintBg : AppPalette.mint,
+                          },
+                        ],
+                    pressed && styles.destinationTypeCardPressed,
                   ]}
-                  onPress={() => setSelectedDestinationType('home')}
+                  onPress={handleSelectHomeDestinationType}
                 >
-                  <Ionicons name="home-outline" size={14} color={selectedDestinationType === 'home' ? successColor : mutedColor} />
-                  <ThemedText style={[styles.passengerStatText, { color: textColor }]}>Home</ThemedText>
+                  <View style={styles.destinationTypeCardLead}>
+                    <View
+                      style={[
+                        styles.destinationTypeIconBubble,
+                        {
+                          backgroundColor:
+                            selectedDestinationType === 'home'
+                              ? 'rgba(255,255,255,0.22)'
+                              : colorScheme === 'dark'
+                                ? AppPalette.darkOverlaySoft
+                                : palette.white,
+                        },
+                      ]}>
+                      <Ionicons
+                        name="home-outline"
+                        size={16}
+                        color={selectedDestinationType === 'home' ? palette.white : successColor}
+                      />
+                    </View>
+                    <ThemedText
+                      numberOfLines={1}
+                      style={[
+                        styles.destinationTypeLabel,
+                        { color: selectedDestinationType === 'home' ? palette.white : successColor },
+                      ]}>
+                      Home
+                    </ThemedText>
+                  </View>
+                  <Ionicons
+                    name={selectedDestinationType === 'home' ? 'checkmark-circle' : 'chevron-forward'}
+                    size={16}
+                    color={selectedDestinationType === 'home' ? palette.white : successColor}
+                  />
                 </Pressable>
               </View>
 
@@ -1773,23 +2112,33 @@ export default function HomeScreen() {
                     <ThemedText style={[styles.metaText, { color: dangerColor }]}>No fixed destinations configured by admin yet.</ThemedText>
                   ) : null}
                   {fixedDestinations.map((item) => (
-                    <Pressable
+                    <FixedDestinationChip
                       key={item._id}
-                      style={[
-                        styles.passengerStatPill,
-                        { borderColor, backgroundColor: bgColor },
-                        selectedFixedDestinationId === item._id && { borderColor: tint },
-                      ]}
-                      onPress={() => setSelectedFixedDestinationId(item._id)}
-                    >
-                      <ThemedText style={[styles.passengerStatText, { color: textColor }]}>{item.name}</ThemedText>
-                    </Pressable>
+                      item={item}
+                      selected={selectedFixedDestinationId === item._id}
+                      borderColor={borderColor}
+                      bgColor={bgColor}
+                      textColor={textColor}
+                      tint={tint}
+                      onSelect={handleSelectFixedDestination}
+                    />
                   ))}
                 </View>
               ) : selectedDestinationType === 'home' ? (
                 <ThemedText style={[styles.metaText, { color: mutedColor }]}>Home destination uses your GPS location.</ThemedText>
               ) : (
-                <ThemedText style={[styles.metaText, { color: mutedColor }]}>Choose Fixed or Home before requesting pickup.</ThemedText>
+                <View
+                  style={[
+                    styles.destinationPromptCard,
+                    {
+                      borderColor,
+                      backgroundColor: colorScheme === 'dark' ? AppPalette.darkSkyBg : AppPalette.sky,
+                    },
+                  ]}
+                >
+                  <Ionicons name="arrow-up-circle-outline" size={14} color={tint} />
+                  <ThemedText style={[styles.destinationPromptText, { color: textColor }]}>Pick Fixed or Home above to unlock pickup requests.</ThemedText>
+                </View>
               )}
 
               <View
@@ -1801,49 +2150,52 @@ export default function HomeScreen() {
                   },
                 ]}
               >
-                <Ionicons
-                  name={
-                    selectedDestinationType === 'home'
-                      ? 'home-outline'
-                      : selectedDestinationType === 'fixed'
-                        ? 'flag-outline'
-                        : 'navigate-outline'
-                  }
-                  size={14}
-                  color={selectedDestinationAccentColor}
-                />
+                <View
+                  style={[
+                    styles.destinationIndicatorIconBadge,
+                    {
+                      borderColor: selectedDestinationAccentColor,
+                      backgroundColor: colorScheme === 'dark' ? AppPalette.darkOverlaySoft : palette.white,
+                    },
+                  ]}
+                >
+                  <Ionicons
+                    name={
+                      selectedDestinationType === 'home'
+                        ? 'home-outline'
+                        : selectedDestinationType === 'fixed'
+                          ? 'flag-outline'
+                          : 'navigate-outline'
+                    }
+                    size={13}
+                    color={selectedDestinationAccentColor}
+                  />
+                </View>
                 <View style={styles.destinationIndicatorCopy}>
-                  <ThemedText style={[styles.destinationIndicatorLabel, { color: selectedDestinationAccentColor }]}>Selected Destination</ThemedText>
-                  <ThemedText style={[styles.destinationIndicatorValue, { color: textColor }]}>{selectedDestinationSummary}</ThemedText>
+                  <View style={styles.destinationIndicatorHeaderRow}>
+                    <ThemedText style={[styles.destinationIndicatorLabel, { color: selectedDestinationAccentColor }]}>Selected Destination</ThemedText>
+                    <View
+                      style={[
+                        styles.destinationIndicatorTypePill,
+                        {
+                          backgroundColor: colorScheme === 'dark' ? AppPalette.darkOverlaySoft : palette.white,
+                        },
+                      ]}
+                    >
+                      <ThemedText style={[styles.destinationIndicatorTypeText, { color: selectedDestinationAccentColor }]}>
+                        {selectedDestinationType === 'home'
+                          ? 'HOME'
+                          : selectedDestinationType === 'fixed'
+                            ? 'FIXED'
+                            : 'NONE'}
+                      </ThemedText>
+                    </View>
+                  </View>
+                  <ThemedText numberOfLines={2} style={[styles.destinationIndicatorValue, { color: textColor }]}>{selectedDestinationSummary}</ThemedText>
                 </View>
               </View>
 
-              {passengerFleet.slice(0, 4).map((item) => (
-                <View key={item._id} style={[styles.shuttleRow, { borderColor, backgroundColor: surfaceColor }]}>
-                  <Ionicons name="bus-outline" size={16} color={tint} />
-                  <View style={styles.shuttleTextWrap}>
-                    <ThemedText style={[styles.shuttleRowText, { color: textColor }]}>
-                      {item.plateNumber} · {item.currentCapacity}/{item.maxCapacity}
-                    </ThemedText>
-                    <View style={styles.shuttleStatusRow}>
-                      <View
-                        style={[
-                          styles.shuttleStatusDot,
-                          {
-                            backgroundColor: getShuttleDriverStatus(item.driverId) === 'driving' ? successColor : mutedColor,
-                          },
-                        ]}
-                      />
-                      <ThemedText style={[styles.shuttleEtaText, { color: mutedColor }]}> 
-                        {getShuttleDriverStatus(item.driverId) === 'driving' ? 'On Shift' : 'Not on shift'}
-                      </ThemedText>
-                    </View>
-                    {showEta ? (
-                      <ThemedText style={[styles.shuttleEtaText, { color: mutedColor }]}>ETA: live tracking</ThemedText>
-                    ) : null}
-                  </View>
-                </View>
-              ))}
+
 
               <Pressable
                 style={[
@@ -1853,6 +2205,8 @@ export default function HomeScreen() {
                 ]}
                 onPress={handleRequestPickup}
                 disabled={pickupDisabled || !isDestinationReady || (selectedDestinationType === 'fixed' && fixedDestinations.length === 0)}
+                accessibilityRole="button"
+                accessibilityLabel="Request pickup from shuttle"
               >
                 <Ionicons
                   name={pickupSubmitting ? 'time-outline' : 'navigate'}
@@ -1880,8 +2234,46 @@ export default function HomeScreen() {
                     },
                   ]}
                 >
-                  <Ionicons name="radio-outline" size={14} color={palette.rose} />
+                  <View
+                    style={[
+                      styles.pickupStatusIconBadge,
+                      {
+                        borderColor: colorScheme === 'dark' ? dangerColor : AppPalette.dangerMutedBorder,
+                        backgroundColor: colorScheme === 'dark' ? AppPalette.darkOverlaySoft : AppPalette.white,
+                      },
+                    ]}
+                  >
+                    <Ionicons name="radio-outline" size={13} color={palette.rose} />
+                  </View>
                   <View style={styles.pickupStatusCopy}>
+                    <View style={styles.pickupStatusHeaderRow}>
+                      <ThemedText
+                        style={[
+                          styles.pickupStatusTitle,
+                          { color: colorScheme === 'dark' ? dangerColor : AppPalette.dangerStrongText },
+                        ]}
+                      >
+                        Pickup Request Active
+                      </ThemedText>
+                      <View
+                        style={[
+                          styles.pickupStatusLivePill,
+                          {
+                            backgroundColor: colorScheme === 'dark' ? AppPalette.darkOverlaySoft : AppPalette.white,
+                          },
+                        ]}
+                      >
+                        <View style={[styles.pickupStatusLiveDot, { backgroundColor: palette.rose }]} />
+                        <ThemedText
+                          style={[
+                            styles.pickupStatusLiveText,
+                            { color: colorScheme === 'dark' ? dangerColor : AppPalette.dangerStrongText },
+                          ]}
+                        >
+                          Live
+                        </ThemedText>
+                      </View>
+                    </View>
                     <ThemedText
                       style={[
                         styles.pickupStatusText,
@@ -1890,10 +2282,18 @@ export default function HomeScreen() {
                     >
                       Drivers can see your request now. Status updates automatically once boarded.
                     </ThemedText>
-                    <View style={styles.pickupDestinationRow}>
+                    <View
+                      style={[
+                        styles.pickupDestinationChip,
+                        {
+                          borderColor: activePickupDestinationAccent,
+                          backgroundColor: colorScheme === 'dark' ? AppPalette.darkOverlaySoft : AppPalette.white,
+                        },
+                      ]}
+                    >
                       <Ionicons
                         name={activePickupDestinationType === 'home' ? 'home-outline' : 'flag-outline'}
-                        size={12}
+                        size={13}
                         color={activePickupDestinationAccent}
                       />
                       <ThemedText
@@ -1905,26 +2305,30 @@ export default function HomeScreen() {
                         Destination: {activePickupDestinationSummary || selectedDestinationSummary}
                       </ThemedText>
                     </View>
+                    <Pressable
+                      style={[
+                        styles.cancelPickupButton,
+                        {
+                          borderColor: colorScheme === 'dark' ? dangerColor : AppPalette.dangerMutedBorder,
+                          backgroundColor: colorScheme === 'dark' ? AppPalette.darkOverlaySoft : AppPalette.white,
+                        },
+                        pickupCancelling && styles.cancelPickupButtonDisabled,
+                      ]}
+                      onPress={handleCancelPickup}
+                      disabled={pickupCancelling}
+                      accessibilityRole="button"
+                      accessibilityLabel="Cancel active pickup request"
+                    >
+                      <Ionicons name={pickupCancelling ? 'time-outline' : 'close-circle-outline'} size={12} color={palette.rose} />
+                      <ThemedText style={[styles.cancelPickupButtonText, { color: palette.rose }]}>
+                        {pickupCancelling ? 'Cancelling...' : 'Cancel Pickup'}
+                      </ThemedText>
+                    </Pressable>
                   </View>
                 </View>
               ) : null}
 
-              {feedback ? (
-                <ThemedText
-                  style={[
-                    styles.feedback,
-                    {
-                      color:
-                        feedback.type === 'critical'
-                          ? dangerColor
-                          : successColor,
-                    },
-                  ]}
-                >
-                  {feedback.message}
-                </ThemedText>
-              ) : null}
-            </PremiumCard>
+            </View>
           </ScrollView>
         </View>
       )}
@@ -1938,12 +2342,38 @@ const styles = StyleSheet.create({
     backgroundColor: palette.slateBg,
   },
   topBar: {
-    backgroundColor: palette.navy,
-    marginHorizontal: DesignTokens.spacing.sm,
-    marginTop: DesignTokens.spacing.xs,
-    marginBottom: DesignTokens.spacing.xs,
-    borderRadius: DesignTokens.radius.xl,
-    borderWidth: 0,
+    width: '92%',
+    alignSelf: 'center',
+    marginTop: DesignTokens.spacing.sm,
+    marginBottom: DesignTokens.spacing.sm,
+    borderRadius: DesignTokens.radius.md,
+    borderWidth: 1,
+    minHeight: 44,
+    paddingHorizontal: DesignTokens.spacing.md,
+    paddingVertical: DesignTokens.spacing.sm,
+  },
+  avatarBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  locationPill: {
+    width: '92%',
+    alignSelf: 'center',
+    marginBottom: DesignTokens.spacing.sm,
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.md,
+    minHeight: 44,
+    paddingHorizontal: DesignTokens.spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: DesignTokens.spacing.sm,
+  },
+  locationPillText: {
+    fontFamily: OutfitFonts.semiBold,
+    fontSize: DesignTokens.typography.body.fontSize,
   },
   topTitle: {
     color: palette.white,
@@ -1951,7 +2381,7 @@ const styles = StyleSheet.create({
     fontFamily: OutfitFonts.extraBold,
   },
   topSubtitle: {
-    color: '#cbd5e1',
+    color: palette.slateBorder,
     fontSize: 13,
   },
   topActions: {
@@ -1968,13 +2398,16 @@ const styles = StyleSheet.create({
     gap: 0,
   },
   driverInfoScroll: {
-    paddingHorizontal: DesignTokens.spacing.sm,
-    paddingVertical: DesignTokens.spacing.xs,
+    paddingHorizontal: DesignTokens.spacing.md,
+    paddingVertical: DesignTokens.spacing.sm,
     gap: DesignTokens.spacing.sm,
     flexGrow: 1,
   },
   driverInfoCard: {
     gap: DesignTokens.spacing.sm,
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.lg,
+    padding: DesignTokens.spacing.md,
   },
   statusSection: {
     gap: DesignTokens.spacing.xs,
@@ -2049,27 +2482,41 @@ const styles = StyleSheet.create({
     marginHorizontal: DesignTokens.spacing.sm,
     marginVertical: DesignTokens.spacing.sm,
   },
+  manualFallbackHint: {
+    marginHorizontal: DesignTokens.spacing.sm,
+    marginTop: -DesignTokens.spacing.xxs,
+    marginBottom: DesignTokens.spacing.sm,
+    textAlign: 'center',
+    fontSize: 11,
+    fontFamily: OutfitFonts.semiBold,
+    lineHeight: 16,
+  },
   driverActionButton: {
     flex: 1,
-    minHeight: 96,
-    borderRadius: DesignTokens.radius.xl,
+    minHeight: 58,
+    borderRadius: DesignTokens.radius.md,
+    borderWidth: 1.5,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: DesignTokens.spacing.xs,
-    shadowColor: '#0f172a',
-    shadowOpacity: 0.16,
-    shadowOffset: { width: 0, height: 8 },
-    shadowRadius: 12,
-    elevation: 4,
+  },
+  driverBoardButton: {
+    borderWidth: 2,
+  },
+  driverUnboardButton: {
+    borderWidth: 1.5,
   },
   driverActionButtonDisabled: {
     opacity: 0.5,
   },
   driverActionButtonText: {
-    color: palette.white,
-    fontSize: 28,
+    fontSize: 13,
     fontFamily: OutfitFonts.extraBold,
-    letterSpacing: 0.6,
+    letterSpacing: 0.2,
+  },
+  driverActionButtonTextOnColor: {
+    color: palette.white,
   },
   capacityStatusCard: {
     flexDirection: 'row',
@@ -2143,9 +2590,16 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   mapWrap: {
-    height: '58%',
     backgroundColor: palette.navy,
     overflow: 'hidden',
+  },
+  driverMapWrap: {
+    height: '56%',
+    marginHorizontal: DesignTokens.spacing.sm,
+    borderRadius: DesignTokens.radius.xl,
+  },
+  passengerMapWrap: {
+    height: '56%',
     marginHorizontal: DesignTokens.spacing.sm,
     borderRadius: DesignTokens.radius.xl,
   },
@@ -2159,13 +2613,19 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: DesignTokens.spacing.xs,
   },
+  mapSkeletonWrap: {
+    width: '100%',
+    alignItems: 'center',
+    gap: DesignTokens.spacing.xs,
+    paddingHorizontal: DesignTokens.spacing.lg,
+  },
   mapPlaceholderText: {
     color: palette.white,
     fontSize: 20,
     fontFamily: OutfitFonts.extraBold,
   },
   mapPlaceholderHint: {
-    color: '#cbd5e1',
+    color: palette.slateBorder,
     fontSize: 13,
   },
   mapLockBadge: {
@@ -2173,7 +2633,7 @@ const styles = StyleSheet.create({
     top: DesignTokens.spacing.sm,
     left: DesignTokens.spacing.sm,
     backgroundColor: AppPalette.darkOverlayStrong,
-    borderRadius: DesignTokens.radius.pill,
+    borderRadius: DesignTokens.radius.md,
     paddingHorizontal: DesignTokens.spacing.xs,
     paddingVertical: DesignTokens.spacing.xxs,
     flexDirection: 'row',
@@ -2187,13 +2647,28 @@ const styles = StyleSheet.create({
   },
   sheet: {
     backgroundColor: 'transparent',
-    marginTop: DesignTokens.spacing.xs,
-    padding: DesignTokens.spacing.sm,
+    paddingHorizontal: 0,
+    paddingTop: DesignTokens.spacing.sm,
+    paddingBottom: DesignTokens.spacing.sm,
     gap: DesignTokens.spacing.xs,
-    minHeight: 260,
+  },
+  sheetWrap: {
+    flex: 1,
+    marginTop: DesignTokens.spacing.sm,
+    marginHorizontal: DesignTokens.spacing.md,
+  },
+  sheetHandle: {
+    alignSelf: 'center',
+    width: 42,
+    height: 5,
+    borderRadius: DesignTokens.radius.pill,
+    marginBottom: DesignTokens.spacing.xs,
   },
   passengerHubCard: {
     gap: DesignTokens.spacing.xs,
+    borderWidth: 1,
+    padding: DesignTokens.spacing.md,
+    borderRadius: DesignTokens.radius.lg,
   },
   fleetStatCard: {
     flexDirection: 'row',
@@ -2278,6 +2753,66 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: DesignTokens.spacing.xs,
   },
+  destinationTypeRow: {
+    flexDirection: 'row',
+    gap: DesignTokens.spacing.xs,
+  },
+  destinationTypeCard: {
+    flex: 1,
+    minHeight: 52,
+    borderWidth: 1.5,
+    borderRadius: DesignTokens.radius.md,
+    paddingHorizontal: DesignTokens.spacing.sm,
+    paddingVertical: DesignTokens.spacing.xs,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  destinationTypeCardActive: {
+    borderWidth: 2,
+  },
+  destinationTypeCardInactive: {
+    borderWidth: 1.5,
+  },
+  destinationTypeCardPressed: {
+    opacity: 0.92,
+    transform: [{ scale: 0.985 }],
+  },
+  destinationTypeCardLead: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: DesignTokens.spacing.xs,
+  },
+  destinationTypeIconBubble: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  destinationTypeLabel: {
+    fontFamily: OutfitFonts.bold,
+    fontSize: 14,
+    flexShrink: 1,
+  },
+  destinationPromptCard: {
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.md,
+    minHeight: 40,
+    paddingHorizontal: DesignTokens.spacing.xs,
+    paddingVertical: DesignTokens.spacing.xs,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: DesignTokens.spacing.xs,
+  },
+  destinationPromptText: {
+    flex: 1,
+    fontSize: 12,
+    fontFamily: OutfitFonts.semiBold,
+    lineHeight: 16,
+  },
   passengerStatPill: {
     flex: 1,
     borderColor: palette.slateBorder,
@@ -2289,7 +2824,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: DesignTokens.spacing.xs,
-    backgroundColor: '#f8fafc',
+    backgroundColor: palette.slateBg,
   },
   passengerStatText: {
     color: palette.navy,
@@ -2301,21 +2836,49 @@ const styles = StyleSheet.create({
     borderRadius: DesignTokens.radius.md,
     paddingVertical: DesignTokens.spacing.xs,
     paddingHorizontal: DesignTokens.spacing.xs,
-    minHeight: 48,
+    minHeight: 64,
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'stretch',
     gap: DesignTokens.spacing.xs,
+  },
+  destinationIndicatorIconBadge: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 2,
   },
   destinationIndicatorCopy: {
     flex: 1,
-    gap: 2,
+    gap: DesignTokens.spacing.xxs,
+  },
+  destinationIndicatorHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: DesignTokens.spacing.xs,
   },
   destinationIndicatorLabel: {
-    fontSize: 11,
+    fontSize: 10,
+    fontFamily: OutfitFonts.extraBold,
+    letterSpacing: 0.35,
+    textTransform: 'uppercase',
+  },
+  destinationIndicatorTypePill: {
+    borderRadius: DesignTokens.radius.pill,
+    paddingHorizontal: DesignTokens.spacing.xs,
+    paddingVertical: 2,
+  },
+  destinationIndicatorTypeText: {
+    fontSize: 10,
     fontFamily: OutfitFonts.bold,
+    letterSpacing: 0.25,
   },
   destinationIndicatorValue: {
-    fontSize: 12,
+    fontSize: 13,
+    lineHeight: 18,
     fontFamily: OutfitFonts.semiBold,
   },
   pickupStatusCard: {
@@ -2324,25 +2887,90 @@ const styles = StyleSheet.create({
     paddingVertical: DesignTokens.spacing.xs,
     paddingHorizontal: DesignTokens.spacing.xs,
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'stretch',
     gap: DesignTokens.spacing.xs,
     minHeight: 48,
   },
+  pickupStatusIconBadge: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 2,
+  },
   pickupStatusCopy: {
     flex: 1,
-    gap: 2,
+    gap: DesignTokens.spacing.xs,
   },
-  pickupDestinationRow: {
+  pickupStatusHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: DesignTokens.spacing.xs,
+  },
+  pickupStatusTitle: {
+    fontFamily: OutfitFonts.extraBold,
+    fontSize: 12,
+  },
+  pickupStatusLivePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: DesignTokens.radius.pill,
+    paddingHorizontal: DesignTokens.spacing.xs,
+    paddingVertical: 2,
+    gap: 4,
+  },
+  pickupStatusLiveDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  pickupStatusLiveText: {
+    fontFamily: OutfitFonts.bold,
+    fontSize: 10,
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+  },
+  pickupDestinationChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.pill,
+    paddingHorizontal: DesignTokens.spacing.xs,
+    paddingVertical: DesignTokens.spacing.xxs,
     gap: 4,
   },
   pickupStatusText: {
     fontFamily: OutfitFonts.bold,
     fontSize: 12,
+    lineHeight: 17,
   },
   pickupStatusMeta: {
     fontFamily: OutfitFonts.semiBold,
+    fontSize: 11,
+    flexShrink: 1,
+  },
+  cancelPickupButton: {
+    marginTop: DesignTokens.spacing.xxs,
+    alignSelf: 'stretch',
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.md,
+    minHeight: 36,
+    paddingHorizontal: DesignTokens.spacing.sm,
+    paddingVertical: DesignTokens.spacing.xxs,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  cancelPickupButtonDisabled: {
+    opacity: 0.72,
+  },
+  cancelPickupButtonText: {
+    fontFamily: OutfitFonts.bold,
     fontSize: 11,
   },
   feedback: {
@@ -2387,14 +3015,9 @@ const styles = StyleSheet.create({
     height: 18,
     borderRadius: 9,
     borderWidth: 1,
-    borderColor: '#94a3b8',
+    borderColor: AppPalette.switchTrackOff,
     backgroundColor: palette.white,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#0f172a',
-    shadowOpacity: 0.06,
-    shadowOffset: { width: 0, height: 1 },
-    shadowRadius: 1.5,
-    elevation: 1,
   },
 });

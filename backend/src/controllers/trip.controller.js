@@ -7,7 +7,12 @@ const PickupRequest = require('../models/PickupRequest');
 const PassengerRide = require('../models/PassengerRide');
 const User = require('../models/User');
 const ShiftRemittance = require('../models/ShiftRemittance');
+const RideRequest = require('../models/RideRequest');
 const { isLocationInBoundary } = require('../services/geofence');
+const { startManualAutomationCooldown } = require('../services/automation-cooldown');
+const { uploadReceiptImage } = require('../services/cloudinary');
+
+const MAX_REMITTANCE_AMOUNT = 1000000;
 
 const isPlatformAdmin = (req) => req.user?.role === 'admin';
 
@@ -66,7 +71,7 @@ const validateCoordinates = (latitude, longitude) => {
 
 const parseMoney = (value) => {
   const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < 0) {
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > MAX_REMITTANCE_AMOUNT) {
     return null;
   }
 
@@ -158,6 +163,64 @@ const createOptionalSession = async () => {
   }
 
   return mongoose.startSession();
+};
+
+const SHIFT_WINDOW_FALLBACK_MS = 12 * 60 * 60 * 1000;
+
+const resolveDriverShiftWindowStart = async ({ activeTrip, driverId }) => {
+  if (activeTrip?.shiftStart instanceof Date) {
+    return activeTrip.shiftStart;
+  }
+
+  const driver = await User.findById(driverId)
+    .select('status updatedAt')
+    .lean();
+
+  if (driver?.status === 'driving' && driver.updatedAt instanceof Date) {
+    return driver.updatedAt;
+  }
+
+  return new Date(Date.now() - SHIFT_WINDOW_FALLBACK_MS);
+};
+
+const listUnresolvedRideRequestsForShift = async ({ communityId, shiftStart }) => {
+  return RideRequest.find({
+    communityId,
+    status: 'pending',
+    createdAt: {
+      $gte: shiftStart,
+      $lte: new Date(),
+    },
+  })
+    .select('_id passengerId destination fareExpected createdAt')
+    .populate('passengerId', 'firstName lastName')
+    .lean();
+};
+
+const mapUnresolvedRideRequest = (request) => ({
+  requestId: request._id,
+  passengerName: request.passengerId
+    ? `${request.passengerId.firstName} ${request.passengerId.lastName}`.trim()
+    : 'Unknown',
+  passengerId: request.passengerId?._id || request.passengerId,
+  destinationLabel: request.destination?.label || 'Destination',
+  fareExpected: request.fareExpected,
+  createdAt: request.createdAt,
+});
+
+const countIgnoredRideRequestsForTrip = async (trip) => {
+  if (!trip?.shiftStart) {
+    return 0;
+  }
+
+  return RideRequest.countDocuments({
+    communityId: trip.communityId,
+    status: 'ignored',
+    createdAt: {
+      $gte: trip.shiftStart,
+      $lte: trip.shiftEnd || new Date(),
+    },
+  });
 };
 
 const shouldEnforceDriverShift = process.env.NODE_ENV !== 'test';
@@ -278,6 +341,21 @@ const passengerBoard = async (req, res) => {
         })),
         { session }
       );
+
+      // PERSISTENCE: Update linked RideRequest records to reflect successful boarding
+      const claimedPickupIds = pendingRequests.map((r) => r._id);
+      await RideRequest.updateMany(
+        { pickupRequestId: { $in: claimedPickupIds }, status: 'pending' },
+        {
+          $set: {
+            status: 'boarded',
+            shuttleId: shuttle._id,
+            tripId: activeTrip._id,
+            boardedAt,
+          },
+        },
+        { session }
+      );
     }
 
     // Update shuttle within transaction
@@ -288,6 +366,9 @@ const passengerBoard = async (req, res) => {
 
     // Commit transaction
     if (session) await session.commitTransaction();
+
+    // Pause location-triggered automation briefly to avoid manual+auto double processing.
+    startManualAutomationCooldown(shuttle._id);
 
     // Emit event after successful transaction
     const io = req.app.get('io');
@@ -358,6 +439,25 @@ const endShift = async (req, res) => {
       status: 'active',
     });
 
+    const shiftWindowStart = await resolveDriverShiftWindowStart({
+      activeTrip,
+      driverId: req.user._id,
+    });
+
+    // SHIFT-END GATE: Block completion if there are unresolved ride requests
+    // even when no Trip row exists yet (e.g. no boarded passengers this shift).
+    const unresolvedRequests = await listUnresolvedRideRequestsForShift({
+      communityId: shuttle.communityId,
+      shiftStart: shiftWindowStart,
+    });
+
+    if (unresolvedRequests.length > 0) {
+      return res.status(409).json({
+        error: 'Unresolved ride requests must be resolved before ending shift.',
+        unresolvedRequests: unresolvedRequests.map(mapUnresolvedRideRequest),
+      });
+    }
+
     if (!activeTrip) {
       return res.status(404).json({ error: 'No active trip found for this shuttle.' });
     }
@@ -367,10 +467,40 @@ const endShift = async (req, res) => {
     activeTrip.revenueCollected = activeTrip.passengersBoarded * activeTrip.fareAtTime;
     await activeTrip.save();
 
+    // Mark any remaining boarded ride requests as completed for this trip
+    await RideRequest.updateMany(
+      { tripId: activeTrip._id, status: 'boarded' },
+      { $set: { status: 'completed', completedAt: activeTrip.shiftEnd } }
+    );
+
     shuttle.currentCapacity = 0;
     shuttle.status = 'idle';
     shuttle.lastLocationUpdate = new Date();
     await shuttle.save();
+
+    // REMITTANCE ENFORCEMENT: Create tracking ShiftRemittance record
+    const deadlineAt = new Date(activeTrip.shiftEnd.getTime() + 24 * 60 * 60 * 1000);
+    const expectedAmount = Number((activeTrip.revenueCollected).toFixed(2));
+    
+    await ShiftRemittance.create({
+      communityId: shuttle.communityId,
+      tripId: activeTrip._id,
+      shuttleId: shuttle._id,
+      driverId: req.user._id,
+      expectedAmount,
+      status: 'not_submitted',
+      shift_ended_at: activeTrip.shiftEnd,
+      deadline_at: deadlineAt,
+    });
+
+    // Notify driver about the shift end and remittance requirement
+    const io = req.app.get('io');
+    const driverRoom = `user:${String(req.user._id)}`;
+    io.to(driverRoom).emit('notification', {
+      title: 'Shift Completed',
+      body: `Review your shift summary and submit your remittance of ₱${expectedAmount.toFixed(2)} within 24 hours.`,
+      type: 'shift_ended',
+    });
 
     const summary = {
       tripId: activeTrip._id,
@@ -494,7 +624,7 @@ const createPickupIntent = async (req, res) => {
       });
     }
 
-    const community = await Community.findById(req.user.communityId).select('fixedDestinations');
+    const community = await Community.findById(req.user.communityId).select('fixedDestinations baseFare');
     if (!community) {
       return res.status(404).json({ error: 'Community not found.' });
     }
@@ -547,6 +677,24 @@ const createPickupIntent = async (req, res) => {
 
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
+    // PERSISTENCE: Create permanent ride request BEFORE ephemeral pickup intent.
+    // This record survives TTL deletion and shift-end — it is the audit ledger.
+    const rideRequest = await RideRequest.create({
+      communityId: req.user.communityId,
+      passengerId: req.user._id,
+      pickupLocation: {
+        type: 'Point',
+        coordinates: [coords.lng, coords.lat],
+      },
+      destination: {
+        type: destinationType,
+        label: destinationLabel,
+        location: destinationLocation,
+      },
+      fareExpected: community.baseFare,
+      status: 'pending',
+    });
+
     const pickupRequest = await PickupRequest.create({
       communityId: req.user.communityId,
       passengerId: req.user._id,
@@ -560,6 +708,10 @@ const createPickupIntent = async (req, res) => {
       status: 'pending',
       expiresAt,
     });
+
+    // Link the permanent ride request to the ephemeral pickup intent
+    rideRequest.pickupRequestId = pickupRequest._id;
+    await rideRequest.save();
 
     const io = req.app.get('io');
     io.to(`community:${String(req.user.communityId)}`).emit('trip:pickup-intent', {
@@ -577,10 +729,89 @@ const createPickupIntent = async (req, res) => {
     return res.status(201).json({
       message: 'Pickup intent submitted.',
       request: pickupRequest,
+      rideRequestId: rideRequest._id,
     });
   } catch (error) {
     console.error('Create pickup intent error:', error);
     return res.status(500).json({ error: 'Failed to submit pickup intent.' });
+  }
+};
+
+/**
+ * DELETE /api/trips/pickup-intent/:intentId
+ * Passenger can cancel own pending intent; admin can cancel any pending intent in community scope.
+ */
+const cancelPickupIntent = async (req, res) => {
+  try {
+    const { intentId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(String(intentId))) {
+      return res.status(400).json({ error: 'Invalid pickup intent ID.' });
+    }
+
+    const request = await PickupRequest.findById(intentId);
+    if (!request) {
+      return res.status(404).json({ error: 'Pickup intent not found.' });
+    }
+
+    if (String(request.communityId) !== String(req.user.communityId)) {
+      return res.status(403).json({ error: 'Access denied. Pickup intent is outside your community.' });
+    }
+
+    const isAdmin = req.user.role === 'admin';
+    const isOwnerPassenger = String(request.passengerId) === String(req.user._id);
+
+    if (!isAdmin && !isOwnerPassenger) {
+      return res.status(403).json({ error: 'Access denied. You can only cancel your own pickup intent.' });
+    }
+
+    if (request.status === 'pending' && request.expiresAt && new Date(request.expiresAt).getTime() <= Date.now()) {
+      request.status = 'expired';
+      await request.save();
+    }
+
+    if (request.status !== 'pending') {
+      return res.status(409).json({
+        error: `Cannot cancel pickup intent with status '${request.status}'. Only pending requests can be cancelled.`,
+      });
+    }
+
+    request.status = 'cancelled';
+    await request.save();
+
+    // PERSISTENCE: Cancel the linked permanent ride request
+    await RideRequest.updateOne(
+      { pickupRequestId: request._id, status: 'pending' },
+      {
+        $set: {
+          status: 'cancelled',
+          resolution: 'passenger_cancel',
+          cancelledAt: new Date(),
+        },
+      }
+    );
+
+    const io = req.app.get('io');
+    const communityRoom = `community:${String(request.communityId)}`;
+    const payload = {
+      requestId: request._id,
+      communityId: request.communityId,
+      passengerId: request.passengerId,
+      status: request.status,
+      cancelledBy: req.user.role,
+      cancelledAt: request.updatedAt,
+    };
+
+    io.to(communityRoom).emit('pickup-intent:cancelled', payload);
+    io.to(communityRoom).emit('trip:pickup-intent-cancelled', payload);
+
+    return res.status(200).json({
+      message: 'Pickup intent cancelled.',
+      request,
+    });
+  } catch (error) {
+    console.error('Cancel pickup intent error:', error);
+    return res.status(500).json({ error: 'Failed to cancel pickup intent.' });
   }
 };
 
@@ -822,6 +1053,307 @@ const getDriverAnalytics = async (req, res) => {
 };
 
 /**
+ * GET /api/trips/driver-performance?startDate=...&endDate=...&driverId=...
+ * Driver performance analytics with per-shift detail.
+ */
+const getDriverPerformanceAnalytics = async (req, res) => {
+  try {
+    const startDate = req.query.startDate ? new Date(req.query.startDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const endDate = req.query.endDate ? new Date(req.query.endDate) : new Date();
+    const driverId = req.query.driverId;
+    const scopedCommunityId = resolveCommunityScopeObjectId(req, req.query.communityId, { allowAll: true });
+
+    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+      return res.status(400).json({ error: 'Invalid startDate or endDate.' });
+    }
+
+    if (scopedCommunityId && !(scopedCommunityId instanceof mongoose.Types.ObjectId)) {
+      return res.status(403).json({ error: scopedCommunityId.error });
+    }
+
+    if (driverId && !mongoose.Types.ObjectId.isValid(String(driverId))) {
+      return res.status(400).json({ error: 'Invalid driverId.' });
+    }
+
+    const tripQuery = {
+      shiftStart: { $gte: startDate, $lte: endDate },
+      status: { $in: ['completed', 'synced', 'active'] },
+    };
+    if (scopedCommunityId) tripQuery.communityId = scopedCommunityId;
+    if (driverId) tripQuery.driverId = new mongoose.Types.ObjectId(String(driverId));
+
+    const trips = await Trip.find(tripQuery)
+      .select('_id communityId driverId shiftStart shiftEnd status passengersBoarded fareAtTime revenueCollected')
+      .sort({ shiftStart: 1 })
+      .lean();
+
+    const tripIds = trips.map((trip) => trip._id);
+    const driverIdsInTrips = Array.from(new Set(trips.map((trip) => String(trip.driverId)).filter(Boolean)));
+
+    const remittanceQuery = {
+      tripId: { $in: tripIds },
+    };
+    if (scopedCommunityId) remittanceQuery.communityId = scopedCommunityId;
+    if (driverId) remittanceQuery.driverId = new mongoose.Types.ObjectId(String(driverId));
+
+    const remittances = tripIds.length
+      ? await ShiftRemittance.find(remittanceQuery)
+        .select('tripId driverId expectedAmount actualAmount varianceAmount status submittedAt deadline_at')
+        .lean()
+      : [];
+
+    const remittanceByTripId = new Map(remittances.map((row) => [String(row.tripId), row]));
+
+    const rideRequestStatsByTrip = tripIds.length
+      ? await RideRequest.aggregate([
+        { $match: { tripId: { $in: tripIds } } },
+        {
+          $group: {
+            _id: '$tripId',
+            totalRequestsReceived: { $sum: 1 },
+            totalAutoBoarded: {
+              $sum: {
+                $cond: [
+                  {
+                    $or: [
+                      { $eq: ['$status', 'boarded'] },
+                      { $eq: ['$status', 'completed'] },
+                    ],
+                  },
+                  1,
+                  0,
+                ],
+              },
+            },
+            totalLateManualBoarded: {
+              $sum: {
+                $cond: [{ $eq: ['$resolution', 'late_manual'] }, 1, 0],
+              },
+            },
+            totalNoShows: {
+              $sum: {
+                $cond: [{ $eq: ['$resolution', 'no_show'] }, 1, 0],
+              },
+            },
+            totalIgnoredRequests: {
+              $sum: {
+                $cond: [{ $eq: ['$status', 'ignored'] }, 1, 0],
+              },
+            },
+          },
+        },
+      ])
+      : [];
+
+    const rideStatsByTripId = new Map(
+      rideRequestStatsByTrip.map((row) => [String(row._id), row])
+    );
+
+    const ignoredByResolvedDriver = await RideRequest.aggregate([
+      {
+        $match: {
+          status: 'ignored',
+          resolvedAt: { $gte: startDate, $lte: endDate },
+          ...(scopedCommunityId ? { communityId: scopedCommunityId } : {}),
+          ...(driverId ? { resolvedBy: new mongoose.Types.ObjectId(String(driverId)) } : {}),
+        },
+      },
+      {
+        $group: {
+          _id: '$resolvedBy',
+          count: { $sum: 1 },
+        },
+      },
+    ]);
+    const ignoredByResolvedDriverMap = new Map(
+      ignoredByResolvedDriver
+        .filter((row) => row._id)
+        .map((row) => [String(row._id), row.count])
+    );
+
+    const allDriverIds = Array.from(
+      new Set([
+        ...driverIdsInTrips,
+        ...remittances.map((item) => String(item.driverId)).filter(Boolean),
+        ...Array.from(ignoredByResolvedDriverMap.keys()),
+      ])
+    ).filter((id) => mongoose.Types.ObjectId.isValid(id));
+
+    const drivers = allDriverIds.length
+      ? await User.find({ _id: { $in: allDriverIds } })
+        .select('_id firstName lastName email')
+        .lean()
+      : [];
+    const driverById = new Map(drivers.map((row) => [String(row._id), row]));
+
+    const metricsByDriver = new Map();
+    const shiftDetailsByDriver = new Map();
+
+    const ensureDriver = (rawDriverId) => {
+      const key = String(rawDriverId);
+      if (!metricsByDriver.has(key)) {
+        metricsByDriver.set(key, {
+          driverId: key,
+          driverName: `${driverById.get(key)?.firstName || 'Unknown'} ${driverById.get(key)?.lastName || 'Driver'}`.trim(),
+          totalShifts: 0,
+          totalShiftHours: 0,
+          totalRequestsReceived: 0,
+          totalPassengersBoarded: 0,
+          totalAutoBoarded: 0,
+          totalManualBoarded: 0,
+          totalLateManualBoarded: 0,
+          totalIgnoredRequests: ignoredByResolvedDriverMap.get(key) || 0,
+          totalNoShows: 0,
+          totalExpectedRemittance: 0,
+          totalActualRemittance: 0,
+          totalVariance: 0,
+          totalFlaggedRemittances: 0,
+          totalVerifiedRemittances: 0,
+          totalEscalatedRemittances: 0,
+          totalSubmittedRemittances: 0,
+          totalOnTimeSubmissions: 0,
+          shifts: [],
+        });
+      }
+
+      if (!shiftDetailsByDriver.has(key)) {
+        shiftDetailsByDriver.set(key, []);
+      }
+      return metricsByDriver.get(key);
+    };
+
+    for (const trip of trips) {
+      const key = String(trip.driverId);
+      const metrics = ensureDriver(key);
+      const rideStats = rideStatsByTripId.get(String(trip._id)) || {
+        totalRequestsReceived: 0,
+        totalAutoBoarded: 0,
+        totalLateManualBoarded: 0,
+        totalNoShows: 0,
+        totalIgnoredRequests: 0,
+      };
+      const remittance = remittanceByTripId.get(String(trip._id));
+
+      const shiftStart = trip.shiftStart ? new Date(trip.shiftStart) : null;
+      const shiftEnd = trip.shiftEnd ? new Date(trip.shiftEnd) : null;
+      const shiftHours = shiftStart && shiftEnd
+        ? Math.max(0, (shiftEnd.getTime() - shiftStart.getTime()) / 3600000)
+        : 0;
+
+      metrics.totalShifts += 1;
+      metrics.totalShiftHours += shiftHours;
+      metrics.totalRequestsReceived += rideStats.totalRequestsReceived || 0;
+      metrics.totalPassengersBoarded += trip.passengersBoarded || 0;
+      metrics.totalAutoBoarded += (rideStats.totalAutoBoarded || 0) - (rideStats.totalLateManualBoarded || 0);
+      metrics.totalLateManualBoarded += rideStats.totalLateManualBoarded || 0;
+      metrics.totalNoShows += rideStats.totalNoShows || 0;
+      metrics.totalIgnoredRequests += rideStats.totalIgnoredRequests || 0;
+      metrics.totalManualBoarded = metrics.totalLateManualBoarded;
+
+      const expectedAmount = remittance ? remittance.expectedAmount || 0 : Number((trip.revenueCollected || 0).toFixed(2));
+      const actualAmount = remittance ? remittance.actualAmount || 0 : 0;
+      const varianceAmount = remittance ? remittance.varianceAmount || 0 : Number((actualAmount - expectedAmount).toFixed(2));
+      const remittanceStatus = remittance?.status || 'not_submitted';
+      const submittedOnTime = Boolean(
+        remittance?.submittedAt
+        && remittance?.deadline_at
+        && new Date(remittance.submittedAt).getTime() <= new Date(remittance.deadline_at).getTime()
+      );
+
+      metrics.totalExpectedRemittance += expectedAmount;
+      metrics.totalActualRemittance += actualAmount;
+      metrics.totalVariance += varianceAmount;
+      if (['pending', 'verified', 'flagged', 'overdue', 'escalated'].includes(remittanceStatus)) {
+        metrics.totalSubmittedRemittances += 1;
+      }
+      if (submittedOnTime) metrics.totalOnTimeSubmissions += 1;
+      if (remittanceStatus === 'flagged') metrics.totalFlaggedRemittances += 1;
+      if (remittanceStatus === 'verified') metrics.totalVerifiedRemittances += 1;
+      if (remittanceStatus === 'escalated') metrics.totalEscalatedRemittances += 1;
+
+      shiftDetailsByDriver.get(key).push({
+        tripId: String(trip._id),
+        shiftDate: trip.shiftStart,
+        shiftStatus: trip.status,
+        passengers: trip.passengersBoarded || 0,
+        expectedRemittance: Number(expectedAmount.toFixed(2)),
+        actualRemittance: Number(actualAmount.toFixed(2)),
+        variance: Number(varianceAmount.toFixed(2)),
+        remittanceStatus,
+        submittedOnTime,
+        ignoredRequests: rideStats.totalIgnoredRequests || 0,
+        lateManualBoards: rideStats.totalLateManualBoarded || 0,
+      });
+    }
+
+    const driversPerformance = Array.from(metricsByDriver.values())
+      .map((row) => {
+        const remittanceCount = row.totalSubmittedRemittances;
+        const onTimeSubmissionRate = row.totalShifts
+          ? (row.totalOnTimeSubmissions / row.totalShifts) * 100
+          : 0;
+        const flagRate = remittanceCount
+          ? (row.totalFlaggedRemittances / remittanceCount) * 100
+          : 0;
+        const lateManualBoardRate = row.totalPassengersBoarded
+          ? (row.totalLateManualBoarded / row.totalPassengersBoarded) * 100
+          : 0;
+        const ignoredRequestRate = row.totalRequestsReceived
+          ? (row.totalIgnoredRequests / row.totalRequestsReceived) * 100
+          : 0;
+        const varianceRate = row.totalExpectedRemittance
+          ? (row.totalVariance / row.totalExpectedRemittance) * 100
+          : 0;
+
+        return {
+          driverId: row.driverId,
+          driverName: row.driverName,
+          totalShifts: row.totalShifts,
+          totalShiftHours: Number(row.totalShiftHours.toFixed(2)),
+          totalRequestsReceived: row.totalRequestsReceived,
+          totalPassengersBoarded: row.totalPassengersBoarded,
+          totalAutoBoarded: Math.max(0, row.totalAutoBoarded),
+          totalManualBoarded: row.totalManualBoarded,
+          totalLateManualBoarded: row.totalLateManualBoarded,
+          totalIgnoredRequests: row.totalIgnoredRequests,
+          totalNoShows: row.totalNoShows,
+          totalExpectedRemittance: Number(row.totalExpectedRemittance.toFixed(2)),
+          totalActualRemittance: Number(row.totalActualRemittance.toFixed(2)),
+          totalVariance: Number(row.totalVariance.toFixed(2)),
+          totalFlaggedRemittances: row.totalFlaggedRemittances,
+          totalVerifiedRemittances: row.totalVerifiedRemittances,
+          totalEscalatedRemittances: row.totalEscalatedRemittances,
+          onTimeSubmissionRate: Number(onTimeSubmissionRate.toFixed(2)),
+          flagRate: Number(flagRate.toFixed(2)),
+          lateManualBoardRate: Number(lateManualBoardRate.toFixed(2)),
+          ignoredRequestRate: Number(ignoredRequestRate.toFixed(2)),
+          varianceRate: Number(varianceRate.toFixed(2)),
+          shifts: (shiftDetailsByDriver.get(row.driverId) || []).sort(
+            (a, b) => new Date(b.shiftDate).getTime() - new Date(a.shiftDate).getTime()
+          ),
+        };
+      })
+      .sort((a, b) => a.totalVariance - b.totalVariance);
+
+    const driversNeedingAttention = driversPerformance.filter((driver) =>
+      driver.varianceRate < -10
+      || driver.flagRate > 20
+      || driver.totalIgnoredRequests > 3
+      || driver.onTimeSubmissionRate < 70
+    ).length;
+
+    return res.status(200).json({
+      range: { startDate, endDate },
+      driversNeedingAttention,
+      drivers: driversPerformance,
+    });
+  } catch (error) {
+    console.error('Get driver performance analytics error:', error);
+    return res.status(500).json({ error: 'Failed to fetch driver performance analytics.' });
+  }
+};
+
+/**
  * POST /api/trips/:tripId/remittance
  * Driver submits actual collected amount for a completed shift.
  */
@@ -829,18 +1361,23 @@ const submitShiftRemittance = async (req, res) => {
   try {
     const { tripId } = req.params;
     const { actualAmount, driverNote } = req.body;
+    const receiptFile = req.file;
 
     if (!mongoose.Types.ObjectId.isValid(tripId)) {
       return res.status(400).json({ error: 'Invalid tripId.' });
     }
 
+    if (req.user.role === 'driver' && !receiptFile) {
+      return res.status(400).json({ error: 'Receipt photo is required to submit remittance.' });
+    }
+
     const normalizedActual = parseMoney(actualAmount);
     if (normalizedActual === null) {
-      return res.status(400).json({ error: 'actualAmount must be a valid non-negative number.' });
+      return res.status(400).json({ error: `actualAmount must be a valid non-negative number not exceeding ${MAX_REMITTANCE_AMOUNT}.` });
     }
 
     const trip = await Trip.findById(tripId).select(
-      '_id communityId shuttleId driverId status shiftEnd passengersBoarded fareAtTime revenueCollected'
+      '_id communityId shuttleId driverId status shiftStart shiftEnd passengersBoarded fareAtTime revenueCollected'
     );
 
     if (!trip) {
@@ -860,14 +1397,40 @@ const submitShiftRemittance = async (req, res) => {
       return res.status(403).json({ error: 'Access denied. You can only submit remittance for your own shift.' });
     }
 
+    const existingRemittance = await ShiftRemittance.findOne({ tripId: trip._id }).select('_id status');
+    if (existingRemittance && !['not_submitted', 'overdue', 'escalated'].includes(existingRemittance.status)) {
+      return res.status(409).json({ error: 'Remittance already submitted for this trip.' });
+    }
+
     const expectedAmount = Number((trip.revenueCollected || (trip.passengersBoarded * trip.fareAtTime) || 0).toFixed(2));
     const varianceAmount = Number((normalizedActual - expectedAmount).toFixed(2));
     const now = new Date();
-    const status = req.user.role === 'admin'
-      ? Math.abs(varianceAmount) < 0.01
-        ? 'verified'
-        : 'flagged'
-      : 'pending';
+    const ignoredCount = await countIgnoredRideRequestsForTrip(trip);
+
+    let status = 'pending';
+    if (ignoredCount > 0) {
+      status = 'flagged';
+    } else if (req.user.role === 'admin') {
+      status = Math.abs(varianceAmount) < 0.01 ? 'verified' : 'flagged';
+    }
+
+    const systemNotes = [];
+    if (ignoredCount > 0) {
+      systemNotes.push(`Auto-flagged: ${ignoredCount} ignored ride request(s) in this shift.`);
+    }
+    if (req.user.role === 'admin' && Math.abs(varianceAmount) >= 0.01) {
+      systemNotes.push('Recorded by admin with variance.');
+    }
+
+    let receiptUrl = '';
+    if (receiptFile) {
+      const upload = await uploadReceiptImage({
+        buffer: receiptFile.buffer,
+        tripId: trip._id,
+        communityId: trip.communityId,
+      });
+      receiptUrl = upload.secureUrl;
+    }
 
     const update = {
       communityId: trip.communityId,
@@ -882,7 +1445,8 @@ const submitShiftRemittance = async (req, res) => {
       driverNote: driverNote ? String(driverNote).trim().slice(0, 500) : '',
       verifiedBy: req.user.role === 'admin' ? req.user._id : null,
       verifiedAt: req.user.role === 'admin' ? now : null,
-      adminNote: req.user.role === 'admin' && Math.abs(varianceAmount) >= 0.01 ? 'Recorded by admin with variance.' : '',
+      adminNote: systemNotes.join(' '),
+      ...(receiptUrl ? { receiptUrl, receiptUploadedAt: now } : {}),
     };
 
     const remittance = await ShiftRemittance.findOneAndUpdate(
@@ -898,6 +1462,12 @@ const submitShiftRemittance = async (req, res) => {
       remittance,
     });
   } catch (error) {
+    if (error?.message && String(error.message).toLowerCase().includes('receipt')) {
+      return res.status(400).json({ error: error.message });
+    }
+    if (error?.code === 11000) {
+      return res.status(409).json({ error: 'Remittance already submitted for this trip.' });
+    }
     console.error('Submit shift remittance error:', error);
     return res.status(500).json({ error: 'Failed to submit shift remittance.' });
   }
@@ -928,6 +1498,19 @@ const verifyShiftRemittance = async (req, res) => {
     const requesterCommunityId = req.user?.communityId ? req.user.communityId.toString() : '';
     if (!isPlatformAdmin(req) && remittance.communityId.toString() !== requesterCommunityId) {
       return res.status(403).json({ error: 'Access denied. Remittance is outside your community.' });
+    }
+
+    if (String(status) === 'verified') {
+      const trip = await Trip.findById(remittance.tripId)
+        .select('communityId shiftStart shiftEnd')
+        .lean();
+
+      const ignoredCount = await countIgnoredRideRequestsForTrip(trip);
+      if (ignoredCount > 0) {
+        return res.status(409).json({
+          error: `Cannot verify remittance while ${ignoredCount} ignored ride request(s) exist for this shift. Flag for review first.`,
+        });
+      }
     }
 
     remittance.status = String(status);
@@ -1211,6 +1794,118 @@ const getRemittanceSummary = async (req, res) => {
       })
       .sort((a, b) => b.missingExpectedAmount - a.missingExpectedAmount);
 
+    // PERSISTENCE: Ride request accountability stats
+    const rideRequestQuery = {
+      createdAt: { $gte: startDate, $lte: endDate },
+    };
+    if (scopedCommunityId) {
+      rideRequestQuery.communityId = scopedCommunityId;
+    }
+
+    const rideRequestStats = await RideRequest.aggregate([
+      { $match: rideRequestQuery },
+      {
+        $group: {
+          _id: '$status',
+          count: { $sum: 1 },
+          fareTotal: { $sum: '$fareExpected' },
+        },
+      },
+    ]);
+
+    const rideRequestBreakdown = {
+      totalRequests: 0,
+      totalBoarded: 0,
+      totalCompleted: 0,
+      totalCancelled: 0,
+      totalIgnored: 0,
+      totalPending: 0,
+      totalLateManual: 0,
+      totalFareExpected: 0,
+    };
+
+    for (const stat of rideRequestStats) {
+      rideRequestBreakdown.totalRequests += stat.count;
+      rideRequestBreakdown.totalFareExpected += stat.fareTotal;
+      if (stat._id === 'boarded') rideRequestBreakdown.totalBoarded += stat.count;
+      if (stat._id === 'completed') rideRequestBreakdown.totalCompleted += stat.count;
+      if (stat._id === 'cancelled') rideRequestBreakdown.totalCancelled += stat.count;
+      if (stat._id === 'ignored') rideRequestBreakdown.totalIgnored += stat.count;
+      if (stat._id === 'pending') rideRequestBreakdown.totalPending += stat.count;
+    }
+
+    // Count late manual boards from resolution field
+    const lateManualCount = await RideRequest.countDocuments({
+      ...rideRequestQuery,
+      resolution: 'late_manual',
+    });
+    rideRequestBreakdown.totalLateManual = lateManualCount;
+
+    // Attribution: breakdown by effective driver (trip driver when available, else resolver for manual resolutions)
+    const rideRequestBreakdownByDriverRaw = await RideRequest.aggregate([
+      { $match: rideRequestQuery },
+      {
+        $lookup: {
+          from: 'trips',
+          localField: 'tripId',
+          foreignField: '_id',
+          as: 'trip',
+        },
+      },
+      { $unwind: { path: '$trip', preserveNullAndEmptyArrays: true } },
+      {
+        $addFields: {
+          effectiveDriverId: { $ifNull: ['$trip.driverId', '$resolvedBy'] },
+        },
+      },
+      { $match: { effectiveDriverId: { $ne: null } } },
+      {
+        $group: {
+          _id: '$effectiveDriverId',
+          totalRequests: { $sum: 1 },
+          totalBoarded: { $sum: { $cond: [{ $eq: ['$status', 'boarded'] }, 1, 0] } },
+          totalCompleted: { $sum: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] } },
+          totalCancelled: { $sum: { $cond: [{ $eq: ['$status', 'cancelled'] }, 1, 0] } },
+          totalIgnored: { $sum: { $cond: [{ $eq: ['$status', 'ignored'] }, 1, 0] } },
+          totalPending: { $sum: { $cond: [{ $eq: ['$status', 'pending'] }, 1, 0] } },
+          totalLateManual: { $sum: { $cond: [{ $eq: ['$resolution', 'late_manual'] }, 1, 0] } },
+        },
+      },
+    ]);
+
+    const rideBreakdownDriverIds = rideRequestBreakdownByDriverRaw
+      .map((row) => String(row._id))
+      .filter((id) => mongoose.Types.ObjectId.isValid(id));
+
+    const rideBreakdownDrivers = rideBreakdownDriverIds.length
+      ? await User.find({ _id: { $in: rideBreakdownDriverIds } })
+        .select('_id firstName lastName email')
+        .lean()
+      : [];
+    const rideBreakdownDriverMeta = new Map(
+      rideBreakdownDrivers.map((driver) => [String(driver._id), driver])
+    );
+
+    const rideRequestBreakdownByDriver = rideRequestBreakdownByDriverRaw
+      .map((row) => {
+        const driverIdKey = String(row._id);
+        const meta = rideBreakdownDriverMeta.get(driverIdKey);
+        return {
+          driverId: driverIdKey,
+          firstName: meta?.firstName || 'Unknown',
+          lastName: meta?.lastName || 'Driver',
+          email: meta?.email || '',
+          totalRequests: row.totalRequests || 0,
+          totalBoarded: row.totalBoarded || 0,
+          totalCompleted: row.totalCompleted || 0,
+          totalCancelled: row.totalCancelled || 0,
+          totalIgnored: row.totalIgnored || 0,
+          totalPending: row.totalPending || 0,
+          totalLateManual: row.totalLateManual || 0,
+        };
+      })
+      .sort((a, b) => (b.totalIgnored - a.totalIgnored) || (b.totalPending - a.totalPending) || (b.totalLateManual - a.totalLateManual));
+
     return res.status(200).json({
       range: { startDate, endDate },
       groupBy,
@@ -1225,6 +1920,8 @@ const getRemittanceSummary = async (req, res) => {
         missingCount: missingTrips.length,
         missingExpectedAmount: Number(missingExpectedAmount.toFixed(2)),
       },
+      rideRequestBreakdown,
+      rideRequestBreakdownByDriver,
       series,
       drivers: byDriver,
       missingByDriver,
@@ -1353,6 +2050,9 @@ const passengerUnboard = async (req, res) => {
 
     // Commit transaction
     if (session) await session.commitTransaction();
+
+    // Pause location-triggered automation briefly to avoid manual+auto double processing.
+    startManualAutomationCooldown(shuttle._id);
 
     // Emit event after successful transaction
     const io = req.app.get('io');
@@ -1526,7 +2226,7 @@ const listDriverCompletedTrips = async (req, res) => {
     const remittances = await ShiftRemittance.find({
       tripId: { $in: tripIds },
     })
-      .select('tripId status actualAmount expectedAmount varianceAmount submittedAt')
+      .select('tripId status actualAmount expectedAmount varianceAmount submittedAt deadline_at')
       .lean();
 
     const remittanceByTripId = new Map(
@@ -1551,6 +2251,7 @@ const listDriverCompletedTrips = async (req, res) => {
         remittanceActualAmount: remittance ? remittance.actualAmount : null,
         remittanceVariance: remittance ? remittance.varianceAmount : null,
         remittanceSubmittedAt: remittance ? remittance.submittedAt : null,
+        remittanceDeadlineAt: remittance ? remittance.deadline_at : null,
       };
     });
 
@@ -1594,6 +2295,149 @@ const listDriverRemittances = async (req, res) => {
   }
 };
 
+/**
+ * POST /api/trips/ride-requests/:requestId/resolve
+ * Driver resolves an unresolved ride request before ending shift.
+ * resolution: 'no_show' | 'late_manual'
+ */
+const resolveRideRequest = async (req, res) => {
+  const session = await createOptionalSession();
+  if (session) session.startTransaction();
+
+  try {
+    const { requestId } = req.params;
+    const { resolution } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(String(requestId))) {
+      if (session) await session.abortTransaction();
+      return res.status(400).json({ error: 'Invalid ride request ID.' });
+    }
+
+    if (!['no_show', 'late_manual'].includes(String(resolution))) {
+      if (session) await session.abortTransaction();
+      return res.status(400).json({ error: "resolution must be 'no_show' or 'late_manual'." });
+    }
+
+    const rideRequest = await RideRequest.findById(requestId).session(session);
+    if (!rideRequest) {
+      if (session) await session.abortTransaction();
+      return res.status(404).json({ error: 'Ride request not found.' });
+    }
+
+    if (String(rideRequest.communityId) !== String(req.user.communityId)) {
+      if (session) await session.abortTransaction();
+      return res.status(403).json({ error: 'Access denied. Ride request is outside your community.' });
+    }
+
+    if (rideRequest.status !== 'pending') {
+      if (session) await session.abortTransaction();
+      return res.status(409).json({
+        error: `Cannot resolve ride request with status '${rideRequest.status}'. Only pending requests can be resolved.`,
+      });
+    }
+
+    const now = new Date();
+
+    if (resolution === 'no_show') {
+      rideRequest.status = 'cancelled';
+      rideRequest.resolution = 'no_show';
+      rideRequest.cancelledAt = now;
+      rideRequest.resolvedAt = now;
+      rideRequest.resolvedBy = req.user._id;
+      await rideRequest.save({ session });
+
+      if (session) await session.commitTransaction();
+
+      return res.status(200).json({
+        message: 'Ride request resolved as no-show.',
+        rideRequest,
+      });
+    }
+
+    // resolution === 'late_manual'
+    // Find the driver's shuttle and active trip to link the late boarding
+    const shuttle = await Shuttle.findOne({
+      communityId: req.user.communityId,
+      driverId: req.user._id,
+      isActive: true,
+    }).session(session);
+
+    if (!shuttle) {
+      if (session) await session.abortTransaction();
+      return res.status(404).json({ error: 'No active shuttle found for this driver.' });
+    }
+
+    const activeTrip = await Trip.findOne({
+      communityId: shuttle.communityId,
+      shuttleId: shuttle._id,
+      driverId: req.user._id,
+      status: 'active',
+    }).session(session);
+
+    if (!activeTrip) {
+      if (session) await session.abortTransaction();
+      return res.status(404).json({ error: 'No active trip found. Cannot record late boarding.' });
+    }
+
+    // Update the ride request
+    rideRequest.status = 'boarded';
+    rideRequest.resolution = 'late_manual';
+    rideRequest.shuttleId = shuttle._id;
+    rideRequest.tripId = activeTrip._id;
+    rideRequest.boardedAt = now;
+    rideRequest.resolvedAt = now;
+    rideRequest.resolvedBy = req.user._id;
+    await rideRequest.save({ session });
+
+    // Create corresponding PassengerRide record
+    await PassengerRide.create(
+      [{
+        communityId: shuttle.communityId,
+        passengerId: rideRequest.passengerId,
+        shuttleId: shuttle._id,
+        driverId: req.user._id,
+        tripId: activeTrip._id,
+        fareAtBoarding: activeTrip.fareAtTime,
+        pickupLocation: rideRequest.pickupLocation,
+        destinationType: rideRequest.destination?.type || 'fixed',
+        destinationLabel: rideRequest.destination?.label || 'Destination',
+        destinationLocation: rideRequest.destination?.location || rideRequest.pickupLocation,
+        requestedAt: rideRequest.createdAt,
+        boardedAt: now,
+        status: 'boarded',
+      }],
+      { session }
+    );
+
+    // Increment trip counters
+    activeTrip.passengersBoarded += 1;
+    activeTrip.revenueCollected = activeTrip.passengersBoarded * activeTrip.fareAtTime;
+    await activeTrip.save({ session });
+
+    // Update shuttle capacity
+    if (shuttle.currentCapacity < shuttle.maxCapacity) {
+      shuttle.currentCapacity += 1;
+      shuttle.status = 'en_route';
+      shuttle.lastLocationUpdate = new Date();
+      await shuttle.save({ session });
+    }
+
+    if (session) await session.commitTransaction();
+
+    return res.status(200).json({
+      message: 'Ride request resolved as late manual boarding.',
+      rideRequest,
+      trip: activeTrip,
+    });
+  } catch (error) {
+    if (session) await session.abortTransaction();
+    console.error('Resolve ride request error:', error);
+    return res.status(500).json({ error: 'Failed to resolve ride request.' });
+  } finally {
+    if (session) session.endSession();
+  }
+};
+
 module.exports = {
   passengerBoard,
   passengerUnboard,
@@ -1602,14 +2446,17 @@ module.exports = {
   endShift,
   syncOfflineTrips,
   createPickupIntent,
+  cancelPickupIntent,
   listPickupIntents,
   listPassengerRecentRides,
   getAnalytics,
   getDriverAnalytics,
+  getDriverPerformanceAnalytics,
   submitShiftRemittance,
   verifyShiftRemittance,
   listShiftRemittances,
   getRemittanceSummary,
   listDriverCompletedTrips,
   listDriverRemittances,
+  resolveRideRequest,
 };

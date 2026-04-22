@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
     Area,
     AreaChart,
@@ -11,7 +12,7 @@ import {
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { fetchAnalytics } from '@/lib/admin-api';
+import { fetchAnalytics, fetchDriverPerformance } from '@/lib/admin-api';
 import { currency } from '@/lib/format';
 import type { AnalyticsResponse } from '@/types/domain';
 
@@ -29,9 +30,11 @@ const dayLabel = (year: number, month: number, day: number) =>
   });
 
 export const OverviewPage = () => {
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [analytics, setAnalytics] = useState<AnalyticsResponse | null>(null);
+  const [driversNeedingAttention, setDriversNeedingAttention] = useState(0);
 
   useEffect(() => {
     const run = async () => {
@@ -41,12 +44,19 @@ export const OverviewPage = () => {
         const endDate = new Date();
         const startDate = new Date(endDate.getTime() - 13 * 24 * 60 * 60 * 1000);
 
-        const data = await fetchAnalytics({
-          startDate: startDate.toISOString(),
-          endDate: endDate.toISOString(),
-        });
+        const [data, performance] = await Promise.all([
+          fetchAnalytics({
+            startDate: startDate.toISOString(),
+            endDate: endDate.toISOString(),
+          }),
+          fetchDriverPerformance({
+            startDate: startDate.toISOString(),
+            endDate: endDate.toISOString(),
+          }),
+        ]);
 
         setAnalytics(data);
+        setDriversNeedingAttention(performance.driversNeedingAttention || 0);
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Failed to load analytics');
       } finally {
@@ -69,7 +79,7 @@ export const OverviewPage = () => {
 
   return (
     <div className="space-y-4">
-      <section className="grid gap-4 md:grid-cols-3">
+      <section className="grid gap-4 md:grid-cols-4">
         <Card className="border-slate-200 bg-white shadow-sm">
           <CardHeader>
             <CardTitle className="text-sm text-slate-500">Passengers (14d)</CardTitle>
@@ -105,6 +115,22 @@ export const OverviewPage = () => {
               <Skeleton className="h-8 w-16" />
             ) : (
               <p className="text-2xl font-semibold text-slate-900">{analytics?.totals.tripCount || 0}</p>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card
+          className="cursor-pointer border-slate-200 bg-white shadow-sm transition hover:border-amber-300 hover:bg-amber-50/40"
+          onClick={() => navigate('/analytics')}
+        >
+          <CardHeader>
+            <CardTitle className="text-sm text-slate-500">Drivers Needing Attention (30d)</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {loading ? (
+              <Skeleton className="h-8 w-16" />
+            ) : (
+              <p className="text-2xl font-semibold text-amber-700">{driversNeedingAttention}</p>
             )}
           </CardContent>
         </Card>

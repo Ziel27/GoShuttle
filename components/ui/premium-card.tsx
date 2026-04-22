@@ -1,7 +1,8 @@
 import { DesignTokens } from '@/constants/theme';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { ReactNode } from 'react';
-import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native';
+import { StyleProp, StyleSheet, ViewStyle } from 'react-native';
+import Animated, { FadeIn } from 'react-native-reanimated';
 
 type PremiumCardProps = {
   children: ReactNode;
@@ -14,7 +15,8 @@ export function PremiumCard({ children, style, muted = false }: PremiumCardProps
   const borderColor = useThemeColor({}, 'border');
 
   return (
-    <View
+    <Animated.View
+      entering={FadeIn.duration(200)}
       style={[
         styles.card,
         {
@@ -24,7 +26,7 @@ export function PremiumCard({ children, style, muted = false }: PremiumCardProps
         style,
       ]}>
       {children}
-    </View>
+    </Animated.View>
   );
 }
 
@@ -32,8 +34,7 @@ const styles = StyleSheet.create({
   card: {
     borderWidth: 1,
     borderRadius: DesignTokens.radius.lg,
-    padding: DesignTokens.spacing.sm,
-    gap: DesignTokens.spacing.xs,
-    ...DesignTokens.elevation.card,
+    padding: DesignTokens.spacing.md,
+    gap: DesignTokens.spacing.sm,
   },
 });

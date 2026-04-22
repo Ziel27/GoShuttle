@@ -50,6 +50,14 @@ export type AutomationDiagnostics = {
   autoUnboarding: AutomationDiagnostic;
 };
 
+export type ShuttleLocationSyncResponse = {
+  shuttle: Shuttle;
+  autoBoardedCount: number;
+  autoUnboardedCount: number;
+  manualAutomationCooldownSeconds: number;
+  automationDiagnostics?: AutomationDiagnostics;
+};
+
 export const listShuttles = async () => {
   const response = await api.get('/shuttles');
   return (response.data?.shuttles || []) as Shuttle[];
@@ -68,8 +76,9 @@ export const updateShuttleLocation = async (
     shuttle: response.data?.shuttle as Shuttle,
     autoBoardedCount: Number(response.data?.autoBoardedCount || 0),
     autoUnboardedCount: Number(response.data?.autoUnboardedCount || 0),
+    manualAutomationCooldownSeconds: Number(response.data?.manualAutomationCooldownSeconds || 0),
     automationDiagnostics: response.data?.automationDiagnostics as AutomationDiagnostics | undefined,
-  };
+  } as ShuttleLocationSyncResponse;
 };
 
 export const updateShuttleCapacity = async (shuttleId: string, delta: number) => {

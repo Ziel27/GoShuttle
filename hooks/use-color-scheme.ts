@@ -1,8 +1,13 @@
 import { useColorScheme as useNativeColorScheme } from 'react-native';
+import type { ColorSchemeName } from 'react-native';
 
 import { usePreferencesStore } from '@/store/preferences';
 
-export function useColorScheme() {
+/**
+ * Hook to determine the active color scheme (light or dark).
+ * @returns {ColorSchemeName} The active theme mode.
+ */
+export function useColorScheme(): ColorSchemeName {
 	const nativeScheme = useNativeColorScheme();
 	const themeMode = usePreferencesStore((state) => state.themeMode);
 
@@ -10,5 +15,5 @@ export function useColorScheme() {
 		return nativeScheme;
 	}
 
-	return themeMode;
+	return themeMode as ColorSchemeName;
 }

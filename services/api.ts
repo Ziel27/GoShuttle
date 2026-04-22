@@ -1,11 +1,17 @@
 import axios from 'axios';
 
 const rawApiBaseUrl = process.env.EXPO_PUBLIC_API_URL?.trim();
-const API_BASE_URL = rawApiBaseUrl || 'http://192.168.100.224:5000/api';
+if (!rawApiBaseUrl && process.env.NODE_ENV === 'production') {
+  throw new Error(
+    '[api] EXPO_PUBLIC_API_URL must be set in production. Add it to your .env file or EAS environment variables.'
+  );
+}
+
+const API_BASE_URL = rawApiBaseUrl || 'http://192.168.100.226:5000/api';
 
 if (!rawApiBaseUrl) {
   console.warn(
-    '[api] EXPO_PUBLIC_API_URL is missing. Falling back to http://192.168.100.224:5000/api for development.'
+    '[api] EXPO_PUBLIC_API_URL is missing. Falling back to http://192.168.100.226:5000/api for development.'
   );
 }
 
@@ -25,12 +31,16 @@ export const setAuthToken = (token: string | null) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
+    const data = error?.response?.data || {};
     const message =
-      error?.response?.data?.error ||
-      error?.response?.data?.message ||
+      data.error ||
+      data.message ||
       error?.message ||
       'Request failed';
 
-    return Promise.reject(new Error(message));
+    const enhancedError = new Error(message);
+    (enhancedError as any).responseData = data;
+    (enhancedError as any).status = error?.response?.status;
+    return Promise.reject(enhancedError);
   }
 );

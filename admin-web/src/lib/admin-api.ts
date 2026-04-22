@@ -1,8 +1,11 @@
 import { apiClient } from '@/lib/api-client';
 import type {
     AnalyticsResponse,
+    Announcement,
+    AnnouncementLevel,
     Community,
     DriverAnalyticsResponse,
+    DriverPerformanceResponse,
     Remittance,
     RemittanceSummaryResponse,
     Shuttle,
@@ -151,6 +154,16 @@ export const fetchDriverAnalytics = async (params?: {
   return response.data as DriverAnalyticsResponse;
 };
 
+export const fetchDriverPerformance = async (params?: {
+  startDate?: string;
+  endDate?: string;
+  driverId?: string;
+  communityId?: string;
+}): Promise<DriverPerformanceResponse> => {
+  const response = await apiClient.get('/trips/driver-performance', { params });
+  return response.data as DriverPerformanceResponse;
+};
+
 export const fetchRemittanceSummary = async (params?: {
   startDate?: string;
   endDate?: string;
@@ -165,7 +178,7 @@ export const fetchRemittanceSummary = async (params?: {
 export const fetchRemittances = async (params?: {
   startDate?: string;
   endDate?: string;
-  status?: 'pending' | 'verified' | 'flagged';
+  status?: 'not_submitted' | 'pending' | 'verified' | 'flagged' | 'overdue' | 'escalated';
   driverId?: string;
   limit?: number;
 }): Promise<Remittance[]> => {
@@ -175,9 +188,26 @@ export const fetchRemittances = async (params?: {
 
 export const verifyRemittance = async (
   remittanceId: string,
-  payload: { status: 'verified' | 'flagged' | 'pending'; adminNote?: string }
+  payload: { status: 'verified' | 'flagged' | 'pending' | 'overdue' | 'escalated'; adminNote?: string }
 ): Promise<Remittance> => {
   const response = await apiClient.patch(`/trips/remittances/${remittanceId}/verify`, payload);
   return response.data?.remittance as Remittance;
+};
+
+export const fetchAnnouncements = async (params?: {
+  limit?: number;
+  before?: string;
+}): Promise<Announcement[]> => {
+  const response = await apiClient.get('/announcements', { params });
+  return (response.data?.announcements || []) as Announcement[];
+};
+
+export const createAnnouncement = async (payload: {
+  title: string;
+  body: string;
+  level?: AnnouncementLevel;
+}): Promise<Announcement> => {
+  const response = await apiClient.post('/announcements', payload);
+  return response.data?.announcement as Announcement;
 };
 

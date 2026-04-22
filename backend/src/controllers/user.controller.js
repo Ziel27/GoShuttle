@@ -2,6 +2,9 @@ const mongoose = require('mongoose');
 const validator = require('validator');
 const User = require('../models/User');
 const Community = require('../models/Community');
+const ShiftRemittance = require('../models/ShiftRemittance');
+const Trip = require('../models/Trip');
+const RideRequest = require('../models/RideRequest');
 
 const parseCoordinate = (value) => {
   const num = Number(value);
@@ -29,6 +32,55 @@ const validateCoordinates = (latitude, longitude) => {
 
 const isPlatformAdmin = (req) => req.user?.role === 'admin';
 
+const SHIFT_WINDOW_FALLBACK_MS = 12 * 60 * 60 * 1000;
+
+const resolveDriverShiftWindowStart = async ({ driverId, communityId, fallbackUpdatedAt }) => {
+  const activeTrip = await Trip.findOne({
+    communityId,
+    driverId,
+    status: 'active',
+  })
+    .select('shiftStart')
+    .sort({ shiftStart: -1 })
+    .lean();
+
+  if (activeTrip?.shiftStart instanceof Date) {
+    return activeTrip.shiftStart;
+  }
+
+  if (fallbackUpdatedAt instanceof Date) {
+    return fallbackUpdatedAt;
+  }
+
+  return new Date(Date.now() - SHIFT_WINDOW_FALLBACK_MS);
+};
+
+const listPendingRideRequestsForShift = async ({ communityId, shiftStart }) => {
+  return RideRequest.find({
+    communityId,
+    status: 'pending',
+    createdAt: {
+      $gte: shiftStart,
+      $lte: new Date(),
+    },
+  })
+    .select('_id passengerId destination fareExpected createdAt')
+    .populate('passengerId', 'firstName lastName')
+    .lean();
+};
+
+const mapUnresolvedRideRequest = (request) => ({
+  requestId: request._id,
+  passengerName: request.passengerId
+    ? `${request.passengerId.firstName} ${request.passengerId.lastName}`.trim()
+    : 'Unknown',
+  passengerId: request.passengerId?._id || request.passengerId,
+  destinationLabel: request.destination?.label || 'Destination',
+  fareExpected: request.fareExpected,
+  createdAt: request.createdAt,
+});
+
+// NOTE: Multi-community support. Currently single-community — scope typically resolves to req.user.communityId.
 const resolveCommunityScopeId = (req, requestedCommunityId, options = {}) => {
   const { allowAll = false } = options;
   const ownCommunityId = String(req.user.communityId);
@@ -195,6 +247,39 @@ const updateUserStatus = async (req, res) => {
       if (!['active', 'offline', 'driving'].includes(status)) {
         return res.status(400).json({ error: 'Invalid status value.' });
       }
+
+      // Admin-forced driver shift shutdown: preserve unresolved requests as explicit ignored records.
+      if (status === 'offline' && user.role === 'driver' && user.status === 'driving') {
+        const shiftStart = await resolveDriverShiftWindowStart({
+          driverId: user._id,
+          communityId: user.communityId,
+          fallbackUpdatedAt: user.updatedAt,
+        });
+
+        const pendingRequests = await listPendingRideRequestsForShift({
+          communityId: user.communityId,
+          shiftStart,
+        });
+
+        if (pendingRequests.length > 0) {
+          const now = new Date();
+          await RideRequest.updateMany(
+            {
+              _id: { $in: pendingRequests.map((request) => request._id) },
+              status: 'pending',
+            },
+            {
+              $set: {
+                status: 'ignored',
+                resolution: 'expired',
+                resolvedAt: now,
+                resolvedBy: req.user._id,
+              },
+            }
+          );
+        }
+      }
+
       user.status = status;
     }
 
@@ -216,6 +301,10 @@ const updateUserStatus = async (req, res) => {
 
 const updateOwnStatus = async (req, res) => {
   try {
+    if (!['driver', 'admin'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'Access denied. Only drivers and admins can update own status.' });
+    }
+
     const { status } = req.body;
     const userId = req.user._id;
 
@@ -229,6 +318,44 @@ const updateOwnStatus = async (req, res) => {
 
     if (!allowedStatuses.includes(status)) {
       return res.status(400).json({ error: 'Invalid status value for this role.' });
+    }
+
+    const currentUser = await User.findById(userId).select('_id role status communityId updatedAt');
+    if (!currentUser) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    if (req.user.role === 'driver' && currentUser.status === 'driving' && status === 'offline') {
+      const shiftStart = await resolveDriverShiftWindowStart({
+        driverId: currentUser._id,
+        communityId: currentUser.communityId,
+        fallbackUpdatedAt: currentUser.updatedAt,
+      });
+
+      const unresolvedRequests = await listPendingRideRequestsForShift({
+        communityId: currentUser.communityId,
+        shiftStart,
+      });
+
+      if (unresolvedRequests.length > 0) {
+        return res.status(409).json({
+          error: 'Unresolved ride requests must be resolved before ending shift.',
+          unresolvedRequests: unresolvedRequests.map(mapUnresolvedRideRequest),
+        });
+      }
+    }
+
+    if (status === 'driving' && req.user.role === 'driver') {
+      const blockers = await ShiftRemittance.find({
+        driverId: userId,
+        status: { $in: ['overdue', 'escalated'] },
+      }).select('status');
+
+      if (blockers.length > 0) {
+        return res.status(409).json({
+          error: 'You have overdue or escalated remittances. You must submit them before starting a new shift.'
+        });
+      }
     }
 
     const user = await User.findByIdAndUpdate(
@@ -253,6 +380,10 @@ const updateOwnStatus = async (req, res) => {
 
 const updateOwnHomeDestination = async (req, res) => {
   try {
+    if (!['passenger', 'admin'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'Access denied. Only passengers and admins can update home destination.' });
+    }
+
     const { latitude, longitude, label } = req.body;
     const coords = validateCoordinates(latitude, longitude);
 

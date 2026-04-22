@@ -1,10 +1,11 @@
 import { ThemedText } from '@/components/themed-text';
+import { AnimatedPressable } from '@/components/ui/animated-pressable';
 import { DesignTokens, OutfitFonts } from '@/constants/theme';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { ReactNode } from 'react';
-import { Pressable, StyleProp, StyleSheet, ViewStyle } from 'react-native';
+import { StyleProp, StyleSheet, ViewStyle, type AccessibilityState } from 'react-native';
 
-type PremiumButtonVariant = 'primary' | 'secondary' | 'danger';
+type PremiumButtonVariant = 'primary' | 'secondary' | 'danger' | 'ghost';
 
 type PremiumButtonProps = {
   onPress?: () => void;
@@ -12,6 +13,10 @@ type PremiumButtonProps = {
   style?: StyleProp<ViewStyle>;
   disabled?: boolean;
   variant?: PremiumButtonVariant;
+  accessibilityLabel?: string;
+  accessibilityHint?: string;
+  accessibilityRole?: 'button' | 'link';
+  accessibilityState?: AccessibilityState;
 };
 
 export function PremiumButton({
@@ -20,30 +25,39 @@ export function PremiumButton({
   style,
   disabled = false,
   variant = 'primary',
+  accessibilityLabel,
+  accessibilityHint,
+  accessibilityRole,
+  accessibilityState,
 }: PremiumButtonProps) {
   const tint = useThemeColor({}, 'tint');
-  const surface = useThemeColor({}, 'surface');
-  const border = useThemeColor({}, 'border');
   const danger = useThemeColor({}, 'danger');
-  const backgroundText = useThemeColor({}, 'background');
+  const textInverse = '#FFFFFF';
 
   const palette =
     variant === 'primary'
-      ? { backgroundColor: tint, borderColor: tint, textColor: backgroundText }
+      ? { backgroundColor: tint, borderColor: tint, textColor: textInverse, borderWidth: 0 }
       : variant === 'danger'
-      ? { backgroundColor: danger, borderColor: danger, textColor: '#ffffff' }
-      : { backgroundColor: surface, borderColor: border, textColor: tint };
+      ? { backgroundColor: danger, borderColor: danger, textColor: textInverse, borderWidth: 0 }
+      : variant === 'ghost'
+      ? { backgroundColor: 'transparent', borderColor: 'transparent', textColor: tint, borderWidth: 0 }
+      : { backgroundColor: 'transparent', borderColor: tint, textColor: tint, borderWidth: 1 };
 
   return (
-    <Pressable
+    <AnimatedPressable
       disabled={disabled}
       onPress={onPress}
-      accessibilityRole="button"
+      accessibilityRole={accessibilityRole ?? 'button'}
+      accessibilityLabel={accessibilityLabel}
+      accessibilityHint={accessibilityHint}
+      accessibilityState={accessibilityState}
+      haptic
       style={[
         styles.button,
         {
           backgroundColor: palette.backgroundColor,
           borderColor: palette.borderColor,
+          borderWidth: palette.borderWidth,
           opacity: disabled ? 0.6 : 1,
         },
         style,
@@ -53,16 +67,15 @@ export function PremiumButton({
       ) : (
         children
       )}
-    </Pressable>
+    </AnimatedPressable>
   );
 }
 
 const styles = StyleSheet.create({
   button: {
-    minHeight: 48,
-    borderWidth: 1,
+    minHeight: 52,
     borderRadius: DesignTokens.radius.pill,
-    paddingHorizontal: DesignTokens.spacing.sm,
+    paddingHorizontal: DesignTokens.spacing.md,
     paddingVertical: DesignTokens.spacing.xs,
     alignItems: 'center',
     justifyContent: 'center',
@@ -71,7 +84,8 @@ const styles = StyleSheet.create({
   },
   buttonText: {
     fontFamily: OutfitFonts.bold,
-    fontSize: 14,
+    fontSize: DesignTokens.typography.bodyStrong.fontSize,
+    letterSpacing: 0.3,
   },
 });
 

@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-const REMITTANCE_STATUSES = ['pending', 'verified', 'flagged'];
+const REMITTANCE_STATUSES = ['not_submitted', 'pending', 'verified', 'flagged', 'overdue', 'escalated'];
 
 const shiftRemittanceSchema = new mongoose.Schema(
   {
@@ -41,8 +41,8 @@ const shiftRemittanceSchema = new mongoose.Schema(
 
     actualAmount: {
       type: Number,
-      required: [true, 'Actual amount is required.'],
       min: [0, 'Actual amount cannot be negative.'],
+      default: null,
     },
 
     varianceAmount: {
@@ -53,8 +53,30 @@ const shiftRemittanceSchema = new mongoose.Schema(
 
     submittedAt: {
       type: Date,
-      required: true,
-      default: Date.now,
+      default: null,
+      index: true,
+    },
+
+    shift_ended_at: {
+      type: Date,
+      default: null,
+      index: true,
+    },
+
+    deadline_at: {
+      type: Date,
+      default: null,
+      index: true,
+    },
+
+    overdue_notified_driver_at: {
+      type: Date,
+      default: null,
+    },
+
+    escalated_at: {
+      type: Date,
+      default: null,
       index: true,
     },
 
@@ -64,7 +86,7 @@ const shiftRemittanceSchema = new mongoose.Schema(
         values: REMITTANCE_STATUSES,
         message: 'Status must be one of: pending, verified, flagged',
       },
-      default: 'pending',
+      default: 'not_submitted',
       index: true,
     },
 
@@ -89,6 +111,18 @@ const shiftRemittanceSchema = new mongoose.Schema(
     },
 
     verifiedAt: {
+      type: Date,
+      default: null,
+    },
+
+    receiptUrl: {
+      type: String,
+      trim: true,
+      default: '',
+      maxlength: [500, 'Receipt URL cannot exceed 500 characters.'],
+    },
+
+    receiptUploadedAt: {
       type: Date,
       default: null,
     },

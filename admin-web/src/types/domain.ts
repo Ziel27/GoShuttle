@@ -120,6 +120,55 @@ export type DriverAnalyticsResponse = {
   drivers: DriverAnalyticsRow[];
 };
 
+export type DriverPerformanceShiftRow = {
+  tripId: string;
+  shiftDate: string;
+  shiftStatus: string;
+  passengers: number;
+  expectedRemittance: number;
+  actualRemittance: number;
+  variance: number;
+  remittanceStatus: string;
+  submittedOnTime: boolean;
+  ignoredRequests: number;
+  lateManualBoards: number;
+};
+
+export type DriverPerformanceRow = {
+  driverId: string;
+  driverName: string;
+  totalShifts: number;
+  totalShiftHours: number;
+  totalRequestsReceived: number;
+  totalPassengersBoarded: number;
+  totalAutoBoarded: number;
+  totalManualBoarded: number;
+  totalLateManualBoarded: number;
+  totalIgnoredRequests: number;
+  totalNoShows: number;
+  totalExpectedRemittance: number;
+  totalActualRemittance: number;
+  totalVariance: number;
+  totalFlaggedRemittances: number;
+  totalVerifiedRemittances: number;
+  totalEscalatedRemittances: number;
+  onTimeSubmissionRate: number;
+  flagRate: number;
+  lateManualBoardRate: number;
+  ignoredRequestRate: number;
+  varianceRate: number;
+  shifts: DriverPerformanceShiftRow[];
+};
+
+export type DriverPerformanceResponse = {
+  range: {
+    startDate: string;
+    endDate: string;
+  };
+  driversNeedingAttention: number;
+  drivers: DriverPerformanceRow[];
+};
+
 export type RemittanceSummarySeriesPoint = {
   period: string;
   expectedAmount: number;
@@ -139,6 +188,31 @@ export type RemittanceSummaryDriverRow = {
   remittanceCount: number;
 };
 
+export type RideRequestBreakdown = {
+  totalRequests: number;
+  totalBoarded: number;
+  totalCompleted: number;
+  totalCancelled: number;
+  totalIgnored: number;
+  totalPending: number;
+  totalLateManual: number;
+  totalFareExpected: number;
+};
+
+export type RideRequestBreakdownByDriverRow = {
+  driverId: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  totalRequests: number;
+  totalBoarded: number;
+  totalCompleted: number;
+  totalCancelled: number;
+  totalIgnored: number;
+  totalPending: number;
+  totalLateManual: number;
+};
+
 export type RemittanceSummaryResponse = {
   range: {
     startDate: string;
@@ -156,6 +230,8 @@ export type RemittanceSummaryResponse = {
     missingCount: number;
     missingExpectedAmount: number;
   };
+  rideRequestBreakdown?: RideRequestBreakdown;
+  rideRequestBreakdownByDriver?: RideRequestBreakdownByDriverRow[];
   series: RemittanceSummarySeriesPoint[];
   drivers: RemittanceSummaryDriverRow[];
   missingByDriver: Array<{
@@ -192,11 +268,32 @@ export type Remittance = {
   actualAmount: number;
   varianceAmount: number;
   submittedAt: string;
-  status: 'pending' | 'verified' | 'flagged';
+  status: 'not_submitted' | 'pending' | 'verified' | 'flagged' | 'overdue' | 'escalated';
   driverNote: string;
   adminNote: string;
   verifiedBy: string | null;
   verifiedAt: string | null;
+  receiptUrl?: string;
+  receiptUploadedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AnnouncementLevel = 'info' | 'warning' | 'critical';
+
+export type Announcement = {
+  _id: string;
+  communityId: string;
+  createdBy: string | {
+    _id?: string;
+    firstName?: string;
+    lastName?: string;
+    email?: string;
+    role?: Role;
+  };
+  title: string;
+  body: string;
+  level: AnnouncementLevel;
   createdAt: string;
   updatedAt: string;
 };

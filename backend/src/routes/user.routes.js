@@ -13,8 +13,8 @@ const router = express.Router();
 router.use(authenticate);
 
 // Public routes (authenticated users only)
-router.patch('/me', updateOwnStatus);
-router.patch('/me/home-destination', updateOwnHomeDestination);
+router.patch('/me', authorize('driver', 'admin'), updateOwnStatus);
+router.patch('/me/home-destination', authorize('passenger', 'admin'), updateOwnHomeDestination);
 
 // Admin routes
 router.use(authorize('admin'));

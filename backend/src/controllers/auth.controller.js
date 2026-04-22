@@ -54,6 +54,8 @@ const hashResetCode = (code) => {
 /**
  * Track password reset attempts (in-memory for now, should use Redis in production)
  */
+// NOTE: In-memory rate limiter. Resets on server restart.
+// Replace with Redis-based limiter (e.g. rate-limiter-flexible) before scaling to multiple instances.
 const resetAttempts = new Map(); // {email: [{timestamp, attempts}]}
 
 const isResetAttemptAllowed = (email) => {
@@ -289,12 +291,17 @@ const requestPasswordReset = async (req, res) => {
       return res.status(200).json({ message: 'Verification code sent to your email.' });
     }
 
-    const fallback = { message: 'Verification code generated. Contact support if email delivery is not configured.' };
-    if (process.env.NODE_ENV !== 'production') {
-      fallback.devCode = code;
+    if (process.env.NODE_ENV === 'production') {
+      console.error('[CRITICAL] Password reset email failed to send for:', normalizedEmail);
+      return res.status(200).json({
+        message: 'If your account exists, a verification code has been sent to your email.',
+      });
     }
 
-    return res.status(200).json(fallback);
+    return res.status(200).json({
+      message: 'SMTP not configured. Dev mode only.',
+      devCode: code,
+    });
   } catch (error) {
     console.error('Request password reset error:', error);
     return res.status(500).json({ error: 'Failed to process password reset request.' });

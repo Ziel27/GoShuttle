@@ -51,7 +51,7 @@ const pickupRequestSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['pending', 'claimed', 'expired'],
+      enum: ['pending', 'claimed', 'expired', 'cancelled'],
       default: 'pending',
       index: true,
     },
