@@ -36,9 +36,13 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.admin-web
+      args: # Add this section!
+        - VITE_ADMIN_API_URL=https://api.goshuttle.app/api
+        - VITE_ADMIN_SOCKET_URL=https://api.goshuttle.app
     restart: unless-stopped
     environment:
-      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-https://api.goshuttle.app}
+      - VITE_ADMIN_API_URL=https://api.goshuttle.app/api
+      - VITE_ADMIN_SOCKET_URL=https://api.goshuttle.app
     expose:
       - "3001"
     networks:
