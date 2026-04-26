@@ -34,10 +34,19 @@ const generateToken = (user) => {
  */
 const setAuthTokenCookie = (res, token) => {
   const isProduction = process.env.NODE_ENV === 'production';
+  
   res.cookie('auth_token', token, {
-    httpOnly: true, // Prevents JavaScript access (XSS protection)
-    secure: isProduction, // Only send over HTTPS in production
-    sameSite: 'strict', // CSRF protection
+    httpOnly: true,    // Stays true (Prevents XSS)
+    secure: true,      // Stays true (Required for 'none' and HTTPS)
+    
+    // CHANGE 1: Use 'none' so the browser allows the cookie to be sent 
+    // from the admin subdomain to the api subdomain.
+    sameSite: isProduction ? 'none' : 'lax', 
+    
+    // CHANGE 2: Add the leading dot. This makes the cookie valid for 
+    // ALL subdomains under goshuttle.app.
+    domain: isProduction ? '.goshuttle.app' : 'localhost',
+    
     path: '/',
     maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
   });
