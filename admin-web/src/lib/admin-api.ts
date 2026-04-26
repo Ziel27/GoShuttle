@@ -1,15 +1,15 @@
 import { apiClient } from '@/lib/api-client';
 import type {
-    AnalyticsResponse,
-    Announcement,
-    AnnouncementLevel,
-    Community,
-    DriverAnalyticsResponse,
-    DriverPerformanceResponse,
-    Remittance,
-    RemittanceSummaryResponse,
-    Shuttle,
-    User,
+  AnalyticsResponse,
+  Announcement,
+  AnnouncementLevel,
+  Community,
+  DriverAnalyticsResponse,
+  DriverPerformanceResponse,
+  Remittance,
+  RemittanceSummaryResponse,
+  Shuttle,
+  User,
 } from '@/types/domain';
 
 
@@ -57,8 +57,15 @@ export const fetchShuttles = async (params?: { active?: boolean; communityId?: s
   return (response.data?.shuttles || []) as Shuttle[];
 };
 
-export const assignShuttleDriver = async (shuttleId: string, driverId: string | null): Promise<Shuttle> => {
-  const response = await apiClient.patch(`/shuttles/${shuttleId}/assign-driver`, { driverId });
+export const assignShuttleDriver = async (
+  shuttleId: string,
+  driverId: string | null,
+  assignedPhase?: string | null
+): Promise<Shuttle> => {
+  const response = await apiClient.patch(`/shuttles/${shuttleId}/assign-driver`, {
+    driverId,
+    ...(assignedPhase !== undefined ? { assignedPhase } : {}),
+  });
   return response.data?.shuttle as Shuttle;
 };
 
@@ -66,6 +73,7 @@ export const createShuttle = async (payload: {
   plateNumber: string;
   maxCapacity: number;
   label?: string;
+  assignedPhase?: string | null;
 }): Promise<Shuttle> => {
   const response = await apiClient.post('/shuttles', payload);
   return response.data?.shuttle as Shuttle;
@@ -96,14 +104,17 @@ export const updateCommunity = async (
   payload: {
     name?: string;
     baseFare?: number;
+    priorityFareMultiplier?: number;
     boundaries?: { type: 'Polygon'; coordinates: number[][][] };
     branding?: { primaryColor?: string; logoUrl?: string };
     isActive?: boolean;
+    opsBypassMode?: boolean;
   }
 ): Promise<Community> => {
   const response = await apiClient.put(`/communities/${communityId}`, payload);
   return response.data?.community as Community;
 };
+
 
 export const fetchFixedDestinations = async (communityId: string) => {
   const response = await apiClient.get(`/communities/${communityId}/fixed-destinations`);
@@ -129,6 +140,57 @@ export const updateFixedDestination = async (
 
 export const archiveFixedDestination = async (communityId: string, destinationId: string) => {
   await apiClient.delete(`/communities/${communityId}/fixed-destinations/${destinationId}`);
+};
+
+// Phase Geofence API functions
+
+export interface PhaseGeofence {
+  _id: string;
+  name: string;
+  boundaries: {
+    type: 'Polygon';
+    coordinates: number[][][];
+  };
+  color: string;
+  isActive: boolean;
+  order: number;
+}
+
+export const fetchPhaseGeofences = async (communityId: string): Promise<PhaseGeofence[]> => {
+  const response = await apiClient.get(`/communities/${communityId}/phase-geofences`);
+  return (response.data?.phaseGeofences || []) as PhaseGeofence[];
+};
+
+export const createPhaseGeofence = async (
+  communityId: string,
+  payload: {
+    name: string;
+    boundaries: { type: 'Polygon'; coordinates: number[][][] };
+    color?: string;
+    order?: number;
+  }
+): Promise<PhaseGeofence> => {
+  const response = await apiClient.post(`/communities/${communityId}/phase-geofences`, payload);
+  return response.data?.phaseGeofence as PhaseGeofence;
+};
+
+export const updatePhaseGeofence = async (
+  communityId: string,
+  phaseId: string,
+  payload: {
+    name?: string;
+    boundaries?: { type: 'Polygon'; coordinates: number[][][] };
+    color?: string;
+    order?: number;
+    isActive?: boolean;
+  }
+): Promise<PhaseGeofence> => {
+  const response = await apiClient.patch(`/communities/${communityId}/phase-geofences/${phaseId}`, payload);
+  return response.data?.phaseGeofence as PhaseGeofence;
+};
+
+export const archivePhaseGeofence = async (communityId: string, phaseId: string) => {
+  await apiClient.delete(`/communities/${communityId}/phase-geofences/${phaseId}`);
 };
 
 export const createManagedUser = async (payload: {
@@ -209,5 +271,17 @@ export const createAnnouncement = async (payload: {
 }): Promise<Announcement> => {
   const response = await apiClient.post('/announcements', payload);
   return response.data?.announcement as Announcement;
+};
+
+export const adminBypassPickupIntent = async (payload: {
+  latitude: number;
+  longitude: number;
+  fareType?: 'standard' | 'priority';
+}) => {
+  const response = await apiClient.post('/trips/pickup-intent', {
+    ...payload,
+    _adminBypassOnDutyCheck: true,
+  });
+  return response.data;
 };
 

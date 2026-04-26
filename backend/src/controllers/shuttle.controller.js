@@ -8,6 +8,7 @@ const PickupRequest = require('../models/PickupRequest');
 const PassengerRide = require('../models/PassengerRide');
 const { isLocationInBoundary } = require('../services/geofence');
 const { getManualAutomationCooldownRemainingMs } = require('../services/automation-cooldown');
+const { normalizePhase, buildPhaseAwareRequestQuery } = require('../utils/phase');
 
 const AUTO_PICKUP_RADIUS_METERS = 140;
 const AUTO_UNBOARD_RADIUS_METERS = 20;
@@ -111,6 +112,10 @@ const applySession = (query, session) => (session ? query.session(session) : que
 
 const claimNearbyPickupRequests = async ({ session, shuttle, maxCount }) => {
   const claimed = [];
+  const phaseQuery = buildPhaseAwareRequestQuery({
+    shuttlePhase: shuttle.assignedPhase,
+    passengerPhaseField: 'passengerHomePhase',
+  });
 
   for (let i = 0; i < maxCount; i += 1) {
     let request = null;
@@ -122,6 +127,7 @@ const claimNearbyPickupRequests = async ({ session, shuttle, maxCount }) => {
             communityId: shuttle.communityId,
             status: 'pending',
             expiresAt: { $gt: new Date() },
+            ...phaseQuery,
             location: {
               $near: {
                 $geometry: shuttle.location,
@@ -366,11 +372,16 @@ const buildAutomationDiagnostics = async ({
     baseDiagnostics.autoBoarding.state = AUTO_DIAGNOSTIC_STATES.EXECUTED;
     baseDiagnostics.autoBoarding.reasonCode = 'auto_boarded';
   } else {
+    const phaseQuery = buildPhaseAwareRequestQuery({
+      shuttlePhase: shuttle.assignedPhase,
+      passengerPhaseField: 'passengerHomePhase',
+    });
     const nearbyPendingCount = await applySession(
       PickupRequest.countDocuments({
         communityId: shuttle.communityId,
         status: 'pending',
         expiresAt: { $gt: new Date() },
+        ...phaseQuery,
         location: buildGeoWithinDistanceFilter(shuttle.location, AUTO_PICKUP_RADIUS_METERS),
       }),
       session
@@ -445,6 +456,7 @@ const buildAutomationDiagnostics = async ({
 const createShuttle = async (req, res) => {
   try {
     const { plateNumber, maxCapacity, label, communityId } = req.body;
+    const assignedPhase = normalizePhase(req.body.assignedPhase);
 
     if (!plateNumber || maxCapacity === undefined) {
       return res.status(400).json({ error: 'plateNumber and maxCapacity are required.' });
@@ -469,6 +481,7 @@ const createShuttle = async (req, res) => {
       plateNumber: String(plateNumber).trim().toUpperCase(),
       maxCapacity: parsedCapacity,
       label: label ? String(label).trim() : '',
+      assignedPhase,
     });
 
     return res.status(201).json({
@@ -801,6 +814,7 @@ const assignShuttleDriver = async (req, res) => {
   try {
     const { id } = req.params;
     const { driverId } = req.body;
+    const normalizedAssignedPhase = normalizePhase(req.body.assignedPhase);
     const requesterCommunityId = req.user?.communityId ? req.user.communityId.toString() : '';
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -818,6 +832,9 @@ const assignShuttleDriver = async (req, res) => {
 
     if (driverId === null || driverId === '' || driverId === undefined) {
       shuttle.driverId = null;
+      if (req.body.assignedPhase !== undefined) {
+        shuttle.assignedPhase = normalizedAssignedPhase;
+      }
       await shuttle.save();
       await shuttle.populate('driverId', 'firstName lastName status');
       return res.status(200).json({ message: 'Driver assignment cleared.', shuttle });
@@ -837,6 +854,9 @@ const assignShuttleDriver = async (req, res) => {
     }
 
     shuttle.driverId = driver._id;
+    if (req.body.assignedPhase !== undefined) {
+      shuttle.assignedPhase = normalizedAssignedPhase;
+    }
     await shuttle.save();
     await shuttle.populate('driverId', 'firstName lastName status');
 

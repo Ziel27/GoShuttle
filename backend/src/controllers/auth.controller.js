@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const validator = require('validator');
 const User = require('../models/User');
 const Community = require('../models/Community');
+const { normalizePhase } = require('../utils/phase');
 
 let nodemailer = null;
 try {
@@ -117,6 +118,7 @@ const sendResetCodeEmail = async (email, code) => {
 const register = async (req, res) => {
   try {
     const { firstName, lastName, email, password, communityId, phone } = req.body;
+    const homePhase = normalizePhase(req.body.homePhase);
 
     // ─── Resolve community assignment ─────────────────────────
     let assignedCommunityId = communityId;
@@ -149,9 +151,18 @@ const register = async (req, res) => {
     }
 
     // ─── Verify community exists and is active ─────────────────
-    const community = await Community.findById(assignedCommunityId);
+    const community = await Community.findById(assignedCommunityId).select('isActive phaseGeofences');
     if (!community || !community.isActive) {
       return res.status(404).json({ error: 'Community not found or is inactive.' });
+    }
+
+    if (homePhase) {
+      const hasMatchingActivePhase = (community.phaseGeofences || []).some(
+        (phase) => phase?.isActive !== false && phase?.name === homePhase
+      );
+      if (!hasMatchingActivePhase) {
+        return res.status(400).json({ error: 'Selected home phase is not available in this community.' });
+      }
     }
 
     // ─── Check for duplicate email ─────────────────────────────
@@ -168,6 +179,7 @@ const register = async (req, res) => {
       password, // Hashed by the pre-save hook in User model
       communityId: assignedCommunityId,
       phone: phone ? validator.trim(phone) : '',
+      homePhase,
       role: 'passenger', // Hardcoded — admin/driver accounts are created via admin endpoints
     });
 
@@ -222,6 +234,22 @@ const login = async (req, res) => {
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {
       return res.status(401).json({ error: 'Invalid credentials.' });
+    }
+
+    // ─── Update online status on login ─────────────────────────
+    // Admins and passengers become 'active'. Drivers stay in their own
+    // lifecycle (offline ↔ driving) managed by the shift endpoints —
+    // but if a driver is somehow still marked 'driving' from a stale
+    // session, reset them to 'offline' for a clean start.
+    if (user.role === 'driver') {
+      if (user.status === 'driving') {
+        user.status = 'offline';
+        await user.save();
+      }
+    } else {
+      // admin / passenger → mark online
+      user.status = 'active';
+      await user.save();
     }
 
     // ─── Generate token & respond ──────────────────────────────
@@ -387,9 +415,17 @@ const resetPassword = async (req, res) => {
 
 /**
  * POST /api/auth/logout
- * Clears the authentication cookie.
+ * Clears the authentication cookie and marks the user offline.
  */
 const logout = async (req, res) => {
+  try {
+    // Mark user offline if we have a session (auth middleware may have populated req.user)
+    if (req.user?._id) {
+      await User.findByIdAndUpdate(req.user._id, { status: 'offline' });
+    }
+  } catch {
+    // Non-fatal — still clear the cookie
+  }
   res.clearCookie('auth_token', { path: '/' });
   res.status(200).json({ message: 'Logged out successfully.' });
 };

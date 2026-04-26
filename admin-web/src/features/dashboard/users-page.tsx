@@ -16,10 +16,35 @@ import {
 import { createManagedUser, fetchUsers, patchUserStatus } from '@/lib/admin-api';
 import type { User } from '@/types/domain';
 
-const statusVariant = (status?: string) => {
-  if (status === 'driving') return 'default';
-  if (status === 'active') return 'secondary';
-  return 'outline';
+const getAccountState = (user: User) => {
+  if (user.isActive === false) {
+    return {
+      label: 'Inactive account',
+      detail: 'Login disabled',
+      variant: 'destructive' as const,
+    };
+  }
+
+  const status = user.status || 'offline';
+  if (status === 'driving') {
+    return {
+      label: 'On shift',
+      detail: 'Driver currently driving',
+      variant: 'default' as const,
+    };
+  }
+  if (status === 'active') {
+    return {
+      label: 'Online',
+      detail: 'Account active',
+      variant: 'secondary' as const,
+    };
+  }
+  return {
+    label: 'Offline',
+    detail: 'Account active',
+    variant: 'outline' as const,
+  };
 };
 
 export const UsersPage = () => {
@@ -199,8 +224,7 @@ export const UsersPage = () => {
               <TableHead>Name</TableHead>
               <TableHead>Email</TableHead>
               <TableHead>Role</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Active</TableHead>
+              <TableHead>Account State</TableHead>
               <TableHead>Action</TableHead>
             </TableRow>
           </TableHeader>
@@ -211,12 +235,15 @@ export const UsersPage = () => {
                 <TableCell>{user.email}</TableCell>
                 <TableCell className="capitalize">{user.role}</TableCell>
                 <TableCell>
-                  <Badge variant={statusVariant(user.status)}>{user.status || 'offline'}</Badge>
-                </TableCell>
-                <TableCell>
-                  <Badge variant={user.isActive === false ? 'destructive' : 'secondary'}>
-                    {user.isActive === false ? 'Inactive' : 'Active'}
-                  </Badge>
+                  {(() => {
+                    const state = getAccountState(user);
+                    return (
+                      <div className="space-y-1">
+                        <Badge variant={state.variant}>{state.label}</Badge>
+                        <p className="text-xs text-slate-500">{state.detail}</p>
+                      </div>
+                    );
+                  })()}
                 </TableCell>
                 <TableCell>
                   <Button
@@ -232,7 +259,7 @@ export const UsersPage = () => {
             ))}
             {!loading && filteredUsers.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} className="text-center text-muted-foreground">
+                <TableCell colSpan={5} className="text-center text-muted-foreground">
                   No users match the current filter.
                 </TableCell>
               </TableRow>

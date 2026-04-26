@@ -8,17 +8,22 @@ import { useAuth } from '@/context/auth-context';
 import { GeofenceMap } from '@/features/dashboard/geofence-map';
 import { LocationPickerMap } from '@/features/dashboard/location-picker-map';
 import {
-    archiveFixedDestination,
-    createFixedDestination,
-    fetchCommunityById,
-    fetchFixedDestinations,
-    updateCommunity,
-    updateFixedDestination,
+  archiveFixedDestination,
+  archivePhaseGeofence,
+  createFixedDestination,
+  createPhaseGeofence,
+  fetchCommunityById,
+  fetchFixedDestinations,
+  fetchPhaseGeofences,
+  updateCommunity,
+  updateFixedDestination,
+  updatePhaseGeofence,
 } from '@/lib/admin-api';
 import { communityIdFromUnknown } from '@/lib/format';
 import type { Community } from '@/types/domain';
 
 type FixedDestination = NonNullable<Community['fixedDestinations']>[number];
+type PhaseGeofence = NonNullable<Community['phaseGeofences']>[number];
 
 const isValidLatitude = (value: number) => Number.isFinite(value) && value >= -90 && value <= 90;
 const isValidLongitude = (value: number) => Number.isFinite(value) && value >= -180 && value <= 180;
@@ -56,6 +61,14 @@ const parseLngLat = (point: unknown): [number, number] | null => {
   return [lng, lat];
 };
 
+const isHexColor = (value: string) => /^#[0-9a-fA-F]{6}$/.test(String(value || '').trim());
+
+const isPhaseRingInsideCommunityRing = (phaseRing: number[][], communityRing: number[][]) =>
+  phaseRing.every((point) => {
+    const [lng, lat] = point;
+    return isPointInsideRing(lat, lng, communityRing);
+  });
+
 const normalizeCoordinates = (value?: number[][][]) => {
   const ring = value?.[0] || [];
 
@@ -85,7 +98,9 @@ export const CommunitiesPage = () => {
   const [notice, setNotice] = useState('');
   const [communityNameInput, setCommunityNameInput] = useState('');
   const [baseFareInput, setBaseFareInput] = useState('0');
+  const [priorityFareMultiplierInput, setPriorityFareMultiplierInput] = useState('1.5');
   const [saving, setSaving] = useState(false);
+
   const [coordinates, setCoordinates] = useState<number[][][]>([]);
   const [savedCoordinates, setSavedCoordinates] = useState<number[][][]>([]);
   const [destinations, setDestinations] = useState<FixedDestination[]>([]);
@@ -99,6 +114,18 @@ export const CommunitiesPage = () => {
   const [editingDestinationLatitude, setEditingDestinationLatitude] = useState('');
   const [editingDestinationLongitude, setEditingDestinationLongitude] = useState('');
   const [destinationUpdating, setDestinationUpdating] = useState(false);
+  const [phaseGeofences, setPhaseGeofences] = useState<PhaseGeofence[]>([]);
+  const [phaseNameInput, setPhaseNameInput] = useState('');
+  const [phaseColorInput, setPhaseColorInput] = useState('#6366f1');
+  const [phaseCoordinates, setPhaseCoordinates] = useState<number[][][]>([]);
+  const [phaseSaving, setPhaseSaving] = useState(false);
+  const [editingPhaseId, setEditingPhaseId] = useState('');
+  const [editingPhaseName, setEditingPhaseName] = useState('');
+  const [editingPhaseColor, setEditingPhaseColor] = useState('#6366f1');
+  const [editingPhaseCoordinates, setEditingPhaseCoordinates] = useState<number[][][]>([]);
+  const [phaseUpdating, setPhaseUpdating] = useState(false);
+  const fitCreatePhaseCommunityRef = useRef<(() => void) | null>(null);
+  const fitEditPhaseCommunityRef = useRef<(() => void) | null>(null);
   const fitGeofenceRef = useRef<(() => void) | null>(null);
 
   const hasUnsavedGeofenceChanges = useMemo(
@@ -122,18 +149,22 @@ export const CommunitiesPage = () => {
     setNotice('');
 
     try {
-      const [communityRow, destinationRows] = await Promise.all([
+      const [communityRow, destinationRows, phaseRows] = await Promise.all([
         fetchCommunityById(scopedCommunityId),
         fetchFixedDestinations(scopedCommunityId),
+        fetchPhaseGeofences(scopedCommunityId),
       ]);
 
       const normalized = normalizeCoordinates(communityRow.boundaries?.coordinates);
       setCommunity(communityRow);
       setCommunityNameInput(communityRow.name || '');
       setBaseFareInput(String(communityRow.baseFare ?? 0));
+      setPriorityFareMultiplierInput(String(communityRow.priorityFareMultiplier ?? 1.5));
       setCoordinates(normalized);
+
       setSavedCoordinates(normalized);
       setDestinations(destinationRows.filter((item) => item.isActive !== false));
+      setPhaseGeofences(phaseRows.filter((item) => item.isActive !== false));
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load community details');
     } finally {
@@ -158,6 +189,12 @@ export const CommunitiesPage = () => {
 
     if (!Number.isFinite(parsedFare) || parsedFare < 0) {
       setError('Base fare must be a valid non-negative number.');
+      return;
+    }
+
+    const parsedMultiplier = Number(priorityFareMultiplierInput);
+    if (!Number.isFinite(parsedMultiplier) || parsedMultiplier < 1.0 || parsedMultiplier > 10.0) {
+      setError('Priority fare multiplier must be between 1.0 and 10.0.');
       return;
     }
 
@@ -210,6 +247,7 @@ export const CommunitiesPage = () => {
       const updated = await updateCommunity(scopedCommunityId, {
         name: normalizedCommunityName,
         baseFare: parsedFare,
+        priorityFareMultiplier: parsedMultiplier,
         ...(normalized.length > 0
           ? {
             boundaries: {
@@ -224,8 +262,10 @@ export const CommunitiesPage = () => {
       setCommunity(updated);
       setCommunityNameInput(updated.name || normalizedCommunityName);
       setBaseFareInput(String(updated.baseFare ?? parsedFare));
+      setPriorityFareMultiplierInput(String(updated.priorityFareMultiplier ?? parsedMultiplier));
       setCoordinates(updatedCoordinates);
       setSavedCoordinates(updatedCoordinates);
+
 
       let destinationSaved = false;
       if (destinationPayload) {
@@ -337,6 +377,150 @@ export const CommunitiesPage = () => {
   };
 
   const normalizedCoordinates = normalizeCoordinates(coordinates);
+  const normalizedPhaseCoordinates = normalizeCoordinates(phaseCoordinates);
+  const normalizedEditingPhaseCoordinates = normalizeCoordinates(editingPhaseCoordinates);
+  const communityRing = normalizedCoordinates[0] || [];
+  const createPhaseRing = normalizedPhaseCoordinates[0] || [];
+  const editPhaseRing = normalizedEditingPhaseCoordinates[0] || [];
+  const isCreatePhaseOutOfBounds =
+    communityRing.length >= 4 &&
+    createPhaseRing.length >= 4 &&
+    !isPhaseRingInsideCommunityRing(createPhaseRing, communityRing);
+  const isEditPhaseOutOfBounds =
+    communityRing.length >= 4 &&
+    editPhaseRing.length >= 4 &&
+    !isPhaseRingInsideCommunityRing(editPhaseRing, communityRing);
+  const phaseOverlayPolygons = phaseGeofences.map((phase) => ({
+    name: phase.name,
+    coordinates: phase.boundaries?.coordinates || [],
+    color: phase.color || '#6366f1',
+  }));
+
+  const handleCreatePhase = async () => {
+    if (!scopedCommunityId) return;
+    const normalizedName = phaseNameInput.trim();
+    if (!normalizedName) {
+      setError('Phase name is required.');
+      return;
+    }
+    if (!isHexColor(phaseColorInput)) {
+      setError('Phase color must be a valid hex color (e.g. #22c55e).');
+      return;
+    }
+    if (!normalizedPhaseCoordinates.length) {
+      setError('Draw a phase geofence before saving.');
+      return;
+    }
+    if (communityRing.length < 4) {
+      setError('Save the community geofence first before adding phase geofences.');
+      return;
+    }
+    if (isCreatePhaseOutOfBounds) {
+      setError('Phase geofence must stay strictly inside the community geofence.');
+      return;
+    }
+
+    setPhaseSaving(true);
+    setError('');
+    setNotice('');
+    try {
+      const created = await createPhaseGeofence(scopedCommunityId, {
+        name: normalizedName,
+        color: phaseColorInput,
+        boundaries: {
+          type: 'Polygon',
+          coordinates: normalizedPhaseCoordinates,
+        },
+      });
+      setPhaseGeofences((prev) => [...prev, created].sort((a, b) => (a.order || 0) - (b.order || 0)));
+      setPhaseNameInput('');
+      setPhaseColorInput('#6366f1');
+      setPhaseCoordinates([]);
+      setNotice('Phase geofence added.');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to add phase geofence');
+    } finally {
+      setPhaseSaving(false);
+    }
+  };
+
+  const startEditingPhase = (phase: PhaseGeofence) => {
+    setEditingPhaseId(phase._id);
+    setEditingPhaseName(phase.name);
+    setEditingPhaseColor(phase.color || '#6366f1');
+    setEditingPhaseCoordinates(normalizeCoordinates(phase.boundaries?.coordinates || []));
+    setError('');
+    setNotice('');
+  };
+
+  const cancelEditingPhase = () => {
+    setEditingPhaseId('');
+    setEditingPhaseName('');
+    setEditingPhaseColor('#6366f1');
+    setEditingPhaseCoordinates([]);
+  };
+
+  const handleUpdatePhase = async () => {
+    if (!scopedCommunityId || !editingPhaseId) return;
+    const normalizedName = editingPhaseName.trim();
+    if (!normalizedName) {
+      setError('Phase name is required.');
+      return;
+    }
+    if (!isHexColor(editingPhaseColor)) {
+      setError('Phase color must be a valid hex color (e.g. #22c55e).');
+      return;
+    }
+    if (!normalizedEditingPhaseCoordinates.length) {
+      setError('Phase geofence cannot be empty.');
+      return;
+    }
+    if (communityRing.length < 4) {
+      setError('Save the community geofence first before updating phase geofences.');
+      return;
+    }
+    if (isEditPhaseOutOfBounds) {
+      setError('Phase geofence must stay strictly inside the community geofence.');
+      return;
+    }
+
+    setPhaseUpdating(true);
+    setError('');
+    setNotice('');
+    try {
+      const updated = await updatePhaseGeofence(scopedCommunityId, editingPhaseId, {
+        name: normalizedName,
+        color: editingPhaseColor,
+        boundaries: {
+          type: 'Polygon',
+          coordinates: normalizedEditingPhaseCoordinates,
+        },
+      });
+      setPhaseGeofences((prev) =>
+        prev.map((item) => (item._id === updated._id ? updated : item)).sort((a, b) => (a.order || 0) - (b.order || 0))
+      );
+      cancelEditingPhase();
+      setNotice('Phase geofence updated.');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to update phase geofence');
+    } finally {
+      setPhaseUpdating(false);
+    }
+  };
+
+  const handleArchivePhase = async (phaseId: string) => {
+    if (!scopedCommunityId) return;
+    setError('');
+    setNotice('');
+    try {
+      await archivePhaseGeofence(scopedCommunityId, phaseId);
+      setPhaseGeofences((prev) => prev.filter((item) => item._id !== phaseId));
+      if (editingPhaseId === phaseId) cancelEditingPhase();
+      setNotice('Phase geofence archived.');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to archive phase geofence');
+    }
+  };
 
   return (
     <Card className="border-slate-200 bg-white shadow-sm">
@@ -386,6 +570,52 @@ export const CommunitiesPage = () => {
               </div>
             </div>
 
+            {/* Priority Fare Section */}
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 space-y-3">
+              <div>
+                <p className="text-sm font-semibold text-amber-900">⚡ Priority Fare</p>
+                <p className="text-xs text-amber-700 mt-0.5">
+                  Passengers can pay extra to skip the waiting queue. Priority requests also displace standard
+                  pending pickups when no free slot is available.
+                </p>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2 items-end">
+                <div className="space-y-2">
+                  <Label htmlFor="priorityFareMultiplier" className="text-sm font-medium text-amber-900">
+                    Priority Multiplier (×)
+                  </Label>
+                  <Input
+                    id="priorityFareMultiplier"
+                    type="number"
+                    min="1.0"
+                    max="10.0"
+                    step="0.1"
+                    value={priorityFareMultiplierInput}
+                    onChange={(e) => setPriorityFareMultiplierInput(e.target.value)}
+                    className="h-8 border-amber-300 focus:border-amber-500"
+                  />
+                  <p className="text-xs text-amber-600">Range: 1.0 – 10.0</p>
+                </div>
+                <div className="rounded-lg border border-amber-300 bg-white px-4 py-3">
+                  <p className="text-xs text-slate-500">Priority fare preview</p>
+                  <p className="text-lg font-bold text-amber-800">
+                    ₱{
+                      (() => {
+                        const base = Number(baseFareInput);
+                        const mult = Number(priorityFareMultiplierInput);
+                        if (!Number.isFinite(base) || !Number.isFinite(mult) || mult < 1) return '—';
+                        return (base * mult).toFixed(2);
+                      })()
+                    }
+                  </p>
+                  <p className="text-xs text-slate-400">
+                    = ₱{Number(baseFareInput) || 0} × {Number(priorityFareMultiplierInput) || '?'}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+
             <div className="space-y-2">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-sm font-medium text-slate-900">Geofence Boundary Map</p>
@@ -411,6 +641,7 @@ export const CommunitiesPage = () => {
               <div className="rounded-lg border border-slate-200">
                 <GeofenceMap
                   coordinates={coordinates}
+                  overlayPolygons={phaseOverlayPolygons}
                   onChange={(nextCoordinates) => setCoordinates(normalizeCoordinates(nextCoordinates))}
                   onMapReady={(controls) => {
                     fitGeofenceRef.current = controls.fitGeofence;
@@ -546,9 +777,140 @@ export const CommunitiesPage = () => {
               </div>
             </div>
 
+            <div className="space-y-3 rounded-xl border border-indigo-200 bg-indigo-50 p-4">
+              <p className="text-sm font-medium text-slate-900">Phase Geofences</p>
+              <p className="text-xs text-slate-600">
+                Draw each phase inside the community geofence. Each phase can use a different color for mobile map display.
+              </p>
+              <div className="grid gap-2 md:grid-cols-2">
+                <Input
+                  placeholder="Phase name (e.g. phase_1)"
+                  value={phaseNameInput}
+                  onChange={(e) => setPhaseNameInput(e.target.value)}
+                />
+                <Input
+                  type="color"
+                  value={phaseColorInput}
+                  onChange={(e) => setPhaseColorInput(e.target.value)}
+                  aria-label="Phase color picker"
+                />
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-white p-2">
+                <GeofenceMap
+                  coordinates={phaseCoordinates}
+                  referenceCoordinates={normalizedCoordinates}
+                  overlayPolygons={phaseOverlayPolygons}
+                  onChange={(nextCoordinates) => setPhaseCoordinates(normalizeCoordinates(nextCoordinates))}
+                  onMapReady={(controls) => {
+                    fitCreatePhaseCommunityRef.current = controls.fitReference;
+                  }}
+                />
+              </div>
+              <div className="flex justify-end">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => fitCreatePhaseCommunityRef.current?.()}
+                  disabled={!normalizedCoordinates.length}
+                >
+                  Go to Community Geofence
+                </Button>
+              </div>
+              {isCreatePhaseOutOfBounds ? (
+                <p className="text-xs text-destructive">
+                  Phase geofence is outside the community boundary. Move it fully inside before saving.
+                </p>
+              ) : null}
+              <div className="flex justify-end">
+                <Button onClick={() => void handleCreatePhase()} disabled={phaseSaving || isCreatePhaseOutOfBounds}>
+                  {phaseSaving ? 'Saving phase...' : 'Add Phase Geofence'}
+                </Button>
+              </div>
+
+              <div className="space-y-2">
+                {phaseGeofences.length === 0 ? (
+                  <p className="text-sm text-slate-500">No phase geofences yet.</p>
+                ) : (
+                  phaseGeofences.map((phase) => (
+                    <div key={phase._id} className="space-y-2 rounded border border-slate-200 bg-white p-3">
+                      {editingPhaseId === phase._id ? (
+                        <>
+                          <div className="grid gap-2 md:grid-cols-2">
+                            <Input
+                              value={editingPhaseName}
+                              onChange={(event) => setEditingPhaseName(event.target.value)}
+                              placeholder="Phase name"
+                            />
+                            <Input
+                              type="color"
+                              value={editingPhaseColor}
+                              onChange={(event) => setEditingPhaseColor(event.target.value)}
+                              aria-label="Edit phase color picker"
+                            />
+                          </div>
+                          <div className="rounded-lg border border-slate-200 bg-white p-2">
+                            <GeofenceMap
+                              coordinates={editingPhaseCoordinates}
+                              referenceCoordinates={normalizedCoordinates}
+                              overlayPolygons={phaseOverlayPolygons}
+                              onChange={(nextCoordinates) => setEditingPhaseCoordinates(normalizeCoordinates(nextCoordinates))}
+                              onMapReady={(controls) => {
+                                fitEditPhaseCommunityRef.current = controls.fitReference;
+                              }}
+                            />
+                          </div>
+                          <div className="flex justify-end">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => fitEditPhaseCommunityRef.current?.()}
+                              disabled={!normalizedCoordinates.length}
+                            >
+                              Go to Community Geofence
+                            </Button>
+                          </div>
+                          {isEditPhaseOutOfBounds ? (
+                            <p className="text-xs text-destructive">
+                              Phase geofence is outside the community boundary. Move it fully inside before saving.
+                            </p>
+                          ) : null}
+                          <div className="flex flex-wrap justify-end gap-2">
+                            <Button variant="outline" onClick={cancelEditingPhase} disabled={phaseUpdating}>
+                              Cancel
+                            </Button>
+                            <Button onClick={() => void handleUpdatePhase()} disabled={phaseUpdating || isEditPhaseOutOfBounds}>
+                              {phaseUpdating ? 'Saving...' : 'Save'}
+                            </Button>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-2">
+                            <span
+                              className="inline-block h-3 w-3 rounded-full border border-slate-300"
+                              style={{ backgroundColor: phase.color || '#6366f1' }}
+                            />
+                            <p className="text-sm font-medium text-slate-900">{phase.name}</p>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <Button variant="outline" onClick={() => startEditingPhase(phase)}>
+                              Edit
+                            </Button>
+                            <Button variant="outline" onClick={() => void handleArchivePhase(phase._id)}>
+                              Archive
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
             <Button
               onClick={handleSave}
-              disabled={saving || destinationSaving || destinationUpdating}
+              disabled={saving || destinationSaving || destinationUpdating || phaseSaving || phaseUpdating}
               className="w-full"
             >
               {saving ? 'Saving...' : 'Save Changes'}

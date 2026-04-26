@@ -1,5 +1,7 @@
 const Shuttle = require('../models/Shuttle');
 const { isLocationInBoundary } = require('./geofence');
+const { retryWaitingQueue } = require('./dispatch.service');
+
 
 const isDriverOrAdmin = (role) => role === 'driver' || role === 'admin';
 const DRIVER_LOCATION_THROTTLE_MS = 500;
@@ -181,6 +183,16 @@ const registerSocketHandlers = (io) => {
           capacityStatus: shuttle.capacityStatus,
           updatedAt: shuttle.updatedAt,
         });
+
+        // DISPATCH: When capacity decreases (passenger unboarded), retry waiting queue
+        if (parsedDelta < 0) {
+          setImmediate(() => {
+            retryWaitingQueue(communityId, io).catch((err) =>
+              console.error('[socket:capacity-update] retryWaitingQueue error:', err)
+            );
+          });
+        }
+
       } catch (error) {
         console.error('Socket capacity-update error:', error);
         socket.emit('socket:error', { error: 'Failed to process capacity-update event.' });

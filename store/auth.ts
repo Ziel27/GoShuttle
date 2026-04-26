@@ -11,6 +11,7 @@ type User = {
   role: 'admin' | 'driver' | 'passenger';
   communityId: string;
   status?: 'active' | 'offline' | 'driving';
+  homePhase?: string | null;
   homeDestination?: {
     label: string;
     location: {
@@ -28,6 +29,7 @@ type RegisterPayload = {
   password: string;
   communityId?: string;
   phone?: string;
+  homePhase?: string;
 };
 
 type AuthState = {

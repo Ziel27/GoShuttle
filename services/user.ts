@@ -14,3 +14,11 @@ export const setHomeDestinationFromGps = async (
 
   return response.data?.user as User;
 };
+
+export const updateHomePhase = async (homePhase: string | null) => {
+  const response = await api.patch('/users/me/home-phase', {
+    homePhase,
+  });
+
+  return response.data?.user as User;
+};

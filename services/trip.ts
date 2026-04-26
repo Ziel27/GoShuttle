@@ -23,9 +23,35 @@ export type PickupIntent = {
     type: 'Point';
     coordinates: [number, number];
   };
-  status: 'pending' | 'claimed' | 'expired' | 'cancelled';
+  passengerHomePhase: string | null;
+  fareType: 'standard' | 'priority';
+  status: 'pending' | 'claimed' | 'dispatched' | 'queued' | 'bumped' | 'expired' | 'cancelled';
   expiresAt: string;
 };
+
+export type AssignedShuttle = {
+  shuttleId: string;
+  plateNumber: string;
+  label: string;
+  assignedPhase?: string | null;
+  location: { type: 'Point'; coordinates: [number, number] };
+  currentCapacity: number;
+  maxCapacity: number;
+  pendingPickupCount: number;
+  status: string;
+};
+
+export type DispatchStatus = {
+  requestId: string;
+  fareType: 'standard' | 'priority';
+  status: 'dispatched' | 'queued';
+  passengerHomePhase?: string | null;
+  queuePosition: number | null;
+  dispatchedAt: string | null;
+  expiresAt: string;
+  assignedShuttle: AssignedShuttle | null;
+};
+
 
 export type PassengerRecentRide = {
   rideId: string;
@@ -137,6 +163,8 @@ type PickupDestinationInput =
   | { type: 'fixed'; fixedDestinationId: string }
   | { type: 'home'; latitude: number; longitude: number; label?: string };
 
+export type QueueReason = 'no_shuttles_on_duty' | 'all_shuttles_full' | 'dispatch_race' | null;
+
 /**
  * Creates a pickup intent for the current passenger.
  * @throws {Error} When the API request fails.
@@ -144,16 +172,38 @@ type PickupDestinationInput =
 export const createPickupIntent = async (
   latitude: number,
   longitude: number,
-  destination: PickupDestinationInput
-): Promise<PickupIntent> => {
+  destination: PickupDestinationInput,
+  fareType: 'standard' | 'priority' = 'standard'
+): Promise<{
+  request: PickupIntent;
+  rideRequestId: string;
+  fareType: 'standard' | 'priority';
+  fareExpected: number;
+  dispatched: boolean;
+  assignedShuttle: AssignedShuttle | null;
+  queuePosition: number | null;
+  queueReason: QueueReason;
+}> => {
   const response = await api.post('/trips/pickup-intent', {
     latitude,
     longitude,
     destination,
+    fareType,
   });
 
-  return response.data?.request as PickupIntent;
+  return {
+    request: response.data?.request as PickupIntent,
+    rideRequestId: response.data?.rideRequestId as string,
+    fareType: (response.data?.fareType as 'standard' | 'priority') ?? fareType,
+    fareExpected: (response.data?.fareExpected as number) ?? 0,
+    dispatched: Boolean(response.data?.dispatched),
+    assignedShuttle: (response.data?.assignedShuttle as AssignedShuttle) ?? null,
+    queuePosition: (response.data?.queuePosition as number | null) ?? null,
+    queueReason: (response.data?.queueReason as QueueReason) ?? null,
+  };
 };
+
+
 
 /**
  * Cancels a pending pickup intent.
@@ -163,6 +213,30 @@ export const cancelPickupIntent = async (intentId: string): Promise<PickupIntent
   const response = await api.delete(`/trips/pickup-intent/${intentId}`);
   return response.data?.request as PickupIntent;
 };
+
+/**
+ * Cancels ALL active pickup intents for the current passenger.
+ * Should be called before logout to release reserved shuttle slots.
+ * Errors are intentionally swallowed — logout must proceed regardless.
+ */
+export const cancelMyPickupIntents = async (): Promise<{ cancelled: number }> => {
+  try {
+    const response = await api.delete('/trips/my-pickup-intents');
+    return { cancelled: response.data?.cancelled ?? 0 };
+  } catch {
+    return { cancelled: 0 };
+  }
+};
+
+/**
+ * Returns the passenger's current dispatched or queued pickup request.
+ * @throws {Error} When the API request fails.
+ */
+export const getMyDispatch = async (): Promise<DispatchStatus | null> => {
+  const response = await api.get('/trips/my-dispatch');
+  return (response.data?.dispatch as DispatchStatus) ?? null;
+};
+
 
 /**
  * Lists active pickup intents for driver and admin use.

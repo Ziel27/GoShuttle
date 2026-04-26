@@ -11,7 +11,7 @@ import { AppPalette, getCapacityColor } from '@/constants/app-ui';
 import { DesignTokens, OutfitFonts, SemanticColors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useThemeColor } from '@/hooks/use-theme-color';
-import { getCommunityById } from '@/services/community';
+import { getCommunityById, getPhaseGeofences, type PhaseGeofence } from '@/services/community';
 import { syncOfflineBoardings } from '@/services/offline-boarding-queue';
 import {
   AutomationDiagnostics,
@@ -28,8 +28,13 @@ import {
   listPickupIntents,
   OnboardDestinationPassenger,
   PickupIntent,
-  unboardPassenger
+  unboardPassenger,
+  AssignedShuttle,
+  getMyDispatch,
+  QueueReason,
 } from '@/services/trip';
+
+
 import { useAuthStore } from '@/store/auth';
 import { usePreferencesStore } from '@/store/preferences';
 import {
@@ -49,7 +54,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
 import { type ComponentRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import MapView, { Callout, Circle, LatLng, Marker, Polygon, Region } from 'react-native-maps';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -175,6 +180,33 @@ export default function HomeScreen() {
   const offlineSyncNoticeRef = useRef(0);
   const recentPickupCancelEventRef = useRef<{ requestId: string; at: number } | null>(null);
 
+  // ── Dispatch state (passenger-only) ───────────────────────────────────────
+  const [fareType, setFareType] = useState<'standard' | 'priority'>('standard');
+  const [dispatchedShuttle, setDispatchedShuttle] = useState<AssignedShuttle | null>(null);
+  const [queueNotice, setQueueNotice] = useState<{
+    position: number | null;
+    reason: QueueReason | null;
+    message: string;
+  } | null>(null);
+
+  const queueReasonMessage = useCallback((reason: QueueReason | null) => {
+    if (reason === 'no_shuttles_on_duty') {
+      return 'No shuttles are on duty right now. You’ll be dispatched automatically when a driver starts.';
+    }
+    if (reason === 'dispatch_race') {
+      return 'A seat was taken just before assignment. Retrying — you should hear back shortly.';
+    }
+    if (reason === 'all_shuttles_full') {
+      return 'All shuttles are full. You’ll be notified and auto-dispatched when a seat opens.';
+    }
+    return 'You are in the queue and will be dispatched when a shuttle is available.';
+  }, []);
+
+  const [communityFares, setCommunityFares] = useState<{ base: number; priorityMultiplier: number } | null>(null);
+  const [phaseGeofences, setPhaseGeofences] = useState<PhaseGeofence[]>([]);
+  const [opsBypassMode, setOpsBypassMode] = useState(false);
+
+
   const getDriverId = (driverId: Shuttle['driverId']): string | null => {
     if (typeof driverId === 'string') return driverId;
     if (driverId && typeof driverId === 'object' && typeof driverId._id === 'string') return driverId._id;
@@ -268,8 +300,6 @@ export default function HomeScreen() {
       : selectedDestinationType === 'home'
         ? hasSavedHomeDestination
         : false;
-
-  const pickupDisabled = pickupSubmitting || activePassengerPickupIntents.length > 0;
   const activeCommunityPickupIntents = useMemo(
     () => pickupIntents.filter((item) => item.status === 'pending' && !isExpiredIntent(item)),
     [pickupIntents]
@@ -489,6 +519,9 @@ export default function HomeScreen() {
     };
   }, [shuttles]);
 
+  const noDriversOnDuty = passengerStats.activeShiftCount === 0;
+  const pickupDisabled = pickupSubmitting || activePassengerPickupIntents.length > 0 || (!opsBypassMode && noDriversOnDuty);
+
   const setPreferenceAwareFeedback = useCallback((
     message: string,
     channel: 'ride' | 'service' | 'critical' = 'ride'
@@ -675,6 +708,49 @@ export default function HomeScreen() {
       setPreferenceAwareFeedback(`Announcement: ${title}`, channel);
     };
 
+    // DISPATCH: Passenger receives confirmation of which shuttle was assigned
+    const onDispatchPassengerAssigned = (payload: any) => {
+      if (!user?._id || user.role !== 'passenger') return;
+      if (String(payload?.passengerId) !== user._id) return;
+
+      const shuttle = payload?.shuttle as AssignedShuttle | undefined;
+      if (shuttle) {
+        setDispatchedShuttle(shuttle);
+        setQueueNotice(null);
+        setPreferenceAwareFeedback(
+          `Shuttle ${shuttle.plateNumber || shuttle.label || ''} is on the way!`,
+          'ride'
+        );
+      }
+    };
+
+    // DISPATCH: Passenger is put in waiting queue
+    const onDispatchQueued = (payload: any) => {
+      if (!user?._id || user.role !== 'passenger') return;
+      const position = typeof payload?.queuePosition === 'number' ? payload.queuePosition : null;
+      const reason = (payload?.queueReason as QueueReason) ?? null;
+      const message = typeof payload?.message === 'string' && payload.message.trim()
+        ? payload.message.trim()
+        : queueReasonMessage(reason);
+      setQueueNotice({ position, reason, message });
+      setDispatchedShuttle(null);
+      setPreferenceAwareFeedback(
+        message,
+        'service'
+      );
+    };
+
+
+    // DISPATCH: Shuttle pending count updated — refresh dispatched shuttle location if it matches
+    const onDispatchShuttlePendingUpdated = (payload: any) => {
+      if (dispatchedShuttle && String(payload?.shuttleId) === String(dispatchedShuttle.shuttleId)) {
+        setDispatchedShuttle((prev) =>
+          prev ? { ...prev, pendingPickupCount: payload.pendingPickupCount ?? prev.pendingPickupCount } : prev
+        );
+      }
+    };
+
+
     socket.on('shuttle:location-updated', onLocationUpdated);
     socket.on('shuttle:capacity-updated', onCapacityUpdated);
     socket.on('trip:pickup-intent', onPickupIntent);
@@ -685,6 +761,9 @@ export default function HomeScreen() {
     socket.on('socket:error', onSocketError);
     socket.on('community:settings-updated', onCommunitySettingsUpdated);
     socket.on('announcement:new', onAnnouncementNew);
+    socket.on('dispatch:passenger-assigned', onDispatchPassengerAssigned);
+    socket.on('dispatch:queued', onDispatchQueued);
+    socket.on('dispatch:shuttle-pending-updated', onDispatchShuttlePendingUpdated);
 
     return () => {
       socket.off('shuttle:location-updated', onLocationUpdated);
@@ -697,8 +776,12 @@ export default function HomeScreen() {
       socket.off('socket:error', onSocketError);
       socket.off('community:settings-updated', onCommunitySettingsUpdated);
       socket.off('announcement:new', onAnnouncementNew);
+      socket.off('dispatch:passenger-assigned', onDispatchPassengerAssigned);
+      socket.off('dispatch:queued', onDispatchQueued);
+      socket.off('dispatch:shuttle-pending-updated', onDispatchShuttlePendingUpdated);
     };
-  }, [activeCommunityId, loadShuttles, setPreferenceAwareFeedback, token, user?._id, user?.role]);
+  }, [activeCommunityId, dispatchedShuttle, loadShuttles, setPreferenceAwareFeedback, token, user?._id, user?.role]);
+
 
   useEffect(() => {
     if (!activeCommunityId || user?.role !== 'driver') return;
@@ -773,6 +856,16 @@ export default function HomeScreen() {
         const ring = community?.boundaries?.coordinates?.[0] || [];
         const destinationRows = (community?.fixedDestinations || []).filter((item) => item.isActive !== false);
         setFixedDestinations(destinationRows);
+        setOpsBypassMode(Boolean((community as any)?.opsBypassMode));
+
+        // Capture fare info for passenger UI
+        if (community?.baseFare !== undefined) {
+          setCommunityFares({
+            base: community.baseFare,
+            priorityMultiplier: community.priorityFareMultiplier ?? 1.5,
+          });
+        }
+
 
         const normalized = ring
           .map((point) => {
@@ -865,6 +958,31 @@ export default function HomeScreen() {
       clearInterval(timer);
     };
   }, [activeCommunityId, communitySyncTick, setPreferenceAwareFeedback, user?.role]);
+
+  // Load phase geofences for the community
+  useEffect(() => {
+    if (!activeCommunityId) return;
+
+    let active = true;
+
+    const loadPhaseGeofencesData = async () => {
+      try {
+        const phases = await getPhaseGeofences(activeCommunityId);
+        if (!active) return;
+        setPhaseGeofences(phases);
+      } catch (error) {
+        console.error('Failed to load phase geofences:', error);
+      }
+    };
+
+    loadPhaseGeofencesData();
+    const timer = setInterval(loadPhaseGeofencesData, COMMUNITY_SETTINGS_SYNC_POLL_MS);
+
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [activeCommunityId, communitySyncTick]);
 
   useEffect(() => {
     if (user?.role !== 'passenger') return;
@@ -1422,7 +1540,7 @@ export default function HomeScreen() {
         ? position.coords.longitude
         : Number(position.coords.longitude.toFixed(4));
 
-      const pickupIntent = await createPickupIntent(
+      const result = await createPickupIntent(
         pickupLatitude,
         pickupLongitude,
         selectedDestinationType === 'fixed'
@@ -1435,10 +1553,35 @@ export default function HomeScreen() {
             latitude: savedHomeCoords![1],
             longitude: savedHomeCoords![0],
             label: user?.homeDestination?.label || 'Home',
-          }
+          },
+        fareType
       );
-      setPickupIntents((items) => upsertPickupIntent(items, pickupIntent));
-      setPreferenceAwareFeedback('Pickup request sent. Drivers in your community were notified.', 'ride');
+
+      setPickupIntents((items) => upsertPickupIntent(items, result.request));
+
+      if (result.dispatched && result.assignedShuttle) {
+        setDispatchedShuttle(result.assignedShuttle);
+        setQueueNotice(null);
+        setPreferenceAwareFeedback(
+          `Shuttle ${result.assignedShuttle.plateNumber || result.assignedShuttle.label || ''} dispatched to you!`,
+          'ride'
+        );
+      } else if (!result.dispatched && result.queuePosition !== undefined) {
+        const reason = (result.queueReason as QueueReason) ?? null;
+        setQueueNotice({
+          position: typeof result.queuePosition === 'number' ? result.queuePosition : null,
+          reason,
+          message: queueReasonMessage(reason),
+        });
+
+        setDispatchedShuttle(null);
+        setPreferenceAwareFeedback(
+          queueReasonMessage(reason),
+          'service'
+        );
+      } else {
+        setPreferenceAwareFeedback('Pickup request sent. Drivers in your community were notified.', 'ride');
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to submit pickup request.';
       setPreferenceAwareFeedback(message, 'critical');
@@ -1446,6 +1589,7 @@ export default function HomeScreen() {
       setPickupSubmitting(false);
     }
   };
+
 
   const handleCancelPickup = async () => {
     const activeIntent = activePassengerPickupIntents[0];
@@ -1458,6 +1602,9 @@ export default function HomeScreen() {
       await cancelPickupIntent(activeIntent._id);
       recentPickupCancelEventRef.current = { requestId: activeIntent._id, at: Date.now() };
       setPickupIntents((items) => items.filter((item) => item._id !== activeIntent._id));
+      // Clear dispatch state on cancel
+      setDispatchedShuttle(null);
+      setQueueNotice(null);
       setPreferenceAwareFeedback('Pickup request cancelled.', 'ride');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to cancel pickup request.';
@@ -1466,6 +1613,7 @@ export default function HomeScreen() {
       setPickupCancelling(false);
     }
   };
+
 
   const onDriverUnboard = async () => {
     if (!manualUnboardFallbackEnabled) {
@@ -1564,6 +1712,34 @@ export default function HomeScreen() {
                   />
                 ) : null}
 
+                {phaseGeofences.map((phase) => {
+                  const ring = phase.boundaries?.coordinates?.[0] || [];
+                  const coords = ring
+                    .map((point) => {
+                      const longitude = Number(point?.[0]);
+                      const latitude = Number(point?.[1]);
+                      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+                      return { latitude, longitude };
+                    })
+                    .filter((point): point is LatLng => point !== null);
+
+                  if (coords.length < 3) return null;
+
+                  const hexColor = phase.color || '#6366f1';
+                  const r = parseInt(hexColor.slice(1, 3), 16);
+                  const g = parseInt(hexColor.slice(3, 5), 16);
+                  const b = parseInt(hexColor.slice(5, 7), 16);
+
+                  return (
+                    <Polygon
+                      key={`driver-phase-${phase._id}`}
+                      coordinates={coords}
+                      fillColor={`rgba(${r}, ${g}, ${b}, 0.15)`}
+                      strokeColor={hexColor}
+                      strokeWidth={2}
+                    />
+                  );
+                })}
                 {assignedShuttle && toShuttleCoordinate(assignedShuttle) ? (
                   <Marker
                     coordinate={toShuttleCoordinate(assignedShuttle)!}
@@ -1629,6 +1805,17 @@ export default function HomeScreen() {
                 hint="Fetching geofence boundary"
               />
             )}
+            {phaseGeofences.length > 0 ? (
+              <View style={styles.phaseLegend}>
+                <Text style={styles.phaseLegendTitle}>Phases</Text>
+                {phaseGeofences.map((phase) => (
+                  <View key={`driver-legend-${phase._id}`} style={styles.phaseLegendRow}>
+                    <View style={[styles.phaseLegendDot, { backgroundColor: phase.color || '#6366f1' }]} />
+                    <Text style={styles.phaseLegendText}>{phase.name.replace(/_/g, ' ')}</Text>
+                  </View>
+                ))}
+              </View>
+            ) : null}
 
             <View style={styles.mapLockBadge}>
               <Ionicons name="lock-closed" size={12} color={palette.white} />
@@ -1849,6 +2036,37 @@ export default function HomeScreen() {
                   />
                 ) : null}
 
+                {/* Phase Geofences - rendered with their configured colors */}
+                {phaseGeofences.map((phase) => {
+                  const ring = phase.boundaries?.coordinates?.[0] || [];
+                  const coords = ring
+                    .map((point) => {
+                      const longitude = Number(point?.[0]);
+                      const latitude = Number(point?.[1]);
+                      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+                      return { latitude, longitude };
+                    })
+                    .filter((point): point is LatLng => point !== null);
+
+                  if (coords.length < 3) return null;
+
+                  // Convert hex color to rgba with low opacity for fill
+                  const hexColor = phase.color || '#6366f1';
+                  const r = parseInt(hexColor.slice(1, 3), 16);
+                  const g = parseInt(hexColor.slice(3, 5), 16);
+                  const b = parseInt(hexColor.slice(5, 7), 16);
+
+                  return (
+                    <Polygon
+                      key={phase._id}
+                      coordinates={coords}
+                      fillColor={`rgba(${r}, ${g}, ${b}, 0.15)`}
+                      strokeColor={hexColor}
+                      strokeWidth={2}
+                    />
+                  );
+                })}
+
                 {mapShuttles.map((item) => {
                   const fallback = toShuttleCoordinate(item);
                   const coordinate = markerCoordinates[item._id] || fallback;
@@ -1930,6 +2148,17 @@ export default function HomeScreen() {
                 hint="Fetching geofence boundary"
               />
             )}
+            {phaseGeofences.length > 0 ? (
+              <View style={styles.phaseLegend}>
+                <Text style={styles.phaseLegendTitle}>Phases</Text>
+                {phaseGeofences.map((phase) => (
+                  <View key={`passenger-legend-${phase._id}`} style={styles.phaseLegendRow}>
+                    <View style={[styles.phaseLegendDot, { backgroundColor: phase.color || '#6366f1' }]} />
+                    <Text style={styles.phaseLegendText}>{phase.name.replace(/_/g, ' ')}</Text>
+                  </View>
+                ))}
+              </View>
+            ) : null}
 
             <View style={styles.mapLockBadge}>
               <Ionicons name="lock-closed" size={12} color={palette.white} />
@@ -2197,6 +2426,120 @@ export default function HomeScreen() {
 
 
 
+              {/* ── Fare Type Selector ─────────────────────────────────────── */}
+              {activePassengerPickupIntents.length === 0 && (
+                <View style={styles.fareTypeRow}>
+
+                  {/* Standard pill */}
+                  <Pressable
+                    style={[
+                      styles.fareTypePill,
+                      fareType === 'standard' && styles.fareTypePillActive,
+                      fareType === 'standard' && {
+                        borderColor: tint,
+                        backgroundColor: colorScheme === 'dark' ? AppPalette.darkSkyBg : AppPalette.sky,
+                      },
+                    ]}
+                    onPress={() => setFareType('standard')}
+                    accessibilityRole="button"
+                    accessibilityLabel="Select standard fare"
+                  >
+                    {/* Icon + label row */}
+                    <View style={styles.fareTypePillLabelRow}>
+                      <Ionicons
+                        name="car-outline"
+                        size={15}
+                        color={fareType === 'standard' ? tint : mutedColor}
+                      />
+                      <ThemedText
+                        style={[
+                          styles.fareTypePillLabel,
+                          { color: fareType === 'standard' ? tint : mutedColor },
+                        ]}
+                      >
+                        Standard
+                      </ThemedText>
+                    </View>
+                    {/* Fare amount */}
+                    <ThemedText
+                      style={[
+                        styles.fareTypePillAmount,
+                        { color: fareType === 'standard' ? tint : textColor },
+                      ]}
+                    >
+                      {communityFares ? `₱${communityFares.base.toFixed(2)}` : '—'}
+                    </ThemedText>
+                  </Pressable>
+
+                  {/* Priority pill */}
+                  <Pressable
+                    style={[
+                      styles.fareTypePill,
+                      fareType === 'priority' && styles.fareTypePillActive,
+                      fareType === 'priority' && {
+                        borderColor: '#f59e0b',
+                        backgroundColor: colorScheme === 'dark' ? '#451a03' : '#fffbeb',
+                      },
+                    ]}
+                    onPress={() => setFareType('priority')}
+                    accessibilityRole="button"
+                    accessibilityLabel="Select priority fare"
+                  >
+                    {/* Icon + label row */}
+                    <View style={styles.fareTypePillLabelRow}>
+                      <Ionicons
+                        name="flash"
+                        size={15}
+                        color={fareType === 'priority' ? '#f59e0b' : mutedColor}
+                      />
+                      <ThemedText
+                        style={[
+                          styles.fareTypePillLabel,
+                          { color: fareType === 'priority' ? '#f59e0b' : mutedColor },
+                        ]}
+                      >
+                        Priority
+                      </ThemedText>
+                    </View>
+                    {/* Fare amount */}
+                    <ThemedText
+                      style={[
+                        styles.fareTypePillAmount,
+                        { color: fareType === 'priority' ? '#f59e0b' : textColor },
+                      ]}
+                    >
+                      {communityFares
+                        ? `₱${(communityFares.base * communityFares.priorityMultiplier).toFixed(2)}`
+                        : '—'}
+                    </ThemedText>
+                    {/* Skip queue badge */}
+                    <View
+                      style={[
+                        styles.fareTypeSkipBadge,
+                        {
+                          backgroundColor: fareType === 'priority'
+                            ? colorScheme === 'dark' ? '#78350f' : '#fef3c7'
+                            : colorScheme === 'dark' ? AppPalette.darkOverlaySoft : AppPalette.slateBg,
+                          borderColor: fareType === 'priority' ? '#f59e0b' : AppPalette.slateBorder,
+                        },
+                      ]}
+                    >
+                      <ThemedText
+                        style={[
+                          styles.fareTypeSkipText,
+                          { color: fareType === 'priority' ? '#d97706' : mutedColor },
+                        ]}
+                      >
+                        ⚡ Skip queue
+                      </ThemedText>
+                    </View>
+                  </Pressable>
+
+                </View>
+              )}
+
+
+
               <Pressable
                 style={[
                   styles.passengerPrimaryButton,
@@ -2220,113 +2563,364 @@ export default function HomeScreen() {
                     ? 'Sending Pickup...'
                     : activePassengerPickupIntents.length > 0
                       ? 'Pickup Active'
-                      : 'Request Pickup'}
+                      : noDriversOnDuty
+                        ? 'No Driver On Duty'
+                        : 'Request Pickup'}
                 </ThemedText>
               </Pressable>
 
               {activePassengerPickupIntents.length > 0 ? (
                 <View
                   style={[
-                    styles.pickupStatusCard,
+                    styles.pickupActiveCard,
                     {
                       borderColor: colorScheme === 'dark' ? dangerColor : AppPalette.dangerMutedBorder,
-                      backgroundColor: colorScheme === 'dark' ? AppPalette.dangerOverlaySoft : AppPalette.dangerMutedBackground,
+                      backgroundColor: colorScheme === 'dark' ? 'rgba(239,68,68,0.08)' : '#FFF5F5',
                     },
                   ]}
                 >
-                  <View
-                    style={[
-                      styles.pickupStatusIconBadge,
-                      {
-                        borderColor: colorScheme === 'dark' ? dangerColor : AppPalette.dangerMutedBorder,
-                        backgroundColor: colorScheme === 'dark' ? AppPalette.darkOverlaySoft : AppPalette.white,
-                      },
-                    ]}
-                  >
-                    <Ionicons name="radio-outline" size={13} color={palette.rose} />
-                  </View>
-                  <View style={styles.pickupStatusCopy}>
-                    <View style={styles.pickupStatusHeaderRow}>
-                      <ThemedText
-                        style={[
-                          styles.pickupStatusTitle,
-                          { color: colorScheme === 'dark' ? dangerColor : AppPalette.dangerStrongText },
-                        ]}
-                      >
-                        Pickup Request Active
-                      </ThemedText>
+                  {/* ── Header row ── */}
+                  <View style={styles.pickupActiveHeader}>
+                    <View style={styles.pickupActiveHeaderLeft}>
                       <View
                         style={[
-                          styles.pickupStatusLivePill,
+                          styles.pickupActiveIconBadge,
                           {
-                            backgroundColor: colorScheme === 'dark' ? AppPalette.darkOverlaySoft : AppPalette.white,
+                            backgroundColor: colorScheme === 'dark' ? 'rgba(239,68,68,0.18)' : '#FEE2E2',
                           },
                         ]}
                       >
-                        <View style={[styles.pickupStatusLiveDot, { backgroundColor: palette.rose }]} />
+                        <Ionicons name="radio-outline" size={16} color={dangerColor} />
+                      </View>
+                      <View>
                         <ThemedText
                           style={[
-                            styles.pickupStatusLiveText,
+                            styles.pickupActiveTitle,
                             { color: colorScheme === 'dark' ? dangerColor : AppPalette.dangerStrongText },
                           ]}
                         >
-                          Live
+                          Pickup Active
+                        </ThemedText>
+                        <ThemedText
+                          style={[
+                            styles.pickupActiveSubtitle,
+                            { color: colorScheme === 'dark' ? 'rgba(255,106,118,0.7)' : '#9B1C1C' },
+                          ]}
+                        >
+                          Visible to drivers nearby
                         </ThemedText>
                       </View>
                     </View>
-                    <ThemedText
-                      style={[
-                        styles.pickupStatusText,
-                        { color: colorScheme === 'dark' ? dangerColor : AppPalette.dangerStrongText },
-                      ]}
-                    >
-                      Drivers can see your request now. Status updates automatically once boarded.
-                    </ThemedText>
                     <View
                       style={[
-                        styles.pickupDestinationChip,
+                        styles.pickupActiveLivePill,
+                        {
+                          backgroundColor: colorScheme === 'dark' ? 'rgba(239,68,68,0.18)' : '#FEE2E2',
+                          borderColor: colorScheme === 'dark' ? 'rgba(255,106,118,0.3)' : '#FECACA',
+                        },
+                      ]}
+                    >
+                      <View style={[styles.pickupActiveLiveDot, { backgroundColor: dangerColor }]} />
+                      <ThemedText
+                        style={[
+                          styles.pickupActiveLiveText,
+                          { color: colorScheme === 'dark' ? dangerColor : AppPalette.dangerStrongText },
+                        ]}
+                      >
+                        LIVE
+                      </ThemedText>
+                    </View>
+                  </View>
+
+                  {/* ── Info chips row ── */}
+                  <View style={styles.pickupActiveChipsRow}>
+                    {/* Destination chip */}
+                    <View
+                      style={[
+                        styles.pickupActiveChip,
                         {
                           borderColor: activePickupDestinationAccent,
-                          backgroundColor: colorScheme === 'dark' ? AppPalette.darkOverlaySoft : AppPalette.white,
+                          backgroundColor: colorScheme === 'dark' ? 'rgba(0,0,0,0.25)' : AppPalette.white,
                         },
                       ]}
                     >
                       <Ionicons
                         name={activePickupDestinationType === 'home' ? 'home-outline' : 'flag-outline'}
-                        size={13}
+                        size={12}
                         color={activePickupDestinationAccent}
                       />
                       <ThemedText
-                        style={[
-                          styles.pickupStatusMeta,
-                          { color: activePickupDestinationAccent },
-                        ]}
+                        style={[styles.pickupActiveChipText, { color: activePickupDestinationAccent }]}
+                        numberOfLines={1}
                       >
-                        Destination: {activePickupDestinationSummary || selectedDestinationSummary}
+                        {activePickupDestinationSummary || selectedDestinationSummary}
                       </ThemedText>
                     </View>
-                    <Pressable
+                    {/* Fare type chip */}
+                    <View
                       style={[
-                        styles.cancelPickupButton,
+                        styles.pickupActiveChip,
                         {
-                          borderColor: colorScheme === 'dark' ? dangerColor : AppPalette.dangerMutedBorder,
-                          backgroundColor: colorScheme === 'dark' ? AppPalette.darkOverlaySoft : AppPalette.white,
+                          borderColor: fareType === 'priority'
+                            ? (colorScheme === 'dark' ? '#fbbf24' : '#f59e0b')
+                            : (colorScheme === 'dark' ? tint : tint),
+                          backgroundColor: colorScheme === 'dark' ? 'rgba(0,0,0,0.25)' : AppPalette.white,
                         },
-                        pickupCancelling && styles.cancelPickupButtonDisabled,
                       ]}
-                      onPress={handleCancelPickup}
-                      disabled={pickupCancelling}
-                      accessibilityRole="button"
-                      accessibilityLabel="Cancel active pickup request"
                     >
-                      <Ionicons name={pickupCancelling ? 'time-outline' : 'close-circle-outline'} size={12} color={palette.rose} />
-                      <ThemedText style={[styles.cancelPickupButtonText, { color: palette.rose }]}>
-                        {pickupCancelling ? 'Cancelling...' : 'Cancel Pickup'}
+                      <Ionicons
+                        name={fareType === 'priority' ? 'flash' : 'car-outline'}
+                        size={11}
+                        color={fareType === 'priority' ? '#f59e0b' : tint}
+                      />
+                      <ThemedText
+                        style={[
+                          styles.pickupActiveChipText,
+                          { color: fareType === 'priority' ? '#f59e0b' : tint },
+                        ]}
+                      >
+                        {fareType === 'priority' ? 'Priority' : 'Standard'}
                       </ThemedText>
-                    </Pressable>
+                    </View>
                   </View>
+
+                  {/* ── Status message ── */}
+                  <ThemedText
+                    style={[
+                      styles.pickupActiveMessage,
+                      { color: colorScheme === 'dark' ? 'rgba(255,106,118,0.8)' : '#991B1B' },
+                    ]}
+                  >
+                    {dispatchedShuttle
+                      ? 'A shuttle has been assigned — stay near your pickup location.'
+                      : queueNotice
+                        ? 'You are in the waiting queue. We will dispatch you automatically.'
+                        : 'Waiting for a shuttle to be assigned to you...'}
+                  </ThemedText>
+
+                  {/* ── Cancel button ── */}
+                  <Pressable
+                    style={[
+                      styles.pickupActiveCancelBtn,
+                      {
+                        borderColor: colorScheme === 'dark' ? 'rgba(255,106,118,0.3)' : AppPalette.dangerMutedBorder,
+                        backgroundColor: colorScheme === 'dark' ? 'rgba(239,68,68,0.1)' : AppPalette.white,
+                      },
+                      pickupCancelling && { opacity: 0.6 },
+                    ]}
+                    onPress={handleCancelPickup}
+                    disabled={pickupCancelling}
+                    accessibilityRole="button"
+                    accessibilityLabel="Cancel active pickup request"
+                  >
+                    <Ionicons
+                      name={pickupCancelling ? 'hourglass-outline' : 'close-circle-outline'}
+                      size={14}
+                      color={dangerColor}
+                    />
+                    <ThemedText style={[styles.pickupActiveCancelText, { color: dangerColor }]}>
+                      {pickupCancelling ? 'Cancelling...' : 'Cancel Pickup'}
+                    </ThemedText>
+                  </Pressable>
                 </View>
               ) : null}
+
+              {/* ── Dispatched Shuttle Card ───────────────────────────────── */}
+              {dispatchedShuttle && activePassengerPickupIntents.length > 0 && (
+                <View
+                  style={[
+                    styles.dispatchAssignedCard,
+                    {
+                      borderColor: colorScheme === 'dark' ? '#34d399' : '#A7F3D0',
+                      backgroundColor: colorScheme === 'dark' ? 'rgba(16,185,129,0.08)' : '#ECFDF5',
+                    },
+                  ]}
+                >
+                  {/* Header */}
+                  <View style={styles.dispatchAssignedHeader}>
+                    <View
+                      style={[
+                        styles.dispatchAssignedIconBadge,
+                        { backgroundColor: colorScheme === 'dark' ? 'rgba(16,185,129,0.18)' : '#D1FAE5' },
+                      ]}
+                    >
+                      <Ionicons name="bus" size={16} color={successColor} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <ThemedText
+                        style={[
+                          styles.dispatchAssignedTitle,
+                          { color: colorScheme === 'dark' ? '#34d399' : '#065f46' },
+                        ]}
+                      >
+                        Shuttle Assigned
+                      </ThemedText>
+                    </View>
+                    <View
+                      style={[
+                        styles.dispatchAssignedBadge,
+                        {
+                          backgroundColor: colorScheme === 'dark' ? 'rgba(52,211,153,0.18)' : '#D1FAE5',
+                          borderColor: colorScheme === 'dark' ? 'rgba(52,211,153,0.3)' : '#A7F3D0',
+                        },
+                      ]}
+                    >
+                      <Ionicons name="checkmark-circle" size={11} color={successColor} />
+                      <ThemedText
+                        style={[styles.dispatchAssignedBadgeText, { color: successColor }]}
+                      >
+                        EN ROUTE
+                      </ThemedText>
+                    </View>
+                  </View>
+
+                  {/* Shuttle details */}
+                  <View
+                    style={[
+                      styles.dispatchAssignedDetails,
+                      {
+                        backgroundColor: colorScheme === 'dark' ? 'rgba(0,0,0,0.2)' : 'rgba(16,185,129,0.06)',
+                        borderColor: colorScheme === 'dark' ? 'rgba(52,211,153,0.15)' : '#D1FAE5',
+                      },
+                    ]}
+                  >
+                    <View style={styles.dispatchAssignedDetailRow}>
+                      <Ionicons name="car-sport-outline" size={13} color={colorScheme === 'dark' ? '#6ee7b7' : '#059669'} />
+                      <ThemedText
+                        style={[styles.dispatchAssignedDetailText, { color: colorScheme === 'dark' ? '#6ee7b7' : '#047857' }]}
+                      >
+                        {dispatchedShuttle.plateNumber
+                          ? `${dispatchedShuttle.plateNumber}${dispatchedShuttle.label ? ` · ${dispatchedShuttle.label}` : ''}`
+                          : dispatchedShuttle.label || 'Shuttle'}
+                      </ThemedText>
+                    </View>
+                    <View style={styles.dispatchAssignedDetailRow}>
+                      <Ionicons name="people-outline" size={13} color={colorScheme === 'dark' ? '#6ee7b7' : '#059669'} />
+                      <ThemedText
+                        style={[styles.dispatchAssignedDetailText, { color: colorScheme === 'dark' ? '#6ee7b7' : '#047857' }]}
+                      >
+                        {dispatchedShuttle.currentCapacity}/{dispatchedShuttle.maxCapacity} passengers
+                        {typeof dispatchedShuttle.pendingPickupCount === 'number' && dispatchedShuttle.pendingPickupCount > 0
+                          ? ` · ${dispatchedShuttle.pendingPickupCount} pickups ahead`
+                          : ''}
+                      </ThemedText>
+                    </View>
+                  </View>
+
+                  {/* Step progress */}
+                  <View style={styles.dispatchStepRow}>
+                    <View style={[styles.dispatchStepDot, { backgroundColor: successColor }]} />
+                    <View style={[styles.dispatchStepLine, { backgroundColor: successColor }]} />
+                    <View style={[styles.dispatchStepDot, { backgroundColor: successColor, opacity: 0.4 }]} />
+                    <View style={[styles.dispatchStepLine, { backgroundColor: colorScheme === 'dark' ? '#303951' : '#D1D5DB' }]} />
+                    <View style={[styles.dispatchStepDot, { backgroundColor: colorScheme === 'dark' ? '#303951' : '#D1D5DB' }]} />
+                  </View>
+                  <View style={styles.dispatchStepLabels}>
+                    <ThemedText style={[styles.dispatchStepLabel, { color: successColor }]}>Requested</ThemedText>
+                    <ThemedText style={[styles.dispatchStepLabel, { color: colorScheme === 'dark' ? '#34d399' : '#059669' }]}>Assigned</ThemedText>
+                    <ThemedText style={[styles.dispatchStepLabel, { color: mutedColor }]}>Pickup</ThemedText>
+                  </View>
+                </View>
+              )}
+
+              {/* ── Queue Notice ─────────────────────────────────────────── */}
+              {queueNotice && activePassengerPickupIntents.length > 0 && !dispatchedShuttle && (
+                <View
+                  style={[
+                    styles.queueNoticeCard,
+                    {
+                      borderColor: colorScheme === 'dark' ? '#fbbf24' : '#FDE68A',
+                      backgroundColor: colorScheme === 'dark' ? 'rgba(245,158,11,0.08)' : '#FFFBEB',
+                    },
+                  ]}
+                >
+                  {/* Header */}
+                  <View style={styles.queueNoticeHeader}>
+                    <View
+                      style={[
+                        styles.queueNoticeIconBadge,
+                        { backgroundColor: colorScheme === 'dark' ? 'rgba(251,191,36,0.18)' : '#FEF3C7' },
+                      ]}
+                    >
+                      <Ionicons
+                        name={
+                          queueNotice.reason === 'no_shuttles_on_duty'
+                            ? 'moon-outline'
+                            : queueNotice.reason === 'dispatch_race'
+                              ? 'refresh-outline'
+                              : 'hourglass-outline'
+                        }
+                        size={16}
+                        color="#f59e0b"
+                      />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <ThemedText
+                        style={[
+                          styles.queueNoticeTitle,
+                          { color: colorScheme === 'dark' ? '#fbbf24' : '#92400e' },
+                        ]}
+                      >
+                        {queueNotice.reason === 'no_shuttles_on_duty'
+                          ? 'No Shuttles On Duty'
+                          : queueNotice.reason === 'dispatch_race'
+                            ? 'Seat Taken — Retrying'
+                            : 'Waiting in Queue'}
+                      </ThemedText>
+                    </View>
+                    {queueNotice.position !== null && (
+                      <View
+                        style={[
+                          styles.queuePositionBadge,
+                          {
+                            backgroundColor: colorScheme === 'dark' ? 'rgba(251,191,36,0.18)' : '#FEF3C7',
+                            borderColor: colorScheme === 'dark' ? 'rgba(251,191,36,0.3)' : '#FDE68A',
+                          },
+                        ]}
+                      >
+                        <ThemedText
+                          style={[styles.queuePositionNumber, { color: '#f59e0b' }]}
+                        >
+                          #{(queueNotice.position ?? 0) + 1}
+                        </ThemedText>
+                        <ThemedText
+                          style={[styles.queuePositionLabel, { color: colorScheme === 'dark' ? '#fcd34d' : '#b45309' }]}
+                        >
+                          in line
+                        </ThemedText>
+                      </View>
+                    )}
+                  </View>
+
+                  {/* Message */}
+                  <ThemedText
+                    style={[
+                      styles.queueNoticeMessage,
+                      { color: colorScheme === 'dark' ? '#fcd34d' : '#92400e' },
+                    ]}
+                  >
+                    {queueNotice.message}
+                  </ThemedText>
+
+                  {/* Reassurance footer */}
+                  <View
+                    style={[
+                      styles.queueNoticeFooter,
+                      {
+                        borderTopColor: colorScheme === 'dark' ? 'rgba(251,191,36,0.15)' : '#FDE68A',
+                      },
+                    ]}
+                  >
+                    <Ionicons name="notifications-outline" size={12} color={colorScheme === 'dark' ? '#fbbf24' : '#d97706'} />
+                    <ThemedText
+                      style={[styles.queueNoticeFooterText, { color: colorScheme === 'dark' ? 'rgba(252,211,77,0.7)' : '#b45309' }]}
+                    >
+                      You'll receive a notification when dispatched
+                    </ThemedText>
+                  </View>
+                </View>
+              )}
+
 
             </View>
           </ScrollView>
@@ -2881,98 +3475,103 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     fontFamily: OutfitFonts.semiBold,
   },
-  pickupStatusCard: {
+  // ── Active Pickup Card ──────────────────────────────────────────────────────
+  pickupActiveCard: {
     borderWidth: 1,
     borderRadius: DesignTokens.radius.md,
-    paddingVertical: DesignTokens.spacing.xs,
-    paddingHorizontal: DesignTokens.spacing.xs,
-    flexDirection: 'row',
-    alignItems: 'stretch',
-    gap: DesignTokens.spacing.xs,
-    minHeight: 48,
+    padding: DesignTokens.spacing.sm,
+    gap: DesignTokens.spacing.sm,
   },
-  pickupStatusIconBadge: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 2,
-  },
-  pickupStatusCopy: {
-    flex: 1,
-    gap: DesignTokens.spacing.xs,
-  },
-  pickupStatusHeaderRow: {
+  pickupActiveHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+  },
+  pickupActiveHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: DesignTokens.spacing.sm,
+    flex: 1,
+  },
+  pickupActiveIconBadge: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pickupActiveTitle: {
+    fontFamily: OutfitFonts.bold,
+    fontSize: 14,
+    lineHeight: 18,
+  },
+  pickupActiveSubtitle: {
+    fontFamily: OutfitFonts.medium,
+    fontSize: 11,
+    lineHeight: 15,
+    marginTop: 1,
+  },
+  pickupActiveLivePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: DesignTokens.radius.pill,
+    paddingHorizontal: DesignTokens.spacing.sm,
+    paddingVertical: 3,
+    gap: 5,
+    borderWidth: 1,
+  },
+  pickupActiveLiveDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+  },
+  pickupActiveLiveText: {
+    fontFamily: OutfitFonts.extraBold,
+    fontSize: 10,
+    letterSpacing: 0.6,
+  },
+  pickupActiveChipsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: DesignTokens.spacing.xs,
   },
-  pickupStatusTitle: {
-    fontFamily: OutfitFonts.extraBold,
-    fontSize: 12,
-  },
-  pickupStatusLivePill: {
+  pickupActiveChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderRadius: DesignTokens.radius.pill,
-    paddingHorizontal: DesignTokens.spacing.xs,
-    paddingVertical: 2,
-    gap: 4,
-  },
-  pickupStatusLiveDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  pickupStatusLiveText: {
-    fontFamily: OutfitFonts.bold,
-    fontSize: 10,
-    textTransform: 'uppercase',
-    letterSpacing: 0.3,
-  },
-  pickupDestinationChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'flex-start',
     borderWidth: 1,
     borderRadius: DesignTokens.radius.pill,
-    paddingHorizontal: DesignTokens.spacing.xs,
-    paddingVertical: DesignTokens.spacing.xxs,
+    paddingHorizontal: DesignTokens.spacing.sm,
+    paddingVertical: 4,
     gap: 4,
+    maxWidth: '65%',
   },
-  pickupStatusText: {
-    fontFamily: OutfitFonts.bold,
-    fontSize: 12,
-    lineHeight: 17,
-  },
-  pickupStatusMeta: {
+  pickupActiveChipText: {
     fontFamily: OutfitFonts.semiBold,
     fontSize: 11,
     flexShrink: 1,
   },
-  cancelPickupButton: {
-    marginTop: DesignTokens.spacing.xxs,
+  pickupActiveMessage: {
+    fontFamily: OutfitFonts.medium,
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  pickupActiveCancelBtn: {
     alignSelf: 'stretch',
     borderWidth: 1,
     borderRadius: DesignTokens.radius.md,
-    minHeight: 36,
+    minHeight: 38,
     paddingHorizontal: DesignTokens.spacing.sm,
-    paddingVertical: DesignTokens.spacing.xxs,
+    paddingVertical: DesignTokens.spacing.xs,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
   },
-  cancelPickupButtonDisabled: {
-    opacity: 0.72,
-  },
-  cancelPickupButtonText: {
+  pickupActiveCancelText: {
     fontFamily: OutfitFonts.bold,
-    fontSize: 11,
+    fontSize: 12,
   },
+
   feedback: {
     fontSize: 13,
   },
@@ -3019,5 +3618,235 @@ const styles = StyleSheet.create({
     backgroundColor: palette.white,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+
+  // ── Fare type selector ─────────────────────────────────────────────────────
+  fareTypeRow: {
+    flexDirection: 'row',
+    gap: DesignTokens.spacing.xs,
+    marginBottom: DesignTokens.spacing.sm,
+  },
+  fareTypePill: {
+    flex: 1,
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 3,
+    paddingVertical: DesignTokens.spacing.sm,
+    paddingHorizontal: DesignTokens.spacing.sm,
+    borderRadius: DesignTokens.radius.md,
+    borderWidth: 1.5,
+    borderColor: AppPalette.slateBorder,
+    backgroundColor: AppPalette.slateBg,
+    minHeight: 80,
+  },
+  fareTypePillActive: {
+    borderWidth: 2,
+  },
+  // icon + text on same row, centered
+  fareTypePillLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  fareTypePillLabel: {
+    fontFamily: OutfitFonts.semiBold,
+    fontSize: 13,
+  },
+  // large fare number
+  fareTypePillAmount: {
+    fontFamily: OutfitFonts.extraBold,
+    fontSize: 17,
+  },
+  // "⚡ Skip queue" chip on priority pill
+  fareTypeSkipBadge: {
+    borderRadius: 20,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    marginTop: 1,
+  },
+  fareTypeSkipText: {
+    fontFamily: OutfitFonts.semiBold,
+    fontSize: 10,
+  },
+
+  // ── Dispatched Shuttle Card (assigned) ─────────────────────────────────────
+  dispatchAssignedCard: {
+    borderRadius: DesignTokens.radius.md,
+    borderWidth: 1,
+    padding: DesignTokens.spacing.sm,
+    marginTop: DesignTokens.spacing.sm,
+    gap: DesignTokens.spacing.sm,
+  },
+  dispatchAssignedHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: DesignTokens.spacing.sm,
+  },
+  dispatchAssignedIconBadge: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  dispatchAssignedTitle: {
+    fontFamily: OutfitFonts.bold,
+    fontSize: 14,
+  },
+  dispatchAssignedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderRadius: DesignTokens.radius.pill,
+    paddingHorizontal: DesignTokens.spacing.sm,
+    paddingVertical: 3,
+    borderWidth: 1,
+  },
+  dispatchAssignedBadgeText: {
+    fontFamily: OutfitFonts.extraBold,
+    fontSize: 9,
+    letterSpacing: 0.5,
+  },
+  dispatchAssignedDetails: {
+    borderRadius: DesignTokens.radius.sm,
+    borderWidth: 1,
+    padding: DesignTokens.spacing.sm,
+    gap: 6,
+  },
+  dispatchAssignedDetailRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  dispatchAssignedDetailText: {
+    fontFamily: OutfitFonts.semiBold,
+    fontSize: 12,
+    flex: 1,
+  },
+  dispatchStepRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: DesignTokens.spacing.md,
+  },
+  dispatchStepDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  dispatchStepLine: {
+    flex: 1,
+    height: 2,
+    borderRadius: 1,
+  },
+  dispatchStepLabels: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 2,
+  },
+  dispatchStepLabel: {
+    fontFamily: OutfitFonts.semiBold,
+    fontSize: 10,
+    textAlign: 'center',
+  },
+
+  // ── Queue Notice Card ──────────────────────────────────────────────────────
+  queueNoticeCard: {
+    borderRadius: DesignTokens.radius.md,
+    borderWidth: 1,
+    padding: DesignTokens.spacing.sm,
+    marginTop: DesignTokens.spacing.sm,
+    gap: DesignTokens.spacing.sm,
+  },
+  queueNoticeHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: DesignTokens.spacing.sm,
+  },
+  queueNoticeIconBadge: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  queueNoticeTitle: {
+    fontFamily: OutfitFonts.bold,
+    fontSize: 14,
+  },
+  queuePositionBadge: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: DesignTokens.radius.sm,
+    borderWidth: 1,
+    paddingHorizontal: DesignTokens.spacing.sm,
+    paddingVertical: 4,
+    minWidth: 48,
+  },
+  queuePositionNumber: {
+    fontFamily: OutfitFonts.extraBold,
+    fontSize: 16,
+    lineHeight: 20,
+  },
+  queuePositionLabel: {
+    fontFamily: OutfitFonts.semiBold,
+    fontSize: 9,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  queueNoticeMessage: {
+    fontFamily: OutfitFonts.medium,
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  queueNoticeFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderTopWidth: 1,
+    paddingTop: DesignTokens.spacing.sm,
+  },
+  queueNoticeFooterText: {
+    fontFamily: OutfitFonts.medium,
+    fontSize: 11,
+    flex: 1,
+  },
+  phaseLegend: {
+    position: 'absolute',
+    top: DesignTokens.spacing.sm,
+    right: DesignTokens.spacing.sm,
+    backgroundColor: 'rgba(255,255,255,0.95)',
+    borderRadius: DesignTokens.radius.md,
+    borderWidth: 1,
+    borderColor: 'rgba(15,23,42,0.18)',
+    paddingHorizontal: DesignTokens.spacing.sm,
+    paddingVertical: DesignTokens.spacing.xs,
+    gap: 4,
+    maxWidth: 180,
+  },
+  phaseLegendTitle: {
+    color: '#111827',
+    fontFamily: OutfitFonts.bold,
+    fontSize: 11,
+  },
+  phaseLegendRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  phaseLegendDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+  },
+  phaseLegendText: {
+    color: '#111827',
+    fontFamily: OutfitFonts.semiBold,
+    fontSize: 10,
+    textTransform: 'capitalize',
+    flexShrink: 1,
   },
 });

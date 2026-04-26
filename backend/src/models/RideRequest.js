@@ -43,6 +43,14 @@ const rideRequestSchema = new mongoose.Schema(
         required: [true, 'Pickup coordinates are required'],
       },
     },
+    passengerHomePhase: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      maxlength: [40, 'Passenger home phase cannot exceed 40 characters.'],
+      default: null,
+      index: true,
+    },
     destination: {
       type: {
         type: String,
@@ -119,6 +127,7 @@ const rideRequestSchema = new mongoose.Schema(
 // ─── Indexes ─────────────────────────────────────────────────────
 // Shift-end gate: "all pending requests in community since shift start"
 rideRequestSchema.index({ communityId: 1, status: 1, createdAt: -1 });
+rideRequestSchema.index({ communityId: 1, status: 1, passengerHomePhase: 1, createdAt: -1 });
 
 // Passenger ride history
 rideRequestSchema.index({ passengerId: 1, createdAt: -1 });

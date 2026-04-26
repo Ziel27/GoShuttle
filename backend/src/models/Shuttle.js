@@ -32,6 +32,17 @@ const shuttleSchema = new mongoose.Schema(
       default: '', // e.g., "Shuttle #3" or "Blue Van"
     },
 
+    // Null means this shuttle can serve all phases.
+    // When set (e.g., phase_1), dispatch is restricted to matching passenger phase.
+    assignedPhase: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      maxlength: [40, 'Assigned phase cannot exceed 40 characters.'],
+      default: null,
+      index: true,
+    },
+
     maxCapacity: {
       type: Number,
       required: [true, 'Maximum capacity is required'],
@@ -43,6 +54,15 @@ const shuttleSchema = new mongoose.Schema(
       type: Number,
       default: 0,
       min: [0, 'Current capacity cannot be negative'],
+    },
+
+    // Seats pre-reserved for dispatched-but-not-yet-boarded passengers.
+    // Effective capacity = currentCapacity + pendingPickupCount.
+    // Atomically incremented by dispatch service, decremented on physical board or cancel.
+    pendingPickupCount: {
+      type: Number,
+      default: 0,
+      min: [0, 'Pending pickup count cannot be negative'],
     },
 
     // GeoJSON Point — updated in real-time via Socket.io
@@ -88,6 +108,7 @@ shuttleSchema.index({ location: '2dsphere' });
 
 // "All active shuttles in community X" — the most frequent query
 shuttleSchema.index({ communityId: 1, status: 1, isActive: 1 });
+shuttleSchema.index({ communityId: 1, assignedPhase: 1, isActive: 1 });
 
 // One driver per shuttle (sparse: allows multiple nulls)
 shuttleSchema.index({ driverId: 1 }, { sparse: true });

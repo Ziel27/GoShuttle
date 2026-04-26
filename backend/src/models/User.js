@@ -70,6 +70,16 @@ const userSchema = new mongoose.Schema(
       default: '',
     },
 
+    // Passenger home phase (e.g., phase_1). Used for phase-scoped dispatching.
+    homePhase: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      maxlength: [40, 'Home phase cannot exceed 40 characters.'],
+      default: null,
+      index: true,
+    },
+
     homeDestination: {
       type: new mongoose.Schema(
         {
@@ -133,6 +143,7 @@ const userSchema = new mongoose.Schema(
 // ─── Indexes ─────────────────────────────────────────────────────
 // Multi-tenant scoped queries: "all drivers in this community"
 userSchema.index({ communityId: 1, role: 1, isActive: 1 });
+userSchema.index({ communityId: 1, role: 1, homePhase: 1, isActive: 1 });
 userSchema.index(
   { 'homeDestination.location': '2dsphere' },
   {

@@ -11,6 +11,13 @@ const RideRequest = require('../models/RideRequest');
 const { isLocationInBoundary } = require('../services/geofence');
 const { startManualAutomationCooldown } = require('../services/automation-cooldown');
 const { uploadReceiptImage } = require('../services/cloudinary');
+const { findAndDispatch, releaseAndRetry, retryWaitingQueue, releasePendingSlot } = require('../services/dispatch.service');
+const {
+  normalizePhase,
+  isShuttlePhaseCompatible,
+  buildPhaseAwareRequestQuery,
+} = require('../utils/phase');
+
 
 const MAX_REMITTANCE_AMOUNT = 1000000;
 
@@ -114,8 +121,12 @@ const parseDestinationPayload = (destination) => {
   };
 };
 
-const claimPendingPickupRequests = async ({ session, communityId, maxCount }) => {
+const claimPendingPickupRequests = async ({ session, communityId, maxCount, shuttlePhase }) => {
   const claimed = [];
+  const phaseQuery = buildPhaseAwareRequestQuery({
+    shuttlePhase,
+    passengerPhaseField: 'passengerHomePhase',
+  });
 
   for (let i = 0; i < maxCount; i += 1) {
     const request = await PickupRequest.findOneAndUpdate(
@@ -123,6 +134,7 @@ const claimPendingPickupRequests = async ({ session, communityId, maxCount }) =>
         communityId,
         status: 'pending',
         expiresAt: { $gt: new Date() },
+        ...phaseQuery,
       },
       { $set: { status: 'claimed' } },
       {
@@ -183,7 +195,12 @@ const resolveDriverShiftWindowStart = async ({ activeTrip, driverId }) => {
   return new Date(Date.now() - SHIFT_WINDOW_FALLBACK_MS);
 };
 
-const listUnresolvedRideRequestsForShift = async ({ communityId, shiftStart }) => {
+const listUnresolvedRideRequestsForShift = async ({ communityId, shiftStart, shuttlePhase }) => {
+  const phaseQuery = buildPhaseAwareRequestQuery({
+    shuttlePhase,
+    passengerPhaseField: 'passengerHomePhase',
+  });
+
   return RideRequest.find({
     communityId,
     status: 'pending',
@@ -191,6 +208,7 @@ const listUnresolvedRideRequestsForShift = async ({ communityId, shiftStart }) =
       $gte: shiftStart,
       $lte: new Date(),
     },
+    ...phaseQuery,
   })
     .select('_id passengerId destination fareExpected createdAt')
     .populate('passengerId', 'firstName lastName')
@@ -286,7 +304,28 @@ const passengerBoard = async (req, res) => {
       session,
       communityId: shuttle.communityId,
       maxCount: boardedCount,
+      shuttlePhase: shuttle.assignedPhase,
     });
+
+    // DISPATCH: Decrement pendingPickupCount for each dispatched PickupRequest that is now physically boarding
+    const dispatchedClaimedIds = pendingRequests
+      .filter((r) => r.status === 'claimed' && r.assignedShuttleId)
+      .map((r) => r._id);
+
+    if (dispatchedClaimedIds.length > 0) {
+      // Each claimed dispatched request had a pending slot reserved — release them now
+      await Shuttle.updateOne(
+        { _id: shuttle._id },
+        { $inc: { pendingPickupCount: -dispatchedClaimedIds.length } }
+      ).session(session);
+
+      // Ensure pendingPickupCount doesn't go below 0
+      await Shuttle.updateOne(
+        { _id: shuttle._id, pendingPickupCount: { $lt: 0 } },
+        { $set: { pendingPickupCount: 0 } }
+      ).session(session);
+    }
+
 
     const community = await Community.findById(shuttle.communityId).select('baseFare').session(session);
     if (!community) {
@@ -382,6 +421,7 @@ const passengerBoard = async (req, res) => {
       revenueCollected: activeTrip.revenueCollected,
       currentCapacity: shuttle.currentCapacity,
       maxCapacity: shuttle.maxCapacity,
+      pendingPickupCount: shuttle.pendingPickupCount,
     });
 
     for (const request of pendingRequests) {
@@ -392,6 +432,14 @@ const passengerBoard = async (req, res) => {
         tripId: activeTrip._id,
       });
     }
+
+    // DISPATCH: Retry waiting queue — a seat opened up after physical boarding frees capacity checks
+    setImmediate(() => {
+      retryWaitingQueue(shuttle.communityId, io).catch((err) =>
+        console.error('[passengerBoard] retryWaitingQueue error:', err)
+      );
+    });
+
 
     return res.status(200).json({
       message: 'Passenger boarding recorded.',
@@ -449,6 +497,7 @@ const endShift = async (req, res) => {
     const unresolvedRequests = await listUnresolvedRideRequestsForShift({
       communityId: shuttle.communityId,
       shiftStart: shiftWindowStart,
+      shuttlePhase: shuttle.assignedPhase,
     });
 
     if (unresolvedRequests.length > 0) {
@@ -606,6 +655,8 @@ const syncOfflineTrips = async (req, res) => {
 const createPickupIntent = async (req, res) => {
   try {
     const { latitude, longitude, destination } = req.body;
+    const fareType = ['priority', 'standard'].includes(req.body.fareType) ? req.body.fareType : 'standard';
+
 
     const coords = validateCoordinates(latitude, longitude);
     if (!coords.valid) {
@@ -628,6 +679,9 @@ const createPickupIntent = async (req, res) => {
     if (!community) {
       return res.status(404).json({ error: 'Community not found.' });
     }
+
+    const passenger = await User.findById(req.user._id).select('homePhase').lean();
+    const passengerHomePhase = normalizePhase(passenger?.homePhase);
 
     // Backward-compatible default destination for legacy clients not sending destination payload.
     let destinationType = 'fixed';
@@ -677,6 +731,10 @@ const createPickupIntent = async (req, res) => {
 
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
+    const fareExpected = fareType === 'priority'
+      ? Number((community.baseFare * (community.priorityFareMultiplier ?? 1.5)).toFixed(2))
+      : community.baseFare;
+
     // PERSISTENCE: Create permanent ride request BEFORE ephemeral pickup intent.
     // This record survives TTL deletion and shift-end — it is the audit ledger.
     const rideRequest = await RideRequest.create({
@@ -686,14 +744,16 @@ const createPickupIntent = async (req, res) => {
         type: 'Point',
         coordinates: [coords.lng, coords.lat],
       },
+      passengerHomePhase,
       destination: {
         type: destinationType,
         label: destinationLabel,
         location: destinationLocation,
       },
-      fareExpected: community.baseFare,
+      fareExpected,
       status: 'pending',
     });
+
 
     const pickupRequest = await PickupRequest.create({
       communityId: req.user.communityId,
@@ -705,15 +765,42 @@ const createPickupIntent = async (req, res) => {
       destinationType,
       destinationLabel,
       destinationLocation,
+      passengerHomePhase,
+      fareType,
       status: 'pending',
       expiresAt,
     });
+
 
     // Link the permanent ride request to the ephemeral pickup intent
     rideRequest.pickupRequestId = pickupRequest._id;
     await rideRequest.save();
 
     const io = req.app.get('io');
+
+    // DISPATCH: Find nearest driver and auto-assign.
+    // In test mode we keep requests pending to preserve deterministic integration flows.
+    let dispatchResult = {
+      dispatched: false,
+      shuttle: null,
+      queuePosition: null,
+      queueReason: null,
+    };
+
+    if (process.env.NODE_ENV !== 'test') {
+      dispatchResult = await findAndDispatch({
+        communityId: req.user.communityId,
+        passengerId: req.user._id,
+        location: pickupRequest.location,
+        fareType,
+        fareExpected,
+        passengerHomePhase,
+        pickupRequest,
+        io,
+      });
+    }
+
+    // Broadcast the pickup intent to the community (drivers still see it on map)
     io.to(`community:${String(req.user.communityId)}`).emit('trip:pickup-intent', {
       requestId: pickupRequest._id,
       communityId: pickupRequest.communityId,
@@ -722,20 +809,31 @@ const createPickupIntent = async (req, res) => {
       destinationType: pickupRequest.destinationType,
       destinationLabel: pickupRequest.destinationLabel,
       destinationLocation: pickupRequest.destinationLocation,
+      passengerHomePhase: pickupRequest.passengerHomePhase,
+      fareType: pickupRequest.fareType,
+      fareExpected,
       expiresAt: pickupRequest.expiresAt,
       status: pickupRequest.status,
+      assignedShuttleId: dispatchResult.dispatched ? dispatchResult.shuttle?._id : null,
     });
 
     return res.status(201).json({
       message: 'Pickup intent submitted.',
       request: pickupRequest,
       rideRequestId: rideRequest._id,
+      fareType,
+      fareExpected,
+      dispatched: dispatchResult.dispatched,
+      assignedShuttle: dispatchResult.dispatched ? dispatchResult.shuttle : null,
+      queuePosition: dispatchResult.queuePosition,
+      queueReason: dispatchResult.queueReason ?? null,
     });
   } catch (error) {
     console.error('Create pickup intent error:', error);
     return res.status(500).json({ error: 'Failed to submit pickup intent.' });
   }
 };
+
 
 /**
  * DELETE /api/trips/pickup-intent/:intentId
@@ -770,10 +868,9 @@ const cancelPickupIntent = async (req, res) => {
       await request.save();
     }
 
-    if (request.status !== 'pending') {
-      return res.status(409).json({
-        error: `Cannot cancel pickup intent with status '${request.status}'. Only pending requests can be cancelled.`,
-      });
+    const cancellableStatuses = ['pending', 'dispatched', 'queued'];
+    if (!cancellableStatuses.includes(request.status)) {
+      return res.status(409).json({ error: 'Only pending requests can be cancelled.' });
     }
 
     request.status = 'cancelled';
@@ -790,6 +887,16 @@ const cancelPickupIntent = async (req, res) => {
         },
       }
     );
+
+    // DISPATCH: Release the reserved slot and retry waiting queue
+    setImmediate(() => {
+      releaseAndRetry({
+        pickupRequestId: request._id,
+        communityId: request.communityId,
+        io: req.app.get('io'),
+      }).catch((err) => console.error('[cancelPickupIntent] releaseAndRetry error:', err));
+    });
+
 
     const io = req.app.get('io');
     const communityRoom = `community:${String(request.communityId)}`;
@@ -816,19 +923,131 @@ const cancelPickupIntent = async (req, res) => {
 };
 
 /**
+ * DELETE /api/trips/my-pickup-intents
+ * Passenger-initiated: cancel ALL their own active pickup requests atomically.
+ * Called before logout to ensure reserved slots are returned to the pool.
+ */
+const cancelMyPickupIntents = async (req, res) => {
+  try {
+    const passengerId = req.user._id;
+    const communityId = req.user.communityId;
+    const io = req.app.get('io');
+
+    // Find all active requests for this passenger
+    const activeRequests = await PickupRequest.find({
+      passengerId,
+      communityId,
+      status: { $in: ['pending', 'dispatched', 'queued'] },
+    }).lean();
+
+    if (activeRequests.length === 0) {
+      return res.status(200).json({ message: 'No active pickup requests to cancel.', cancelled: 0 });
+    }
+
+    const ids = activeRequests.map((r) => r._id);
+
+    // Mark all as cancelled
+    await PickupRequest.updateMany(
+      { _id: { $in: ids } },
+      { $set: { status: 'cancelled' } }
+    );
+
+    // Cancel linked persistent ride requests
+    await RideRequest.updateMany(
+      { pickupRequestId: { $in: ids }, status: 'pending' },
+      {
+        $set: {
+          status: 'cancelled',
+          resolution: 'passenger_cancel',
+          cancelledAt: new Date(),
+        },
+      }
+    );
+
+    // Broadcast cancellation and release slots — one per request, non-blocking
+    const communityRoom = `community:${String(communityId)}`;
+    setImmediate(async () => {
+      for (const req of activeRequests) {
+        const payload = {
+          requestId: req._id,
+          communityId: req.communityId,
+          passengerId: req.passengerId,
+          status: 'cancelled',
+          cancelledBy: 'passenger',
+          cancelledAt: new Date(),
+        };
+        io.to(communityRoom).emit('pickup-intent:cancelled', payload);
+        io.to(communityRoom).emit('trip:pickup-intent-cancelled', payload);
+
+        // Release slot if it had a reserved pending slot
+        if (req.status === 'dispatched' && req.assignedShuttleId) {
+          try {
+            await releaseAndRetry({
+              pickupRequestId: req._id,
+              communityId: req.communityId,
+              io,
+            });
+          } catch (err) {
+            console.error('[cancelMyPickupIntents] releaseAndRetry error:', err);
+          }
+        }
+      }
+
+      // One final queue retry to fill any freed slots
+      try {
+        await retryWaitingQueue(communityId, io);
+      } catch (err) {
+        console.error('[cancelMyPickupIntents] retryWaitingQueue error:', err);
+      }
+    });
+
+    return res.status(200).json({
+      message: `${activeRequests.length} pickup request(s) cancelled.`,
+      cancelled: activeRequests.length,
+    });
+  } catch (error) {
+    console.error('Cancel my pickup intents error:', error);
+    return res.status(500).json({ error: 'Failed to cancel your pickup requests.' });
+  }
+};
+
+/**
  * GET /api/trips/pickup-intents
  * Drivers/Admins fetch active pickup demand pins in their community.
  */
 const listPickupIntents = async (req, res) => {
   try {
     const now = new Date();
-
-    const requests = await PickupRequest.find({
+    const query = {
       communityId: req.user.communityId,
       status: 'pending',
       expiresAt: { $gt: now },
-    })
-      .select('communityId passengerId location destinationType destinationLabel destinationLocation status expiresAt createdAt')
+    };
+
+    if (req.user.role === 'driver') {
+      const driverShuttle = await Shuttle.findOne({
+        communityId: req.user.communityId,
+        driverId: req.user._id,
+        isActive: true,
+      })
+        .select('assignedPhase')
+        .lean();
+
+      if (!driverShuttle) {
+        return res.status(200).json({ count: 0, requests: [] });
+      }
+
+      Object.assign(
+        query,
+        buildPhaseAwareRequestQuery({
+          shuttlePhase: driverShuttle?.assignedPhase,
+          passengerPhaseField: 'passengerHomePhase',
+        })
+      );
+    }
+
+    const requests = await PickupRequest.find(query)
+      .select('communityId passengerId location destinationType destinationLabel destinationLocation passengerHomePhase status expiresAt createdAt')
       .sort({ createdAt: -1 })
       .limit(100);
 
@@ -2367,6 +2586,16 @@ const resolveRideRequest = async (req, res) => {
       return res.status(404).json({ error: 'No active shuttle found for this driver.' });
     }
 
+    if (!isShuttlePhaseCompatible({
+      shuttlePhase: shuttle.assignedPhase,
+      passengerHomePhase: rideRequest.passengerHomePhase,
+    })) {
+      if (session) await session.abortTransaction();
+      return res.status(409).json({
+        error: 'This ride request belongs to a different home phase and cannot be resolved by your shuttle.',
+      });
+    }
+
     const activeTrip = await Trip.findOne({
       communityId: shuttle.communityId,
       shuttleId: shuttle._id,
@@ -2438,7 +2667,59 @@ const resolveRideRequest = async (req, res) => {
   }
 };
 
+/**
+ * GET /api/trips/my-dispatch
+ * Passenger-only: returns their current dispatched PickupRequest with assigned shuttle info.
+ * Used by the passenger map to show which shuttle is coming.
+ */
+const getMyDispatch = async (req, res) => {
+  try {
+    const request = await PickupRequest.findOne({
+      passengerId: req.user._id,
+      communityId: req.user.communityId,
+      status: { $in: ['dispatched', 'queued'] },
+      expiresAt: { $gt: new Date() },
+    })
+      .sort({ createdAt: -1 })
+      .populate('assignedShuttleId', 'plateNumber label assignedPhase location currentCapacity maxCapacity pendingPickupCount status')
+      .lean();
+
+    if (!request) {
+      return res.status(200).json({ dispatch: null });
+    }
+
+    return res.status(200).json({
+      dispatch: {
+        requestId: request._id,
+        fareType: request.fareType,
+        status: request.status,
+          passengerHomePhase: request.passengerHomePhase || null,
+        queuePosition: request.queuePosition,
+        dispatchedAt: request.dispatchedAt,
+        expiresAt: request.expiresAt,
+        assignedShuttle: request.assignedShuttleId
+          ? {
+              shuttleId: request.assignedShuttleId._id,
+              plateNumber: request.assignedShuttleId.plateNumber,
+              label: request.assignedShuttleId.label,
+            assignedPhase: request.assignedShuttleId.assignedPhase || null,
+              location: request.assignedShuttleId.location,
+              currentCapacity: request.assignedShuttleId.currentCapacity,
+              maxCapacity: request.assignedShuttleId.maxCapacity,
+              pendingPickupCount: request.assignedShuttleId.pendingPickupCount,
+              status: request.assignedShuttleId.status,
+            }
+          : null,
+      },
+    });
+  } catch (error) {
+    console.error('Get my dispatch error:', error);
+    return res.status(500).json({ error: 'Failed to fetch dispatch status.' });
+  }
+};
+
 module.exports = {
+
   passengerBoard,
   passengerUnboard,
   listOnboardDestinations,
@@ -2447,6 +2728,7 @@ module.exports = {
   syncOfflineTrips,
   createPickupIntent,
   cancelPickupIntent,
+  cancelMyPickupIntents,
   listPickupIntents,
   listPassengerRecentRides,
   getAnalytics,
@@ -2459,4 +2741,5 @@ module.exports = {
   listDriverCompletedTrips,
   listDriverRemittances,
   resolveRideRequest,
+  getMyDispatch,
 };

@@ -13,6 +13,15 @@ const communitySchema = new mongoose.Schema(
       default: 25,
       min: [0, 'Base fare cannot be negative'],
     },
+
+    // Multiplier applied to baseFare for priority rides. Admin-editable.
+    // Priority fare = baseFare × priorityFareMultiplier
+    priorityFareMultiplier: {
+      type: Number,
+      default: 1.5,
+      min: [1.0, 'Priority multiplier must be at least 1.0'],
+      max: [10.0, 'Priority multiplier cannot exceed 10.0'],
+    },
     boundaries: {
       type: {
         type: String,
@@ -57,6 +66,46 @@ const communitySchema = new mongoose.Schema(
         },
       }],
       default: [],
+    },
+    // Phase-specific geofences for sub-areas within the community
+    phaseGeofences: {
+      type: [{
+        name: {
+          type: String,
+          required: true,
+          trim: true,
+          lowercase: true,
+          maxlength: [40, 'Phase name cannot exceed 40 characters.'],
+        },
+        boundaries: {
+          type: {
+            type: String,
+            enum: ['Polygon'],
+            required: true,
+          },
+          coordinates: {
+            type: [[[Number]]],
+            required: true,
+          },
+        },
+        color: {
+          type: String,
+          default: '#6366f1',
+        },
+        isActive: {
+          type: Boolean,
+          default: true,
+        },
+        order: {
+          type: Number,
+          default: 0,
+        },
+      }],
+      default: [],
+    },
+    opsBypassMode: {
+      type: Boolean,
+      default: false,
     },
     isActive: {
       type: Boolean,

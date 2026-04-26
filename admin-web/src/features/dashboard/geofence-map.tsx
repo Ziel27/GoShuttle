@@ -7,8 +7,16 @@ import 'leaflet/dist/leaflet.css';
 type GeofenceMapProps = {
   coordinates: number[][][];
   onChange: (coordinates: number[][][]) => void;
+  /** Optional read-only polygon shown as a visual guide (e.g. community boundary). */
+  referenceCoordinates?: number[][][];
+  /** Optional read-only overlays (e.g. saved phase geofences). */
+  overlayPolygons?: Array<{
+    name?: string;
+    coordinates: number[][][];
+    color?: string;
+  }>;
   /** Exposed so the parent can programmatically fit the map to the geofence. */
-  onMapReady?: (controls: { fitGeofence: () => void }) => void;
+  onMapReady?: (controls: { fitGeofence: () => void; fitReference: () => void }) => void;
 };
 
 const DEFAULT_CENTER: [number, number] = [14.55, 121.03];
@@ -161,10 +169,12 @@ const enableLayerEditing = (layer: L.Layer) => {
   });
 };
 
-export const GeofenceMap = ({ coordinates, onChange, onMapReady }: GeofenceMapProps) => {
+export const GeofenceMap = ({ coordinates, onChange, referenceCoordinates, overlayPolygons, onMapReady }: GeofenceMapProps) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
   const drawnItemsRef = useRef<L.FeatureGroup | null>(null);
+  const referenceLayerRef = useRef<L.Polygon | null>(null);
+  const overlayLayersRef = useRef<L.Layer[]>([]);
   const lastLocalSerializedRef = useRef('');
   const replacingLayerRef = useRef(false);
 
@@ -183,6 +193,19 @@ export const GeofenceMap = ({ coordinates, onChange, onMapReady }: GeofenceMapPr
   }, [onMapReady]);
 
   const normalizedCoordinates = useMemo(() => normalizeCoordinates(coordinates), [coordinates]);
+  const normalizedReferenceCoordinates = useMemo(
+    () => normalizeCoordinates(referenceCoordinates || []),
+    [referenceCoordinates]
+  );
+  const normalizedOverlayPolygons = useMemo(
+    () =>
+      (overlayPolygons || []).map((item) => ({
+        name: item.name || '',
+        color: item.color || '#6366f1',
+        coordinates: normalizeCoordinates(item.coordinates),
+      })),
+    [overlayPolygons]
+  );
   const serializedCoordinates = useMemo(() => serializeCoordinates(normalizedCoordinates), [normalizedCoordinates]);
   const latestSerializedRef = useRef(serializedCoordinates);
 
@@ -340,6 +363,16 @@ export const GeofenceMap = ({ coordinates, onChange, onMapReady }: GeofenceMapPr
       }
 
       // Expose fit-to-geofence control to parent
+      const fitReference = () => {
+        const m = mapRef.current;
+        const reference = referenceLayerRef.current;
+        if (!m || !reference) return;
+        const bounds = reference.getBounds();
+        if (bounds.isValid()) {
+          m.fitBounds(bounds, { padding: [24, 24], maxZoom: 16 });
+        }
+      };
+
       onMapReadyRef.current?.({
         fitGeofence: () => {
           const items = drawnItemsRef.current;
@@ -352,6 +385,7 @@ export const GeofenceMap = ({ coordinates, onChange, onMapReady }: GeofenceMapPr
             m.fitBounds(bounds, { padding: [24, 24], maxZoom: 16 });
           }
         },
+        fitReference,
       });
 
       // Signal that the map is ready so the sync effect re-runs
@@ -368,6 +402,8 @@ export const GeofenceMap = ({ coordinates, onChange, onMapReady }: GeofenceMapPr
       map?.remove();
       mapRef.current = null;
       drawnItemsRef.current = null;
+      referenceLayerRef.current = null;
+      overlayLayersRef.current = [];
       setMapReady(false);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -411,6 +447,77 @@ export const GeofenceMap = ({ coordinates, onChange, onMapReady }: GeofenceMapPr
     endReplacementCycle();
   }, [mapReady, bindLayerEvents, endReplacementCycle, normalizedCoordinates, serializedCoordinates]);
 
+  useEffect(() => {
+    if (!mapReady) return;
+
+    const map = mapRef.current;
+    if (!map) return;
+
+    if (referenceLayerRef.current) {
+      map.removeLayer(referenceLayerRef.current);
+      referenceLayerRef.current = null;
+    }
+
+    const firstRing = normalizedReferenceCoordinates[0];
+    if (!firstRing || firstRing.length < 4) return;
+
+    const latLngs = firstRing.map(([lng, lat]) => [lat, lng] as [number, number]);
+    const referenceLayer = L.polygon(latLngs, {
+      color: '#000000',
+      weight: 2,
+      fillColor: '#000000',
+      fillOpacity: 0.04,
+      interactive: false,
+    });
+    referenceLayer.addTo(map);
+    referenceLayerRef.current = referenceLayer;
+
+    const bounds = referenceLayer.getBounds();
+    if (bounds.isValid()) {
+      map.fitBounds(bounds, { padding: [24, 24], maxZoom: 16 });
+    }
+  }, [mapReady, normalizedReferenceCoordinates]);
+
+  useEffect(() => {
+    if (!mapReady) return;
+    const map = mapRef.current;
+    if (!map) return;
+
+    overlayLayersRef.current.forEach((layer) => map.removeLayer(layer));
+    overlayLayersRef.current = [];
+
+    normalizedOverlayPolygons.forEach((item) => {
+      const ring = item.coordinates[0];
+      if (!ring || ring.length < 4) return;
+      const latLngs = ring.map(([lng, lat]) => [lat, lng] as [number, number]);
+      const polygon = L.polygon(latLngs, {
+        color: item.color,
+        weight: 2,
+        fillColor: item.color,
+        fillOpacity: 0.12,
+        interactive: false,
+      });
+      polygon.addTo(map);
+      overlayLayersRef.current.push(polygon);
+
+      if (item.name) {
+        const safeColor = /^#[0-9a-fA-F]{6}$/.test(item.color) ? item.color : '#6366f1';
+        const label = L.tooltip({
+          permanent: true,
+          direction: 'top',
+          offset: [0, -8],
+          className: 'phase-geofence-label',
+        })
+          .setLatLng(polygon.getBounds().getCenter())
+          .setContent(
+            `<span class="phase-geofence-label__dot" style="background:${safeColor};"></span>${item.name.replace(/_/g, ' ')}`
+          );
+        label.addTo(map);
+        overlayLayersRef.current.push(label);
+      }
+    });
+  }, [mapReady, normalizedOverlayPolygons]);
+
   return (
     <div className="space-y-2">
       <div
@@ -420,6 +527,36 @@ export const GeofenceMap = ({ coordinates, onChange, onMapReady }: GeofenceMapPr
       <p className="text-xs text-slate-600">
         Draw a polygon or rectangle to define the geofence. Only one shape is saved per community.
       </p>
+      <style>
+        {`.phase-geofence-label {
+          background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(248,250,252,0.96) 100%);
+          border: 1px solid rgba(15,23,42,0.18);
+          border-radius: 9999px;
+          color: #0f172a;
+          font-size: 11px;
+          font-weight: 700;
+          letter-spacing: 0.2px;
+          text-transform: capitalize;
+          padding: 4px 10px;
+          box-shadow: 0 2px 8px rgba(15,23,42,0.18);
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          backdrop-filter: blur(2px);
+        }
+        .phase-geofence-label:before {
+          display: none;
+        }
+        .phase-geofence-label__dot {
+          width: 8px;
+          height: 8px;
+          border-radius: 9999px;
+          display: inline-block;
+          border: 1px solid rgba(15,23,42,0.22);
+          box-shadow: 0 0 0 1px rgba(255,255,255,0.9);
+          flex-shrink: 0;
+        }`}
+      </style>
     </div>
   );
 };

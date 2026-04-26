@@ -3,6 +3,7 @@ export type Role = 'admin' | 'driver' | 'passenger';
 export type Community = {
   _id: string;
   name: string;
+  opsBypassMode?: boolean;
   boundaries?: {
     type: 'Polygon';
     coordinates: number[][][];
@@ -17,8 +18,21 @@ export type Community = {
     order?: number;
     isActive?: boolean;
   }>;
+  phaseGeofences?: Array<{
+    _id: string;
+    name: string;
+    boundaries: {
+      type: 'Polygon';
+      coordinates: number[][][];
+    };
+    color?: string;
+    order?: number;
+    isActive?: boolean;
+  }>;
   baseFare?: number;
+  priorityFareMultiplier?: number;
   isActive?: boolean;
+
   branding?: {
     primaryColor?: string;
     logoUrl?: string;
@@ -39,25 +53,31 @@ export type User = {
 export type Shuttle = {
   _id: string;
   communityId:
-    | string
-    | {
-        _id?: string;
-        name?: string;
-      };
+  | string
+  | {
+    _id?: string;
+    name?: string;
+  };
   driverId:
-    | null
-    | string
-    | {
-        _id?: string;
-        firstName?: string;
-        lastName?: string;
-        status?: string;
-      };
+  | null
+  | string
+  | {
+    _id?: string;
+    firstName?: string;
+    lastName?: string;
+    status?: string;
+  };
   plateNumber: string;
   label: string;
+  assignedPhase?: string | null;
   maxCapacity: number;
   currentCapacity: number;
   status: 'idle' | 'en_route' | 'out_of_bounds' | 'maintenance';
+  location?: {
+    type: 'Point';
+    coordinates: [number, number];
+  };
+  lastLocationUpdate?: string;
   updatedAt?: string;
 };
 

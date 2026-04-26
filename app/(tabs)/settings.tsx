@@ -4,15 +4,16 @@ import { AppPalette } from '@/constants/app-ui';
 import { ROUTES } from '@/constants/routes';
 import { DesignTokens, OutfitFonts } from '@/constants/theme';
 import { useThemeColor } from '@/hooks/use-theme-color';
-import { getCommunityById } from '@/services/community';
+import { getCommunityById, getPhaseGeofences, type PhaseGeofence } from '@/services/community';
 import {
     isPushNotificationsAvailableInRuntime,
     registerForPushNotifications,
     savePushToken,
 } from '@/services/notifications';
 import { listShuttles } from '@/services/shuttle';
-import { endShift, resolveRideRequest, startShift, stopShift } from '@/services/trip';
-import { setHomeDestinationFromGps } from '@/services/user';
+import { endShift, resolveRideRequest, startShift, stopShift, cancelMyPickupIntents, getMyDispatch } from '@/services/trip';
+
+import { setHomeDestinationFromGps, updateHomePhase } from '@/services/user';
 import { useAuthStore } from '@/store/auth';
 import { usePreferencesStore } from '@/store/preferences';
 import { Ionicons } from '@expo/vector-icons';
@@ -109,6 +110,13 @@ export default function SettingsTabScreen() {
   const [resolvingRequestId, setResolvingRequestId] = useState<string | null>(null);
   const [logoutGuardVisible, setLogoutGuardVisible] = useState(false);
   const [logoutGuardLoading, setLogoutGuardLoading] = useState(false);
+  const [passengerLogoutGuardVisible, setPassengerLogoutGuardVisible] = useState(false);
+  const [passengerLogoutLoading, setPassengerLogoutLoading] = useState(false);
+  const [phaseGeofences, setPhaseGeofences] = useState<PhaseGeofence[]>([]);
+  const [opsBypassMode, setOpsBypassMode] = useState(false);
+  const [showPhaseDropdown, setShowPhaseDropdown] = useState(false);
+  const [updatingPhase, setUpdatingPhase] = useState(false);
+
 
   useEffect(() => {
     if (!user?.communityId) return;
@@ -116,12 +124,44 @@ export default function SettingsTabScreen() {
       try {
         const community = await getCommunityById(user.communityId);
         setCommunityName(community?.name ?? null);
+        setOpsBypassMode(Boolean(community?.opsBypassMode));
       } catch (error) {
         console.error('Failed to load community:', error);
       }
     };
     loadCommunity();
   }, [user?.communityId]);
+
+  useEffect(() => {
+    if (!user?.communityId) return;
+    const loadPhaseGeofences = async () => {
+      try {
+        const phases = await getPhaseGeofences(user.communityId);
+        setPhaseGeofences(phases);
+      } catch (error) {
+        console.error('Failed to load phase geofences:', error);
+      }
+    };
+    loadPhaseGeofences();
+  }, [user?.communityId]);
+
+  const handleUpdateHomePhase = useCallback(async (phase: string | null) => {
+    if (updatingPhase) return;
+    setUpdatingPhase(true);
+    try {
+      const updatedUser = await updateHomePhase(phase);
+      updateUserField('homePhase', updatedUser.homePhase);
+      setSettingsFeedback(phase ? `Phase updated to ${phase.replace(/_/g, ' ')}` : 'Phase removed.');
+    } catch (error) {
+      setSettingsFeedback(error instanceof Error ? error.message : 'Failed to update phase.');
+    } finally {
+      setUpdatingPhase(false);
+      setShowPhaseDropdown(false);
+    }
+  }, [updatingPhase, updateUserField]);
+
+  const currentPhaseLabel = phaseGeofences.find(p => p.name === user?.homePhase)?.name || 
+    (user?.homePhase ? user.homePhase.replace(/_/g, ' ') : 'Not set');
 
   useEffect(() => {
     if (!isPassenger) return;
@@ -279,13 +319,28 @@ export default function SettingsTabScreen() {
   };
 
   const handleLogout = async () => {
-    if (isDriver && user?.status === 'driving') {
+    // Driver guard: must end shift first
+    if (isDriver && user?.status === 'driving' && !opsBypassMode) {
       setLogoutGuardVisible(true);
       return;
+    }
+    // Passenger guard: warn about active pickup requests
+    if (isPassenger) {
+      try {
+        const { getMyDispatch } = await import('@/services/trip');
+        const dispatch = await getMyDispatch();
+        const hasActive = !!dispatch && ['dispatched', 'queued', 'pending'].includes(dispatch.status);
+        if (hasActive) {
+          setPassengerLogoutGuardVisible(true);
+          return;
+        }
+      } catch { /* silent — proceed to logout */ }
     }
     await logout();
     router.replace(ROUTES.authLogin);
   };
+
+
 
   const handleSetHomeFromGps = async () => {
     if (!isPassenger || savingHomeDestination) return;
@@ -610,6 +665,73 @@ export default function SettingsTabScreen() {
                   ? `Saved Home: ${user.homeDestination.label}`
                   : 'No Home destination saved yet.'}
               </ThemedText>
+
+              {/* Phase Selection */}
+              {phaseGeofences.length > 0 && (
+                <View style={styles.phaseSection}>
+                  <ThemedText type="caption" style={{ color: mutedColor, marginBottom: 4 }}>
+                    Home Phase
+                  </ThemedText>
+                  <Pressable
+                    style={[styles.phaseButton, { borderColor, backgroundColor: surface }]}
+                    onPress={() => setShowPhaseDropdown(!showPhaseDropdown)}
+                    disabled={updatingPhase}
+                    accessibilityRole="button"
+                    accessibilityLabel="Select home phase"
+                  >
+                    <View style={styles.phaseButtonRow}>
+                      {(() => {
+                        if (!user?.homePhase) return null;
+                        const phase = phaseGeofences.find(p => p.name === user.homePhase);
+                        if (phase) {
+                          return <View style={[styles.phaseColorDot, { backgroundColor: phase.color }]} />;
+                        }
+                        return null;
+                      })()}
+                      <ThemedText style={{ color: user?.homePhase ? tint : mutedColor, flex: 1 }}>
+                        {currentPhaseLabel}
+                      </ThemedText>
+                    </View>
+                    <Ionicons 
+                      name={showPhaseDropdown ? 'chevron-up' : 'chevron-down'} 
+                      size={16} 
+                      color={mutedColor} 
+                    />
+                  </Pressable>
+
+                  {showPhaseDropdown && (
+                    <View style={[styles.phaseDropdown, { borderColor, backgroundColor: surface }]}>
+                      <Pressable
+                        style={[styles.phaseOption, { backgroundColor: !user?.homePhase ? surfaceMuted : surface }]}
+                        onPress={() => handleUpdateHomePhase(null)}
+                        disabled={updatingPhase}
+                      >
+                        <ThemedText style={{ color: !user?.homePhase ? tint : mutedColor }}>
+                          Not set
+                        </ThemedText>
+                      </Pressable>
+                      {phaseGeofences.map((phase) => (
+                        <Pressable
+                          key={phase._id}
+                          style={[styles.phaseOption, { backgroundColor: user?.homePhase === phase.name ? surfaceMuted : surface }]}
+                          onPress={() => handleUpdateHomePhase(phase.name)}
+                          disabled={updatingPhase}
+                        >
+                          <View style={styles.phaseOptionRow}>
+                            <View style={[styles.phaseColorDot, { backgroundColor: phase.color }]} />
+                            <ThemedText style={{ color: user?.homePhase === phase.name ? tint : mutedColor }}>
+                              {phase.name.replace(/_/g, ' ')}
+                            </ThemedText>
+                          </View>
+                        </Pressable>
+                      ))}
+                    </View>
+                  )}
+                  <ThemedText type="caption" style={{ color: mutedColor }}>
+                    {updatingPhase ? 'Updating phase...' : 'Select your home phase to match with shuttle routes.'}
+                  </ThemedText>
+                </View>
+              )}
             </View>
           </>
         ) : null}
@@ -767,9 +889,80 @@ export default function SettingsTabScreen() {
         {settingsFeedback ? <ThemedText style={[styles.note, { color: mutedColor }]}>{settingsFeedback}</ThemedText> : null}
         <ThemedText type="caption" style={[styles.versionInfo, { color: mutedColor }]}>GoShuttle v1.0.0</ThemedText>
       </ScrollView>
+
+      {/* ── Passenger Logout Guard ─────────────────────────────────────── */}
+      <Modal
+        visible={passengerLogoutGuardVisible}
+        animationType="fade"
+        transparent={true}
+        onRequestClose={() => {
+          if (!passengerLogoutLoading) setPassengerLogoutGuardVisible(false);
+        }}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { backgroundColor: bgColor, borderColor }]}>
+            <View style={styles.modalHeader}>
+              <ThemedText type="subtitle" style={{ color: textColor }}>Active pickup request</ThemedText>
+              <Pressable
+                onPress={() => {
+                  if (!passengerLogoutLoading) setPassengerLogoutGuardVisible(false);
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Close logout dialog"
+              >
+                <Ionicons name="close" size={24} color={mutedColor} />
+              </Pressable>
+            </View>
+
+            <ThemedText type="caption" style={[{ color: mutedColor }, styles.modalDesc]}>
+              You have an active pickup request. Logging out will cancel it and free the reserved seat for another passenger.
+            </ThemedText>
+
+            <View style={styles.requestActions}>
+              <PremiumButton
+                style={[styles.resolveBtn, { borderColor, backgroundColor: surfaceMuted }]}
+                variant="secondary"
+                onPress={() => setPassengerLogoutGuardVisible(false)}
+                disabled={passengerLogoutLoading}
+              >
+                <ThemedText style={{ color: tint, fontSize: 13, fontFamily: OutfitFonts.semiBold }}>
+                  Stay
+                </ThemedText>
+              </PremiumButton>
+
+              <PremiumButton
+                style={[styles.resolveBtn, { borderColor: AppPalette.danger, backgroundColor: AppPalette.danger }]}
+                onPress={async () => {
+                  if (passengerLogoutLoading) return;
+                  setPassengerLogoutLoading(true);
+                  try {
+                    await cancelMyPickupIntents(); // best-effort slot release
+                    setPassengerLogoutGuardVisible(false);
+                    await logout();
+                    router.replace(ROUTES.authLogin);
+                  } finally {
+                    setPassengerLogoutLoading(false);
+                  }
+                }}
+                disabled={passengerLogoutLoading}
+              >
+                {passengerLogoutLoading ? (
+                  <ActivityIndicator color={AppPalette.white} />
+                ) : (
+                  <ThemedText style={{ color: AppPalette.white, fontSize: 13, fontFamily: OutfitFonts.semiBold }}>
+                    Cancel request & log out
+                  </ThemedText>
+                )}
+              </PremiumButton>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
     </SafeAreaView>
   );
 }
+
 
 const styles = StyleSheet.create({
   safeArea: {
@@ -974,5 +1167,45 @@ const styles = StyleSheet.create({
     minHeight: 36,
     paddingVertical: 0,
     borderRadius: DesignTokens.radius.sm,
+  },
+  phaseSection: {
+    marginTop: DesignTokens.spacing.sm,
+  },
+  phaseButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: 44,
+    paddingHorizontal: DesignTokens.spacing.sm,
+    paddingVertical: DesignTokens.spacing.xs,
+    borderRadius: DesignTokens.radius.md,
+    borderWidth: 1,
+  },
+  phaseButtonRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: DesignTokens.spacing.xs,
+  },
+  phaseColorDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+  },
+  phaseDropdown: {
+    marginTop: DesignTokens.spacing.xxs,
+    borderRadius: DesignTokens.radius.md,
+    borderWidth: 1,
+    overflow: 'hidden',
+  },
+  phaseOption: {
+    paddingVertical: DesignTokens.spacing.sm,
+    paddingHorizontal: DesignTokens.spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(0,0,0,0.05)',
+  },
+  phaseOptionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: DesignTokens.spacing.xs,
   },
 });
