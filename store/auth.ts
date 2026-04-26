@@ -11,6 +11,7 @@ type User = {
   role: 'admin' | 'driver' | 'passenger';
   communityId: string;
   status?: 'active' | 'offline' | 'driving';
+  homePhase?: string | null;
   homeDestination?: {
     label: string;
     location: {
@@ -28,6 +29,7 @@ type RegisterPayload = {
   password: string;
   communityId?: string;
   phone?: string;
+  homePhase?: string;
 };
 
 type AuthState = {
@@ -49,9 +51,6 @@ type AuthState = {
 const TOKEN_KEY = 'goshuttle_token';
 const USER_KEY = 'goshuttle_user';
 const WELCOME_SEEN_KEY = 'goshuttle_welcome_seen';
-const LEGACY_TOKEN_KEY = 'transitlink_token';
-const LEGACY_USER_KEY = 'transitlink_user';
-const LEGACY_WELCOME_SEEN_KEY = 'transitlink_welcome_seen';
 
 const saveSession = async (token: string, user: User) => {
   await Promise.all([
@@ -64,8 +63,6 @@ const clearSession = async () => {
   await Promise.all([
     SecureStore.deleteItemAsync(TOKEN_KEY),
     SecureStore.deleteItemAsync(USER_KEY),
-    SecureStore.deleteItemAsync(LEGACY_TOKEN_KEY),
-    SecureStore.deleteItemAsync(LEGACY_USER_KEY),
   ]);
 };
 
@@ -79,26 +76,19 @@ export const useAuthStore = create<AuthState>((set) => ({
 
   hydrate: async () => {
     try {
-      const [token, userJson, welcomeSeen, legacyToken, legacyUserJson, legacyWelcomeSeen] = await Promise.all([
+      const [token, userJson, welcomeSeen] = await Promise.all([
         SecureStore.getItemAsync(TOKEN_KEY),
         SecureStore.getItemAsync(USER_KEY),
         SecureStore.getItemAsync(WELCOME_SEEN_KEY),
-        SecureStore.getItemAsync(LEGACY_TOKEN_KEY),
-        SecureStore.getItemAsync(LEGACY_USER_KEY),
-        SecureStore.getItemAsync(LEGACY_WELCOME_SEEN_KEY),
       ]);
 
-      const resolvedToken = token || legacyToken;
-      const resolvedUserJson = userJson || legacyUserJson;
-      const resolvedWelcomeSeen = welcomeSeen ?? legacyWelcomeSeen;
-
-      if (resolvedToken && resolvedUserJson) {
-        const user = JSON.parse(resolvedUserJson) as User;
-        setAuthToken(resolvedToken);
-        set({ token: resolvedToken, user, hydrated: true, hasSeenWelcome: resolvedWelcomeSeen === 'true' });
+      if (token && userJson) {
+        const user = JSON.parse(userJson) as User;
+        setAuthToken(token);
+        set({ token, user, hydrated: true, hasSeenWelcome: welcomeSeen === 'true' });
       } else {
         setAuthToken(null);
-        set({ token: null, user: null, hydrated: true, hasSeenWelcome: resolvedWelcomeSeen === 'true' });
+        set({ token: null, user: null, hydrated: true, hasSeenWelcome: welcomeSeen === 'true' });
       }
     } catch {
       setAuthToken(null);
@@ -178,5 +168,7 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 }));
 
-export type { RegisterPayload, User };
+export const selectHomeDestination = (state: AuthState) => state.user?.homeDestination ?? null;
+
+export type { AuthState, RegisterPayload, User };
 

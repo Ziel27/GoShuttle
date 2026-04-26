@@ -10,9 +10,11 @@ const mongoSanitize = require('express-mongo-sanitize');
 const mongoose = require('mongoose');
 const { Server } = require('socket.io');
 const jwt = require('jsonwebtoken');
+const path = require('path');
 const connectDB = require('./config/db');
 const User = require('./models/User');
 const { registerSocketHandlers } = require('./services/socket-handlers');
+const { startRemittanceEnforcementJob } = require('./services/remittance-enforcement');
 
 // ─── Environment Validation ───────────────────────────────────────
 const validateEnvironment = () => {
@@ -165,6 +167,11 @@ io.use(async (socket, next) => {
 app.set('io', io);
 registerSocketHandlers(io);
 
+// Start background enforcement jobs (e.g., Remittance deadline tracking)
+if (process.env.NODE_ENV !== 'test') {
+  startRemittanceEnforcementJob(io);
+}
+
 // ─── Global Middleware ───────────────────────────────────────────
 
 // Security headers with comprehensive config
@@ -272,6 +279,10 @@ app.use('/api/communities', require('./routes/community.routes'));
 app.use('/api/users', require('./routes/user.routes'));
 app.use('/api/shuttles', require('./routes/shuttle.routes'));
 app.use('/api/trips', require('./routes/trip.routes'));
+app.use('/api/announcements', require('./routes/announcement.routes'));
+
+// Serve uploaded assets (e.g. remittance receipts)
+app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
 
 // ─── 404 Handler ─────────────────────────────────────────────────
 app.use((_req, res) => {

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
     Bar,
@@ -22,9 +22,9 @@ import {
     TableHeader,
     TableRow,
 } from '@/components/ui/table';
-import { fetchAnalytics, fetchRemittanceSummary } from '@/lib/admin-api';
+import { fetchAnalytics, fetchDriverPerformance, fetchRemittanceSummary } from '@/lib/admin-api';
 import { currency } from '@/lib/format';
-import type { RemittanceSummaryResponse } from '@/types/domain';
+import type { DriverPerformanceRow, RemittanceSummaryResponse } from '@/types/domain';
 
 const RANGE_OPTIONS = {
   '7d': 7,
@@ -61,6 +61,43 @@ const toInputDate = (date: Date) => {
   return `${y}-${m}-${d}`;
 };
 
+const percent = (value: number) => `${value.toFixed(1)}%`;
+
+type SortKey =
+  | 'driverName'
+  | 'shifts'
+  | 'passengers'
+  | 'expected'
+  | 'remitted'
+  | 'variance'
+  | 'onTimeRate'
+  | 'flagRate'
+  | 'ignoredRequests'
+  | 'lateManualBoards';
+
+const varianceClassName = (variance: number, varianceRate: number) => {
+  if (Math.abs(variance) < 0.01) return 'text-emerald-700';
+  if (varianceRate > -10) return 'text-amber-700';
+  return 'text-rose-700';
+};
+
+const flagRateClassName = (flagRate: number) => {
+  if (flagRate <= 0) return 'text-emerald-700';
+  if (flagRate <= 20) return 'text-amber-700';
+  return 'text-rose-700';
+};
+
+const ignoredClassName = (count: number) => {
+  if (count <= 0) return 'text-emerald-700';
+  if (count <= 2) return 'text-amber-700';
+  return 'text-rose-700';
+};
+
+const sortIndicator = (active: boolean, direction: 'asc' | 'desc') => {
+  if (!active) return '↕';
+  return direction === 'asc' ? '↑' : '↓';
+};
+
 export const AnalyticsPage = () => {
   const [dailySeries, setDailySeries] = useState<
     Array<{ date: string; revenue: number; passengers: number; trips: number; monthKey: string }>
@@ -71,6 +108,11 @@ export const AnalyticsPage = () => {
   const [useCustomRange, setUseCustomRange] = useState(false);
   const [remittanceGroupBy, setRemittanceGroupBy] = useState<RemittanceGroupBy>('day');
   const [remittanceSummary, setRemittanceSummary] = useState<RemittanceSummaryResponse | null>(null);
+  const [driverPerformanceRows, setDriverPerformanceRows] = useState<DriverPerformanceRow[]>([]);
+  const [driversNeedingAttention, setDriversNeedingAttention] = useState(0);
+  const [driverSortKey, setDriverSortKey] = useState<SortKey>('variance');
+  const [driverSortDirection, setDriverSortDirection] = useState<'asc' | 'desc'>('asc');
+  const [expandedDriverIds, setExpandedDriverIds] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [lastLoadedLabel, setLastLoadedLabel] = useState('');
@@ -109,7 +151,7 @@ export const AnalyticsPage = () => {
         endDate = now;
       }
 
-      const [analyticsData, remittanceData] = await Promise.all([
+      const [analyticsData, remittanceData, performanceData] = await Promise.all([
         fetchAnalytics({
           startDate: startDate.toISOString(),
           endDate: endDate.toISOString(),
@@ -118,6 +160,10 @@ export const AnalyticsPage = () => {
           startDate: startDate.toISOString(),
           endDate: endDate.toISOString(),
           groupBy: remittanceGroupBy,
+        }),
+        fetchDriverPerformance({
+          startDate: startDate.toISOString(),
+          endDate: endDate.toISOString(),
         }),
       ]);
 
@@ -134,6 +180,17 @@ export const AnalyticsPage = () => {
         }))
       );
       setRemittanceSummary(remittanceData);
+      setDriverPerformanceRows(performanceData.drivers || []);
+      setDriversNeedingAttention(performanceData.driversNeedingAttention || 0);
+      setExpandedDriverIds((prev) => {
+        const next: Record<string, boolean> = {};
+        for (const driver of performanceData.drivers || []) {
+          if (prev[driver.driverId]) {
+            next[driver.driverId] = true;
+          }
+        }
+        return next;
+      });
 
       const label = useCustomRange
         ? `${customStartDate} → ${customEndDate}`
@@ -148,6 +205,13 @@ export const AnalyticsPage = () => {
       }
     }
   }, [rangeKey, useCustomRange, customStartDate, customEndDate, remittanceGroupBy]);
+
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      void fetchData();
+    }, 250);
+    return () => window.clearTimeout(handle);
+  }, [fetchData]);
 
   const totals = useMemo(() => {
     const totalRevenue = dailySeries.reduce((acc, item) => acc + item.revenue, 0);
@@ -193,20 +257,129 @@ export const AnalyticsPage = () => {
   }, [remittanceSummary?.totals.expectedAmount, remittanceSummary?.totals.varianceAmount]);
 
   const exportCsv = () => {
-    const header = ['Date', 'Revenue', 'Passengers', 'Trips'];
-    const rows = dailySeries.map((row) => [row.date, String(row.revenue), String(row.passengers), String(row.trips)]);
+    const summaryHeader = ['Date', 'Revenue', 'Passengers', 'Trips'];
+    const summaryRows = dailySeries.map((row) => [row.date, String(row.revenue), String(row.passengers), String(row.trips)]);
 
-    const lines = [header, ...rows].map((row) =>
-      row.map((value) => `"${String(value).replace(/"/g, '""')}"`).join(',')
+    const driverHeader = [
+      'Driver Name',
+      'Shifts',
+      'Passengers',
+      'Expected',
+      'Remitted',
+      'Variance',
+      'On-Time Rate',
+      'Flag Rate',
+      'Ignored Requests',
+      'Late Manual Boards',
+    ];
+    const driverRows = driverPerformanceRows.map((row) => [
+      row.driverName,
+      String(row.totalShifts),
+      String(row.totalPassengersBoarded),
+      String(row.totalExpectedRemittance),
+      String(row.totalActualRemittance),
+      String(row.totalVariance),
+      String(row.onTimeSubmissionRate),
+      String(row.flagRate),
+      String(row.totalIgnoredRequests),
+      String(row.totalLateManualBoarded),
+    ]);
+
+    const shiftHeader = [
+      'Driver Name',
+      'Shift Date',
+      'Passengers',
+      'Expected',
+      'Remitted',
+      'Variance',
+      'Status',
+      'Submitted On Time',
+      'Ignored Requests',
+      'Late Manual Boards',
+    ];
+    const shiftRows = driverPerformanceRows.flatMap((driver) =>
+      (driver.shifts || []).map((shift) => [
+        driver.driverName,
+        shift.shiftDate,
+        String(shift.passengers),
+        String(shift.expectedRemittance),
+        String(shift.actualRemittance),
+        String(shift.variance),
+        shift.remittanceStatus,
+        shift.submittedOnTime ? 'Yes' : 'No',
+        String(shift.ignoredRequests),
+        String(shift.lateManualBoards),
+      ])
     );
+
+    const sections = [
+      ['SUMMARY'],
+      summaryHeader,
+      ...summaryRows,
+      [],
+      ['DRIVER PERFORMANCE'],
+      driverHeader,
+      ...driverRows,
+      [],
+      ['SHIFT DETAIL'],
+      shiftHeader,
+      ...shiftRows,
+    ];
+
+    const lines = sections.map((row) => row.map((value) => `"${String(value).replace(/"/g, '""')}"`).join(','));
 
     const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `analytics-${lastLoadedLabel || rangeKey}-${new Date().toISOString().slice(0, 10)}.csv`;
+    const startLabel = useCustomRange ? customStartDate : toInputDate(new Date(Date.now() - RANGE_OPTIONS[rangeKey] * 24 * 60 * 60 * 1000));
+    const endLabel = useCustomRange ? customEndDate : toInputDate(new Date());
+    link.download = `goshuttle_analytics_${startLabel}_${endLabel}.csv`;
     link.click();
     URL.revokeObjectURL(url);
+  };
+
+  const sortedDriverRows = useMemo(() => {
+    const rows = [...driverPerformanceRows];
+    const factor = driverSortDirection === 'asc' ? 1 : -1;
+    const getValue = (row: DriverPerformanceRow) => {
+      if (driverSortKey === 'driverName') return row.driverName.toLowerCase();
+      if (driverSortKey === 'shifts') return row.totalShifts;
+      if (driverSortKey === 'passengers') return row.totalPassengersBoarded;
+      if (driverSortKey === 'expected') return row.totalExpectedRemittance;
+      if (driverSortKey === 'remitted') return row.totalActualRemittance;
+      if (driverSortKey === 'variance') return row.totalVariance;
+      if (driverSortKey === 'onTimeRate') return row.onTimeSubmissionRate;
+      if (driverSortKey === 'flagRate') return row.flagRate;
+      if (driverSortKey === 'ignoredRequests') return row.totalIgnoredRequests;
+      return row.totalLateManualBoarded;
+    };
+
+    rows.sort((a, b) => {
+      const va = getValue(a);
+      const vb = getValue(b);
+      if (typeof va === 'string' && typeof vb === 'string') {
+        return va.localeCompare(vb) * factor;
+      }
+      return ((Number(va) || 0) - (Number(vb) || 0)) * factor;
+    });
+    return rows;
+  }, [driverPerformanceRows, driverSortDirection, driverSortKey]);
+
+  const toggleSort = (key: SortKey) => {
+    if (driverSortKey === key) {
+      setDriverSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+      return;
+    }
+    setDriverSortKey(key);
+    setDriverSortDirection(key === 'variance' ? 'asc' : 'desc');
+  };
+
+  const toggleExpanded = (driverId: string) => {
+    setExpandedDriverIds((prev) => ({
+      ...prev,
+      [driverId]: !prev[driverId],
+    }));
   };
 
   return (
@@ -218,12 +391,12 @@ export const AnalyticsPage = () => {
             <p className="text-sm text-slate-600">
               {lastLoadedLabel
                 ? `Showing data for ${lastLoadedLabel}`
-                : 'Select a range and click Load to view analytics'}
+                : 'Select a range to view analytics'}
             </p>
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
-          {/* Filters — all changes are deferred until "Load" is clicked */}
+          {/* Filters */}
           <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-3 space-y-3">
             <div className="flex flex-wrap items-end gap-3">
               {/* Quick range */}
@@ -286,10 +459,6 @@ export const AnalyticsPage = () => {
                 </select>
               </div>
 
-              {/* Load button — single point of fetching */}
-              <Button onClick={() => void fetchData()} disabled={loading}>
-                {loading ? 'Loading...' : 'Load'}
-              </Button>
               <Button
                 variant="outline"
                 onClick={exportCsv}
@@ -487,6 +656,164 @@ export const AnalyticsPage = () => {
               </div>
             </div>
           ) : null}
+
+          <div className="space-y-3 rounded-xl border border-slate-200 p-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-slate-900">Driver Performance</p>
+                <p className="text-xs text-slate-500">Click a driver row to view shift-by-shift details.</p>
+              </div>
+              <p className="text-xs text-slate-500">{sortedDriverRows.length} drivers</p>
+            </div>
+
+            <div className="rounded-lg border border-amber-200 bg-amber-50/60 p-3 text-sm text-amber-900">
+              ⚠ {driversNeedingAttention} drivers need attention
+            </div>
+
+            <div className="max-h-[28rem] overflow-auto rounded-md border border-slate-200">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="cursor-pointer" onClick={() => toggleSort('driverName')}>
+                      Driver Name <span className="text-slate-400">{sortIndicator(driverSortKey === 'driverName', driverSortDirection)}</span>
+                    </TableHead>
+                    <TableHead className="cursor-pointer text-right" onClick={() => toggleSort('shifts')}>
+                      Shifts <span className="text-slate-400">{sortIndicator(driverSortKey === 'shifts', driverSortDirection)}</span>
+                    </TableHead>
+                    <TableHead className="cursor-pointer text-right" onClick={() => toggleSort('passengers')}>
+                      Passengers <span className="text-slate-400">{sortIndicator(driverSortKey === 'passengers', driverSortDirection)}</span>
+                    </TableHead>
+                    <TableHead className="cursor-pointer text-right" onClick={() => toggleSort('expected')}>
+                      Expected (₱) <span className="text-slate-400">{sortIndicator(driverSortKey === 'expected', driverSortDirection)}</span>
+                    </TableHead>
+                    <TableHead className="cursor-pointer text-right" onClick={() => toggleSort('remitted')}>
+                      Remitted (₱) <span className="text-slate-400">{sortIndicator(driverSortKey === 'remitted', driverSortDirection)}</span>
+                    </TableHead>
+                    <TableHead className="cursor-pointer text-right" onClick={() => toggleSort('variance')}>
+                      Variance (₱) <span className="text-slate-400">{sortIndicator(driverSortKey === 'variance', driverSortDirection)}</span>
+                    </TableHead>
+                    <TableHead className="cursor-pointer text-right" onClick={() => toggleSort('onTimeRate')}>
+                      On-Time Rate <span className="text-slate-400">{sortIndicator(driverSortKey === 'onTimeRate', driverSortDirection)}</span>
+                    </TableHead>
+                    <TableHead className="cursor-pointer text-right" onClick={() => toggleSort('flagRate')}>
+                      Flag Rate <span className="text-slate-400">{sortIndicator(driverSortKey === 'flagRate', driverSortDirection)}</span>
+                    </TableHead>
+                    <TableHead className="cursor-pointer text-right" onClick={() => toggleSort('ignoredRequests')}>
+                      Ignored Requests <span className="text-slate-400">{sortIndicator(driverSortKey === 'ignoredRequests', driverSortDirection)}</span>
+                    </TableHead>
+                    <TableHead className="cursor-pointer text-right" onClick={() => toggleSort('lateManualBoards')}>
+                      Late Manual Boards <span className="text-slate-400">{sortIndicator(driverSortKey === 'lateManualBoards', driverSortDirection)}</span>
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {sortedDriverRows.map((driver) => {
+                    const expanded = Boolean(expandedDriverIds[driver.driverId]);
+                    return (
+                      <Fragment key={driver.driverId}>
+                        <TableRow
+                          className="cursor-pointer hover:bg-slate-50 focus-within:bg-slate-50"
+                          onClick={() => toggleExpanded(driver.driverId)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              toggleExpanded(driver.driverId);
+                            }
+                          }}
+                          tabIndex={0}
+                          role="button"
+                          aria-expanded={expanded}
+                          aria-label={`Toggle shift details for ${driver.driverName}`}
+                        >
+                          <TableCell className="font-medium text-slate-900">
+                            <span className="inline-flex items-center gap-2">
+                              <span
+                                className={`inline-block text-slate-400 transition-transform ${
+                                  expanded ? 'rotate-90' : ''
+                                }`}
+                                aria-hidden="true"
+                              >
+                                ▶
+                              </span>
+                              {driver.driverName}
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-right">{driver.totalShifts}</TableCell>
+                          <TableCell className="text-right">{driver.totalPassengersBoarded}</TableCell>
+                          <TableCell className="text-right">{currency(driver.totalExpectedRemittance)}</TableCell>
+                          <TableCell className="text-right">{currency(driver.totalActualRemittance)}</TableCell>
+                          <TableCell className={`text-right ${varianceClassName(driver.totalVariance, driver.varianceRate)}`}>
+                            {currency(driver.totalVariance)}
+                          </TableCell>
+                          <TableCell className="text-right">{percent(driver.onTimeSubmissionRate)}</TableCell>
+                          <TableCell className={`text-right ${flagRateClassName(driver.flagRate)}`}>
+                            {percent(driver.flagRate)}
+                          </TableCell>
+                          <TableCell className={`text-right ${ignoredClassName(driver.totalIgnoredRequests)}`}>
+                            {driver.totalIgnoredRequests}
+                          </TableCell>
+                          <TableCell className="text-right">{driver.totalLateManualBoarded}</TableCell>
+                        </TableRow>
+                        {expanded ? (
+                          <TableRow>
+                            <TableCell colSpan={10} className="bg-slate-50/70 p-0">
+                              <div className="overflow-auto">
+                                <Table>
+                                  <TableHeader>
+                                    <TableRow>
+                                      <TableHead className="sticky top-0 z-10 bg-slate-100">Shift Date</TableHead>
+                                      <TableHead className="sticky top-0 z-10 bg-slate-100 text-right">Passengers</TableHead>
+                                      <TableHead className="sticky top-0 z-10 bg-slate-100 text-right">Expected</TableHead>
+                                      <TableHead className="sticky top-0 z-10 bg-slate-100 text-right">Remitted</TableHead>
+                                      <TableHead className="sticky top-0 z-10 bg-slate-100 text-right">Variance</TableHead>
+                                      <TableHead className="sticky top-0 z-10 bg-slate-100">Status</TableHead>
+                                      <TableHead className="sticky top-0 z-10 bg-slate-100">Submitted On Time?</TableHead>
+                                      <TableHead className="sticky top-0 z-10 bg-slate-100 text-right">Ignored Requests</TableHead>
+                                      <TableHead className="sticky top-0 z-10 bg-slate-100 text-right">Late Manual Boards</TableHead>
+                                    </TableRow>
+                                  </TableHeader>
+                                  <TableBody>
+                                    {driver.shifts.map((shift) => (
+                                      <TableRow key={shift.tripId}>
+                                        <TableCell>
+                                          {new Date(shift.shiftDate).toLocaleDateString('en-PH', {
+                                            year: 'numeric',
+                                            month: 'short',
+                                            day: '2-digit',
+                                          })}
+                                        </TableCell>
+                                        <TableCell className="text-right">{shift.passengers}</TableCell>
+                                        <TableCell className="text-right">{currency(shift.expectedRemittance)}</TableCell>
+                                        <TableCell className="text-right">{currency(shift.actualRemittance)}</TableCell>
+                                        <TableCell className={`text-right ${varianceClassName(shift.variance, shift.expectedRemittance ? (shift.variance / shift.expectedRemittance) * 100 : 0)}`}>
+                                          {currency(shift.variance)}
+                                        </TableCell>
+                                        <TableCell className="capitalize">{String(shift.remittanceStatus).replace('_', ' ')}</TableCell>
+                                        <TableCell>{shift.submittedOnTime ? 'Yes' : 'No'}</TableCell>
+                                        <TableCell className={`text-right ${ignoredClassName(shift.ignoredRequests)}`}>{shift.ignoredRequests}</TableCell>
+                                        <TableCell className="text-right">{shift.lateManualBoards}</TableCell>
+                                      </TableRow>
+                                    ))}
+                                  </TableBody>
+                                </Table>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ) : null}
+                      </Fragment>
+                    );
+                  })}
+                  {!loading && sortedDriverRows.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={10} className="text-center text-muted-foreground">
+                        No driver performance records for this range.
+                      </TableCell>
+                    </TableRow>
+                  ) : null}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
         </CardContent>
       </Card>
     </div>

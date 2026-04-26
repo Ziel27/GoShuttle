@@ -2,6 +2,11 @@ const mongoose = require('mongoose');
 const validator = require('validator');
 const User = require('../models/User');
 const Community = require('../models/Community');
+const ShiftRemittance = require('../models/ShiftRemittance');
+const Trip = require('../models/Trip');
+const RideRequest = require('../models/RideRequest');
+const Shuttle = require('../models/Shuttle');
+const { normalizePhase, buildPhaseAwareRequestQuery } = require('../utils/phase');
 
 const parseCoordinate = (value) => {
   const num = Number(value);
@@ -29,6 +34,73 @@ const validateCoordinates = (latitude, longitude) => {
 
 const isPlatformAdmin = (req) => req.user?.role === 'admin';
 
+const SHIFT_WINDOW_FALLBACK_MS = 12 * 60 * 60 * 1000;
+
+const resolveDriverShiftWindowStart = async ({ driverId, communityId, fallbackUpdatedAt }) => {
+  const activeTrip = await Trip.findOne({
+    communityId,
+    driverId,
+    status: 'active',
+  })
+    .select('shiftStart')
+    .sort({ shiftStart: -1 })
+    .lean();
+
+  if (activeTrip?.shiftStart instanceof Date) {
+    return activeTrip.shiftStart;
+  }
+
+  if (fallbackUpdatedAt instanceof Date) {
+    return fallbackUpdatedAt;
+  }
+
+  return new Date(Date.now() - SHIFT_WINDOW_FALLBACK_MS);
+};
+
+const listPendingRideRequestsForShift = async ({ communityId, shiftStart, driverId }) => {
+  let phaseFilter = {};
+
+  if (driverId) {
+    const shuttle = await Shuttle.findOne({
+      communityId,
+      driverId,
+      isActive: true,
+    })
+      .select('assignedPhase')
+      .lean();
+
+    phaseFilter = buildPhaseAwareRequestQuery({
+      shuttlePhase: shuttle?.assignedPhase,
+      passengerPhaseField: 'passengerHomePhase',
+    });
+  }
+
+  return RideRequest.find({
+    communityId,
+    status: 'pending',
+    createdAt: {
+      $gte: shiftStart,
+      $lte: new Date(),
+    },
+    ...phaseFilter,
+  })
+    .select('_id passengerId destination fareExpected createdAt')
+    .populate('passengerId', 'firstName lastName')
+    .lean();
+};
+
+const mapUnresolvedRideRequest = (request) => ({
+  requestId: request._id,
+  passengerName: request.passengerId
+    ? `${request.passengerId.firstName} ${request.passengerId.lastName}`.trim()
+    : 'Unknown',
+  passengerId: request.passengerId?._id || request.passengerId,
+  destinationLabel: request.destination?.label || 'Destination',
+  fareExpected: request.fareExpected,
+  createdAt: request.createdAt,
+});
+
+// NOTE: Multi-community support. Currently single-community — scope typically resolves to req.user.communityId.
 const resolveCommunityScopeId = (req, requestedCommunityId, options = {}) => {
   const { allowAll = false } = options;
   const ownCommunityId = String(req.user.communityId);
@@ -68,6 +140,7 @@ const createManagedUser = async (req, res) => {
       role,
       phone,
       communityId,
+      homePhase,
     } = req.body;
 
     if (!firstName || !lastName || !email || !password || !role) {
@@ -119,6 +192,7 @@ const createManagedUser = async (req, res) => {
       email: String(email).toLowerCase(),
       password,
       phone: phone ? String(phone).trim() : '',
+      homePhase: normalizePhase(homePhase),
       role,
       status: 'offline',
     });
@@ -176,7 +250,7 @@ const listUsers = async (req, res) => {
 const updateUserStatus = async (req, res) => {
   try {
     const { id } = req.params;
-    const { isActive, status } = req.body;
+    const { isActive, status, homePhase } = req.body;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ error: 'Invalid user ID.' });
@@ -195,11 +269,49 @@ const updateUserStatus = async (req, res) => {
       if (!['active', 'offline', 'driving'].includes(status)) {
         return res.status(400).json({ error: 'Invalid status value.' });
       }
+
+      // Admin-forced driver shift shutdown: preserve unresolved requests as explicit ignored records.
+      if (status === 'offline' && user.role === 'driver' && user.status === 'driving') {
+        const shiftStart = await resolveDriverShiftWindowStart({
+          driverId: user._id,
+          communityId: user.communityId,
+          fallbackUpdatedAt: user.updatedAt,
+        });
+
+        const pendingRequests = await listPendingRideRequestsForShift({
+          communityId: user.communityId,
+          shiftStart,
+          driverId: user._id,
+        });
+
+        if (pendingRequests.length > 0) {
+          const now = new Date();
+          await RideRequest.updateMany(
+            {
+              _id: { $in: pendingRequests.map((request) => request._id) },
+              status: 'pending',
+            },
+            {
+              $set: {
+                status: 'ignored',
+                resolution: 'expired',
+                resolvedAt: now,
+                resolvedBy: req.user._id,
+              },
+            }
+          );
+        }
+      }
+
       user.status = status;
     }
 
     if (isActive !== undefined) {
       user.isActive = Boolean(isActive);
+    }
+
+    if (homePhase !== undefined) {
+      user.homePhase = normalizePhase(homePhase);
     }
 
     await user.save();
@@ -216,6 +328,10 @@ const updateUserStatus = async (req, res) => {
 
 const updateOwnStatus = async (req, res) => {
   try {
+    if (!['driver', 'admin'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'Access denied. Only drivers and admins can update own status.' });
+    }
+
     const { status } = req.body;
     const userId = req.user._id;
 
@@ -229,6 +345,45 @@ const updateOwnStatus = async (req, res) => {
 
     if (!allowedStatuses.includes(status)) {
       return res.status(400).json({ error: 'Invalid status value for this role.' });
+    }
+
+    const currentUser = await User.findById(userId).select('_id role status communityId updatedAt');
+    if (!currentUser) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    if (req.user.role === 'driver' && currentUser.status === 'driving' && status === 'offline') {
+      const shiftStart = await resolveDriverShiftWindowStart({
+        driverId: currentUser._id,
+        communityId: currentUser.communityId,
+        fallbackUpdatedAt: currentUser.updatedAt,
+      });
+
+      const unresolvedRequests = await listPendingRideRequestsForShift({
+        communityId: currentUser.communityId,
+        shiftStart,
+        driverId: currentUser._id,
+      });
+
+      if (unresolvedRequests.length > 0) {
+        return res.status(409).json({
+          error: 'Unresolved ride requests must be resolved before ending shift.',
+          unresolvedRequests: unresolvedRequests.map(mapUnresolvedRideRequest),
+        });
+      }
+    }
+
+    if (status === 'driving' && req.user.role === 'driver') {
+      const blockers = await ShiftRemittance.find({
+        driverId: userId,
+        status: { $in: ['overdue', 'escalated'] },
+      }).select('status');
+
+      if (blockers.length > 0) {
+        return res.status(409).json({
+          error: 'You have overdue or escalated remittances. You must submit them before starting a new shift.'
+        });
+      }
     }
 
     const user = await User.findByIdAndUpdate(
@@ -253,6 +408,10 @@ const updateOwnStatus = async (req, res) => {
 
 const updateOwnHomeDestination = async (req, res) => {
   try {
+    if (!['passenger', 'admin'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'Access denied. Only passengers and admins can update home destination.' });
+    }
+
     const { latitude, longitude, label } = req.body;
     const coords = validateCoordinates(latitude, longitude);
 
@@ -268,20 +427,22 @@ const updateOwnHomeDestination = async (req, res) => {
     const normalizedLabel = rawLabel.slice(0, 120);
     const userId = req.user._id;
 
-    const user = await User.findByIdAndUpdate(
-      userId,
-      {
-        homeDestination: {
-          label: normalizedLabel,
-          location: {
-            type: 'Point',
-            coordinates: [coords.lng, coords.lat],
-          },
-          updatedAt: new Date(),
+    const update = {
+      homeDestination: {
+        label: normalizedLabel,
+        location: {
+          type: 'Point',
+          coordinates: [coords.lng, coords.lat],
         },
+        updatedAt: new Date(),
       },
-      { new: true, runValidators: true }
-    );
+    };
+
+    if (req.body.homePhase !== undefined) {
+      update.homePhase = normalizePhase(req.body.homePhase);
+    }
+
+    const user = await User.findByIdAndUpdate(userId, update, { new: true, runValidators: true });
 
     if (!user) {
       return res.status(404).json({ error: 'User not found.' });
@@ -297,10 +458,54 @@ const updateOwnHomeDestination = async (req, res) => {
   }
 };
 
+const updateOwnHomePhase = async (req, res) => {
+  try {
+    if (req.user.role !== 'passenger') {
+      return res.status(403).json({ error: 'Access denied. Only passengers can update their home phase.' });
+    }
+
+    const { homePhase } = req.body;
+
+    if (homePhase === undefined) {
+      return res.status(400).json({ error: 'homePhase is required.' });
+    }
+
+    const normalizedPhase = normalizePhase(homePhase);
+    if (normalizedPhase) {
+      const community = await Community.findById(req.user.communityId).select('phaseGeofences').lean();
+      const hasMatchingActivePhase = (community?.phaseGeofences || []).some(
+        (phase) => phase?.isActive !== false && phase?.name === normalizedPhase
+      );
+      if (!hasMatchingActivePhase) {
+        return res.status(400).json({ error: 'Selected home phase is not available in your community.' });
+      }
+    }
+
+    const user = await User.findByIdAndUpdate(
+      req.user._id,
+      { homePhase: normalizedPhase },
+      { new: true, runValidators: true }
+    ).select('-password');
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    return res.status(200).json({
+      message: 'Home phase updated successfully.',
+      user,
+    });
+  } catch (error) {
+    console.error('Update own home phase error:', error);
+    return res.status(500).json({ error: 'Failed to update home phase.' });
+  }
+};
+
 module.exports = {
   createManagedUser,
   listUsers,
   updateUserStatus,
   updateOwnStatus,
   updateOwnHomeDestination,
+  updateOwnHomePhase,
 };

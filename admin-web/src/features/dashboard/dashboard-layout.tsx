@@ -1,10 +1,12 @@
-import { FiBarChart2, FiFileText, FiLogOut, FiMap, FiTrendingUp, FiTruck, FiUsers } from 'react-icons/fi';
+import { useEffect, useState } from 'react';
+import { FiBarChart2, FiBell, FiFileText, FiLogOut, FiMap, FiTrendingUp, FiTruck, FiUsers } from 'react-icons/fi';
 import { NavLink, Outlet } from 'react-router-dom';
 
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { useAuth } from '@/context/auth-context';
 import { LiveEventsPanel } from '@/features/dashboard/live-events-panel';
 import { useLiveEvents } from '@/features/dashboard/use-live-events';
+import { fetchRemittances } from '@/lib/admin-api';
 import { communityIdFromUnknown } from '@/lib/format';
 
 const navItems = [
@@ -14,12 +16,39 @@ const navItems = [
   { to: '/shuttles', label: 'Shuttles', icon: FiTruck },
   { to: '/remittances', label: 'Remittances', icon: FiFileText },
   { to: '/analytics', label: 'Analytics', icon: FiTrendingUp },
+  { to: '/announcements', label: 'Announcements', icon: FiBell },
 ];
 
 export const DashboardLayout = () => {
   const { user, token, logout } = useAuth();
   const communityId = communityIdFromUnknown(user?.communityId);
   const { events, connected } = useLiveEvents(token, communityId);
+
+  const [alertCounts, setAlertCounts] = useState({ overdue: 0, escalated: 0 });
+
+  useEffect(() => {
+    let mounted = true;
+    const fetchAlerts = async () => {
+      try {
+        const [overdue, escalated] = await Promise.all([
+          fetchRemittances({ status: 'overdue', limit: 100 }),
+          fetchRemittances({ status: 'escalated', limit: 100 }),
+        ]);
+        if (mounted) {
+          setAlertCounts({
+            overdue: overdue.length,
+            escalated: escalated.length,
+          });
+        }
+      } catch {
+        // Safe to ignore in background
+      }
+    };
+    void fetchAlerts();
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   return (
     <div className="min-h-screen w-full bg-slate-100">
@@ -78,6 +107,22 @@ export const DashboardLayout = () => {
           </div>
 
           <div className="space-y-4">
+            {(alertCounts.overdue > 0 || alertCounts.escalated > 0) && (
+              <div className="rounded-xl border border-red-200 bg-red-50 p-4 shadow-sm flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-semibold text-red-900 flex items-center gap-2">
+                    <span className="flex h-2 w-2 rounded-full bg-red-600 animate-pulse"></span>
+                    Immediate Attention Required
+                  </h3>
+                  <p className="text-sm text-red-800 mt-1">
+                    You have <strong>{alertCounts.escalated}</strong> escalated and <strong>{alertCounts.overdue}</strong> overdue remittances awaiting review.
+                  </p>
+                </div>
+                <NavLink to="/remittances" className="text-sm font-medium text-red-700 hover:text-red-900 hover:underline">
+                  Review Now
+                </NavLink>
+              </div>
+            )}
             <Outlet />
             <LiveEventsPanel events={events} connected={connected} />
           </div>

@@ -8,21 +8,9 @@ type OfflineBoardingItem = {
 };
 
 const KEY = 'goshuttle_offline_boardings';
-const LEGACY_KEY = 'transitlink_offline_boardings';
-
-const migrateLegacyQueue = async () => {
-  const current = await AsyncStorage.getItem(KEY);
-  if (current) return;
-
-  const legacy = await AsyncStorage.getItem(LEGACY_KEY);
-  if (!legacy) return;
-
-  await AsyncStorage.setItem(KEY, legacy);
-  await AsyncStorage.removeItem(LEGACY_KEY);
-};
+// LEGACY MIGRATION REMOVED — safe after confirming all users are on GoShuttle v1+
 
 const readQueue = async (): Promise<OfflineBoardingItem[]> => {
-  await migrateLegacyQueue();
   const raw = await AsyncStorage.getItem(KEY);
   if (!raw) return [];
 
@@ -39,7 +27,11 @@ const writeQueue = async (items: OfflineBoardingItem[]) => {
   await AsyncStorage.setItem(KEY, JSON.stringify(items));
 };
 
-export const addOfflineBoarding = async (shuttleId: string, boardedCount: number) => {
+/**
+ * Adds one boarding action to the offline queue for later sync.
+ * @throws {Error} When local persistence fails.
+ */
+export const addOfflineBoarding = async (shuttleId: string, boardedCount: number): Promise<OfflineBoardingItem> => {
   const queue = await readQueue();
   const item: OfflineBoardingItem = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
@@ -53,12 +45,50 @@ export const addOfflineBoarding = async (shuttleId: string, boardedCount: number
   return item;
 };
 
-export const getOfflineBoardings = async () => {
+/**
+ * Returns all queued offline boarding actions.
+ * @throws {Error} When local persistence fails.
+ */
+export const getOfflineBoardings = async (): Promise<OfflineBoardingItem[]> => {
   return readQueue();
 };
 
-export const setOfflineBoardings = async (items: OfflineBoardingItem[]) => {
+/**
+ * Replaces queued offline boarding actions with a provided list.
+ * @throws {Error} When local persistence fails.
+ */
+export const setOfflineBoardings = async (items: OfflineBoardingItem[]): Promise<void> => {
   await writeQueue(items);
+};
+
+/**
+ * Replays queued offline boardings through a sync callback and retains failures.
+ * @throws {Error} When local persistence fails.
+ */
+export const syncOfflineBoardings = async (
+  syncFn: (shuttleId: string, boardedCount: number) => Promise<void>
+): Promise<{ synced: number; failed: number }> => {
+  const queue = await readQueue();
+  if (queue.length === 0) {
+    return { synced: 0, failed: 0 };
+  }
+
+  let synced = 0;
+  let failed = 0;
+  const remaining: OfflineBoardingItem[] = [];
+
+  for (const item of queue) {
+    try {
+      await syncFn(item.shuttleId, item.boardedCount);
+      synced += 1;
+    } catch {
+      failed += 1;
+      remaining.push(item);
+    }
+  }
+
+  await writeQueue(remaining);
+  return { synced, failed };
 };
 
 export type { OfflineBoardingItem };

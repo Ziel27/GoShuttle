@@ -14,10 +14,41 @@ import {
     TableRow,
 } from '@/components/ui/table';
 import { useAuth } from '@/context/auth-context';
-import { assignShuttleDriver, createShuttle, fetchShuttles, fetchUsers } from '@/lib/admin-api';
+import {
+  adminBypassPickupIntent,
+  assignShuttleDriver,
+  createShuttle,
+  fetchCommunityById,
+  fetchPhaseGeofences,
+  fetchShuttles,
+  updateCommunity,
+  fetchUsers,
+  type PhaseGeofence,
+} from '@/lib/admin-api';
 import { communityIdFromUnknown, toShortDate } from '@/lib/format';
 import { connectAdminSocket, disconnectAdminSocket } from '@/lib/socket-client';
 import type { Shuttle, User } from '@/types/domain';
+
+/** Returns the effective shuttle status, clamping to idle when the driver is off-shift. */
+const effectiveShuttleStatus = (shuttle: Shuttle): Shuttle['status'] => {
+  const driverStatus =
+    typeof shuttle.driverId === 'object' && shuttle.driverId
+      ? shuttle.driverId.status
+      : undefined;
+  // If the driver is not actively on shift, treat the shuttle as idle
+  // (mirrors the mobile getDisplayedShuttleStatus() logic in explore.tsx)
+  if (driverStatus !== 'driving' && shuttle.status !== 'maintenance') {
+    return 'idle';
+  }
+  return shuttle.status;
+};
+
+const SHUTTLE_STATUS_LABEL: Record<Shuttle['status'], string> = {
+  idle: 'Idle',
+  en_route: 'In Route',
+  out_of_bounds: 'Out of Bounds',
+  maintenance: 'Maintenance',
+};
 
 const shuttleVariant = (status: Shuttle['status']) => {
   if (status === 'en_route') return 'secondary';
@@ -43,13 +74,20 @@ export const ShuttlesPage = () => {
   const [notice, setNotice] = useState('');
   const [assigningId, setAssigningId] = useState('');
   const [assignmentDrafts, setAssignmentDrafts] = useState<Record<string, string>>({});
+  const [phaseAssignmentDrafts, setPhaseAssignmentDrafts] = useState<Record<string, string>>({});
+  const [phaseGeofences, setPhaseGeofences] = useState<PhaseGeofence[]>([]);
+  const [opsBypassMode, setOpsBypassMode] = useState(false);
+  const [savingOpsBypass, setSavingOpsBypass] = useState(false);
 
   // Add shuttle form state
   const [showAddForm, setShowAddForm] = useState(false);
   const [newPlateNumber, setNewPlateNumber] = useState('');
   const [newLabel, setNewLabel] = useState('');
   const [newMaxCapacity, setNewMaxCapacity] = useState('12');
+  const [newAssignedPhase, setNewAssignedPhase] = useState('');
   const [creating, setCreating] = useState(false);
+
+  const [testingPickup, setTestingPickup] = useState(false);
 
   const shuttlesRef = useRef(shuttles);
   useEffect(() => {
@@ -74,15 +112,50 @@ export const ShuttlesPage = () => {
           return acc;
         }, {})
       );
+      setPhaseAssignmentDrafts(
+        result.reduce<Record<string, string>>((acc, shuttle) => {
+          acc[shuttle._id] = shuttle.assignedPhase || '';
+          return acc;
+        }, {})
+      );
 
-      const driverRows = await fetchUsers({ role: 'driver', active: true });
+      const [driverRows, phaseRows] = await Promise.all([
+        fetchUsers({ role: 'driver', active: true }),
+        communityId ? fetchPhaseGeofences(communityId) : Promise.resolve([]),
+      ]);
       setDrivers(driverRows);
+      setPhaseGeofences(phaseRows.filter((item) => item.isActive !== false));
+
+      if (communityId) {
+        const community = await fetchCommunityById(communityId);
+        setOpsBypassMode(Boolean(community?.opsBypassMode));
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load shuttles');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [communityId]);
+
+  const toggleOpsBypassMode = async () => {
+    if (!communityId) return;
+    setSavingOpsBypass(true);
+    setError('');
+    setNotice('');
+    try {
+      const next = !opsBypassMode;
+      await updateCommunity(communityId, { opsBypassMode: next });
+      setOpsBypassMode(next);
+      setNotice(next
+        ? 'Bypass Mode enabled: pickup allowed without on-duty shuttles; drivers can logout without ending shift.'
+        : 'Bypass Mode disabled: normal restrictions restored.'
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to update bypass mode.');
+    } finally {
+      setSavingOpsBypass(false);
+    }
+  };
 
   useEffect(() => {
     void loadShuttles();
@@ -154,10 +227,12 @@ export const ShuttlesPage = () => {
 
     try {
       const draftDriverId = assignmentDrafts[shuttleId] || '';
-      const updated = await assignShuttleDriver(shuttleId, draftDriverId || null);
+      const draftPhase = phaseAssignmentDrafts[shuttleId] || '';
+      const updated = await assignShuttleDriver(shuttleId, draftDriverId || null, draftPhase || null);
       setShuttles((prev) => prev.map((row) => (row._id === updated._id ? updated : row)));
       setAssignmentDrafts((prev) => ({ ...prev, [shuttleId]: draftDriverId }));
-      setNotice(`Driver ${draftDriverId ? 'assigned' : 'unassigned'} successfully.`);
+      setPhaseAssignmentDrafts((prev) => ({ ...prev, [shuttleId]: draftPhase }));
+      setNotice('Shuttle assignment updated successfully.');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to assign driver');
     } finally {
@@ -188,18 +263,51 @@ export const ShuttlesPage = () => {
         plateNumber: plate,
         maxCapacity: capacity,
         label: newLabel.trim() || undefined,
+        assignedPhase: newAssignedPhase || undefined,
       });
 
       setShuttles((prev) => [created, ...prev]);
       setNewPlateNumber('');
       setNewLabel('');
       setNewMaxCapacity('12');
+      setNewAssignedPhase('');
       setShowAddForm(false);
       setNotice(`Shuttle "${created.label || created.plateNumber}" created.`);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to create shuttle');
     } finally {
       setCreating(false);
+    }
+  };
+
+  // Improved test pickup using active shuttles location if possible, or fallback
+  const handleSmartTestPickupBypass = async () => {
+    setTestingPickup(true);
+    setError('');
+    setNotice('');
+    try {
+      let lat = 14.5995;
+      let lng = 120.9842;
+      
+      // Try to use a known shuttle's location to pass boundary checks
+      const shuttleWithLoc = shuttles.find(s => s.location && s.location.coordinates && s.location.coordinates.length >= 2);
+      if (shuttleWithLoc && shuttleWithLoc.location?.coordinates) {
+        lng = shuttleWithLoc.location.coordinates[0];
+        lat = shuttleWithLoc.location.coordinates[1];
+      }
+
+      await adminBypassPickupIntent({
+        latitude: lat,
+        longitude: lng,
+        fareType: 'standard',
+      });
+      setNotice('Test pickup intent created successfully (bypassed on-duty check).');
+    } catch (e: any) {
+      // Provide a more detailed error message
+      const errorMsg = e.response?.data?.error || e.message || 'Failed to create test pickup intent';
+      setError(`Test pickup failed: ${errorMsg}`);
+    } finally {
+      setTestingPickup(false);
     }
   };
 
@@ -217,12 +325,15 @@ export const ShuttlesPage = () => {
     }
     return 'Unassigned';
   };
+  const getAssignedPhase = (shuttle: Shuttle) => shuttle.assignedPhase || '';
+  const formatPhaseLabel = (phase?: string | null) =>
+    phase ? phase.replace(/_/g, ' ') : 'All phases';
 
   const statusTotals = {
-    idle: shuttles.filter((item) => item.status === 'idle').length,
-    enRoute: shuttles.filter((item) => item.status === 'en_route').length,
-    outOfBounds: shuttles.filter((item) => item.status === 'out_of_bounds').length,
-    maintenance: shuttles.filter((item) => item.status === 'maintenance').length,
+    idle: shuttles.filter((item) => effectiveShuttleStatus(item) === 'idle').length,
+    enRoute: shuttles.filter((item) => effectiveShuttleStatus(item) === 'en_route').length,
+    outOfBounds: shuttles.filter((item) => effectiveShuttleStatus(item) === 'out_of_bounds').length,
+    maintenance: shuttles.filter((item) => effectiveShuttleStatus(item) === 'maintenance').length,
     assigned: shuttles.filter((item) => getAssignedDriverId(item)).length,
   };
 
@@ -245,6 +356,18 @@ export const ShuttlesPage = () => {
             }}
           >
             {showAddForm ? 'Cancel' : '+ Add Shuttle'}
+          </Button>
+          <Button
+            size="sm"
+            variant={opsBypassMode ? 'default' : 'secondary'}
+            onClick={() => void toggleOpsBypassMode()}
+            disabled={savingOpsBypass}
+          >
+            {savingOpsBypass
+              ? 'Saving...'
+              : opsBypassMode
+                ? 'Bypass Mode: ON'
+                : 'Bypass Mode: OFF'}
           </Button>
           <Button className="shrink-0" variant="outline" size="sm" onClick={() => void loadShuttles()} disabled={loading}>
             Refresh
@@ -293,6 +416,22 @@ export const ShuttlesPage = () => {
                   className="mt-1 h-8"
                 />
               </div>
+              <div>
+                <Label htmlFor="assignedPhase" className="text-xs text-slate-600">Assigned Phase</Label>
+                <select
+                  id="assignedPhase"
+                  className="mt-1 h-8 w-full rounded-lg border border-input bg-background px-2 text-sm"
+                  value={newAssignedPhase}
+                  onChange={(e) => setNewAssignedPhase(e.target.value)}
+                >
+                  <option value="">All phases</option>
+                  {phaseGeofences.map((phase) => (
+                    <option key={phase._id} value={phase.name}>
+                      {phase.name.replace(/_/g, ' ')}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
             <div className="flex justify-end">
               <Button size="sm" onClick={() => void handleCreateShuttle()} disabled={creating}>
@@ -331,7 +470,9 @@ export const ShuttlesPage = () => {
               <TableHead>Shuttle</TableHead>
               <TableHead>Current Driver</TableHead>
               <TableHead>Assign Driver</TableHead>
+              <TableHead>Assign Phase</TableHead>
               <TableHead>Action</TableHead>
+              <TableHead>Phase</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Capacity</TableHead>
               <TableHead>Updated</TableHead>
@@ -369,12 +510,33 @@ export const ShuttlesPage = () => {
                   </select>
                 </TableCell>
                 <TableCell>
+                  <select
+                    disabled={assigningId === shuttle._id}
+                    className="h-8 w-full min-w-36 rounded-lg border border-input bg-background px-2 text-sm"
+                    value={phaseAssignmentDrafts[shuttle._id] ?? getAssignedPhase(shuttle)}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setPhaseAssignmentDrafts((prev) => ({ ...prev, [shuttle._id]: value }));
+                    }}
+                  >
+                    <option value="">All phases</option>
+                    {phaseGeofences.map((phase) => (
+                      <option key={phase._id} value={phase.name}>
+                        {phase.name.replace(/_/g, ' ')}
+                      </option>
+                    ))}
+                  </select>
+                </TableCell>
+                <TableCell>
                   <Button
                     size="sm"
                     variant="outline"
                     disabled={
                       assigningId === shuttle._id ||
-                      (assignmentDrafts[shuttle._id] ?? getAssignedDriverId(shuttle)) === getAssignedDriverId(shuttle)
+                      (
+                        (assignmentDrafts[shuttle._id] ?? getAssignedDriverId(shuttle)) === getAssignedDriverId(shuttle) &&
+                        (phaseAssignmentDrafts[shuttle._id] ?? getAssignedPhase(shuttle)) === getAssignedPhase(shuttle)
+                      )
                     }
                     onClick={() => void onAssignDriver(shuttle._id)}
                   >
@@ -382,7 +544,17 @@ export const ShuttlesPage = () => {
                   </Button>
                 </TableCell>
                 <TableCell>
-                  <Badge variant={shuttleVariant(shuttle.status)}>{shuttle.status}</Badge>
+                  <Badge variant="outline">{formatPhaseLabel(shuttle.assignedPhase)}</Badge>
+                </TableCell>
+                <TableCell>
+                  {(() => {
+                    const display = effectiveShuttleStatus(shuttle);
+                    return (
+                      <Badge variant={shuttleVariant(display)}>
+                        {SHUTTLE_STATUS_LABEL[display] ?? display}
+                      </Badge>
+                    );
+                  })()}
                 </TableCell>
                 <TableCell>
                   <div className="space-y-1">
@@ -410,7 +582,7 @@ export const ShuttlesPage = () => {
             ))}
             {!loading && shuttles.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7} className="text-center text-muted-foreground">
+                <TableCell colSpan={9} className="text-center text-muted-foreground">
                   No shuttles found. Add one above.
                 </TableCell>
               </TableRow>

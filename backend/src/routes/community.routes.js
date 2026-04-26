@@ -40,6 +40,34 @@ const isValidPolygonCoordinates = (coordinates) => {
   return true;
 };
 
+const normalizePhaseName = (value) =>
+  String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '_');
+
+const pointInRing = (lat, lng, ring) => {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    const intersects = yi > lat !== yj > lat && lng < ((xj - xi) * (lat - yi)) / (yj - yi) + xi;
+    if (intersects) inside = !inside;
+  }
+  return inside;
+};
+
+const isPhasePolygonInsideCommunity = (communityPolygonCoordinates, phasePolygonCoordinates) => {
+  const communityRing = communityPolygonCoordinates?.[0] || [];
+  const phaseRing = phasePolygonCoordinates?.[0] || [];
+  if (!communityRing.length || !phaseRing.length) return false;
+
+  return phaseRing.every((point) => {
+    const [lng, lat] = point;
+    return pointInRing(lat, lng, communityRing);
+  });
+};
+
 const validatePoint = (latitude, longitude) => {
   const lat = parseCoordinate(latitude);
   const lng = parseCoordinate(longitude);
@@ -157,6 +185,14 @@ router.put('/:id', authenticate, authorize('admin'), async (req, res) => {
     const update = {};
     if (req.body.name !== undefined) update.name = String(req.body.name).trim();
     if (req.body.baseFare !== undefined) update.baseFare = Number(req.body.baseFare);
+    if (req.body.priorityFareMultiplier !== undefined) {
+      const multiplier = Number(req.body.priorityFareMultiplier);
+      if (!Number.isFinite(multiplier) || multiplier < 1.0 || multiplier > 10.0) {
+        return res.status(400).json({ error: 'priorityFareMultiplier must be between 1.0 and 10.0.' });
+      }
+      update.priorityFareMultiplier = multiplier;
+    }
+
     if (req.body.boundaries !== undefined) {
       if (
         req.body.boundaries?.type !== 'Polygon' ||
@@ -169,6 +205,7 @@ router.put('/:id', authenticate, authorize('admin'), async (req, res) => {
     if (req.body.branding !== undefined) update.branding = req.body.branding;
     if (req.body.isActive !== undefined) update.isActive = Boolean(req.body.isActive);
     if (req.body.fixedDestinations !== undefined) update.fixedDestinations = req.body.fixedDestinations;
+    if (req.body.opsBypassMode !== undefined) update.opsBypassMode = Boolean(req.body.opsBypassMode);
 
     const community = await Community.findByIdAndUpdate(id, { $set: update }, { new: true, runValidators: true });
     if (!community) {
@@ -181,6 +218,7 @@ router.put('/:id', authenticate, authorize('admin'), async (req, res) => {
       boundaries: req.body.boundaries !== undefined,
       fixedDestinations: req.body.fixedDestinations !== undefined,
       branding: req.body.branding !== undefined,
+      opsBypassMode: req.body.opsBypassMode !== undefined,
     });
 
     return res.status(200).json({ message: 'Community updated.', community });
@@ -342,6 +380,202 @@ router.delete('/:id/fixed-destinations/:destinationId', authenticate, authorize(
   } catch (error) {
     console.error('DELETE /communities/:id/fixed-destinations/:destinationId error:', error);
     return res.status(500).json({ error: 'Failed to remove destination.' });
+  }
+});
+
+// Phase Geofence Routes
+
+router.get('/:id/phase-geofences', authenticate, async (req, res) => {
+  try {
+    if (!ensureOwnCommunityScope(req, res, req.params.id)) {
+      return;
+    }
+
+    const community = await Community.findById(req.params.id).select('phaseGeofences');
+    if (!community) {
+      return res.status(404).json({ error: 'Community not found.' });
+    }
+
+    const activePhases = (community.phaseGeofences || []).filter((p) => p.isActive !== false);
+    return res.status(200).json({
+      phaseGeofences: activePhases.sort((a, b) => (a.order || 0) - (b.order || 0)),
+    });
+  } catch (error) {
+    console.error('GET /communities/:id/phase-geofences error:', error);
+    return res.status(500).json({ error: 'Failed to fetch phase geofences.' });
+  }
+});
+
+router.post('/:id/phase-geofences', authenticate, authorize('admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, boundaries, color, order = 0 } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: 'Invalid community id.' });
+    }
+
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ error: 'Phase name is required.' });
+    }
+
+    if (!ensureOwnCommunityScope(req, res, id)) {
+      return;
+    }
+
+    if (!boundaries || boundaries.type !== 'Polygon' || !isValidPolygonCoordinates(boundaries.coordinates)) {
+      return res.status(400).json({ error: 'Valid GeoJSON Polygon boundaries are required.' });
+    }
+
+    const community = await Community.findById(id);
+    if (!community) {
+      return res.status(404).json({ error: 'Community not found.' });
+    }
+
+    const communityBoundaries = community.boundaries?.coordinates;
+    if (!communityBoundaries || !isValidPolygonCoordinates(communityBoundaries)) {
+      return res.status(409).json({ error: 'Set the community geofence first before adding phase geofences.' });
+    }
+
+    if (!isPhasePolygonInsideCommunity(communityBoundaries, boundaries.coordinates)) {
+      return res.status(400).json({ error: 'Phase geofence must be fully inside the community geofence.' });
+    }
+
+    const normalizedName = normalizePhaseName(name);
+    const exists = (community.phaseGeofences || []).some(
+      (p) => p.name === normalizedName && p.isActive !== false
+    );
+    if (exists) {
+      return res.status(409).json({ error: 'Phase name already exists for this community.' });
+    }
+
+    const phaseGeofence = {
+      name: normalizedName,
+      boundaries,
+      color: color || '#6366f1',
+      order: Number(order) || 0,
+      isActive: true,
+    };
+
+    community.phaseGeofences.push(phaseGeofence);
+    await community.save();
+
+    const created = community.phaseGeofences[community.phaseGeofences.length - 1];
+
+    emitCommunitySettingsUpdated(req, community._id, 'phaseGeofence:create', {
+      phaseGeofences: true,
+    });
+
+    return res.status(201).json({ message: 'Phase geofence added.', phaseGeofence: created });
+  } catch (error) {
+    console.error('POST /communities/:id/phase-geofences error:', error);
+    return res.status(500).json({ error: 'Failed to add phase geofence.' });
+  }
+});
+
+router.patch('/:id/phase-geofences/:phaseId', authenticate, authorize('admin'), async (req, res) => {
+  try {
+    const { id, phaseId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id) || !mongoose.Types.ObjectId.isValid(phaseId)) {
+      return res.status(400).json({ error: 'Invalid id.' });
+    }
+
+    if (!ensureOwnCommunityScope(req, res, id)) {
+      return;
+    }
+
+    const community = await Community.findById(id);
+    if (!community) {
+      return res.status(404).json({ error: 'Community not found.' });
+    }
+
+    const phase = (community.phaseGeofences || []).id(phaseId);
+    if (!phase) {
+      return res.status(404).json({ error: 'Phase geofence not found.' });
+    }
+
+    if (req.body.name !== undefined) {
+      const normalizedName = normalizePhaseName(req.body.name);
+      const exists = (community.phaseGeofences || []).some(
+        (p) => p._id.toString() !== phaseId && p.name === normalizedName && p.isActive !== false
+      );
+      if (exists) {
+        return res.status(409).json({ error: 'Phase name already exists for this community.' });
+      }
+      phase.name = normalizedName;
+    }
+
+    if (req.body.color !== undefined) {
+      phase.color = String(req.body.color);
+    }
+
+    if (req.body.order !== undefined) {
+      phase.order = Number(req.body.order) || 0;
+    }
+
+    if (req.body.isActive !== undefined) {
+      phase.isActive = Boolean(req.body.isActive);
+    }
+
+    if (req.body.boundaries !== undefined) {
+      if (req.body.boundaries.type !== 'Polygon' || !isValidPolygonCoordinates(req.body.boundaries.coordinates)) {
+        return res.status(400).json({ error: 'Valid GeoJSON Polygon boundaries are required.' });
+      }
+      const communityBoundaries = community.boundaries?.coordinates;
+      if (!communityBoundaries || !isValidPolygonCoordinates(communityBoundaries)) {
+        return res.status(409).json({ error: 'Set the community geofence first before updating phase geofences.' });
+      }
+      if (!isPhasePolygonInsideCommunity(communityBoundaries, req.body.boundaries.coordinates)) {
+        return res.status(400).json({ error: 'Phase geofence must be fully inside the community geofence.' });
+      }
+      phase.boundaries = req.body.boundaries;
+    }
+
+    await community.save();
+
+    emitCommunitySettingsUpdated(req, community._id, 'phaseGeofence:update', {
+      phaseGeofences: true,
+    });
+
+    return res.status(200).json({ message: 'Phase geofence updated.', phaseGeofence: phase });
+  } catch (error) {
+    console.error('PATCH /communities/:id/phase-geofences/:phaseId error:', error);
+    return res.status(500).json({ error: 'Failed to update phase geofence.' });
+  }
+});
+
+router.delete('/:id/phase-geofences/:phaseId', authenticate, authorize('admin'), async (req, res) => {
+  try {
+    const { id, phaseId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id) || !mongoose.Types.ObjectId.isValid(phaseId)) {
+      return res.status(400).json({ error: 'Invalid id.' });
+    }
+
+    if (!ensureOwnCommunityScope(req, res, id)) {
+      return;
+    }
+
+    const community = await Community.findById(id);
+    if (!community) {
+      return res.status(404).json({ error: 'Community not found.' });
+    }
+
+    const phase = (community.phaseGeofences || []).id(phaseId);
+    if (!phase) {
+      return res.status(404).json({ error: 'Phase geofence not found.' });
+    }
+
+    phase.isActive = false;
+    await community.save();
+
+    emitCommunitySettingsUpdated(req, community._id, 'phaseGeofence:archive', {
+      phaseGeofences: true,
+    });
+
+    return res.status(200).json({ message: 'Phase geofence archived.' });
+  } catch (error) {
+    console.error('DELETE /communities/:id/phase-geofences/:phaseId error:', error);
+    return res.status(500).json({ error: 'Failed to remove phase geofence.' });
   }
 });
 

@@ -24,6 +24,8 @@ const MAPPING = {
   'clock.fill': 'history',
   gearshape: 'settings',
   'gearshape.fill': 'settings',
+  bell: 'notifications-none',
+  'bell.fill': 'notifications',
   'chevron.left.forwardslash.chevron.right': 'code',
   'chevron.right': 'chevron-right',
 } as IconMapping;

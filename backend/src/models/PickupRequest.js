@@ -1,5 +1,7 @@
 const mongoose = require('mongoose');
 
+const FARE_TYPES = ['standard', 'priority'];
+
 const pickupRequestSchema = new mongoose.Schema(
   {
     communityId: {
@@ -49,9 +51,47 @@ const pickupRequestSchema = new mongoose.Schema(
         required: [true, 'Destination coordinates are required'],
       },
     },
+    passengerHomePhase: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      maxlength: [40, 'Passenger home phase cannot exceed 40 characters.'],
+      default: null,
+      index: true,
+    },
+    fareType: {
+      type: String,
+      enum: FARE_TYPES,
+      default: 'standard',
+      index: true,
+    },
+
+    assignedShuttleId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Shuttle',
+      default: null,
+    },
+
+    assignedDriverId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+
+    dispatchedAt: {
+      type: Date,
+      default: null,
+    },
+
+    // null = dispatched, number >= 0 = waiting in queue
+    queuePosition: {
+      type: Number,
+      default: null,
+    },
+
     status: {
       type: String,
-      enum: ['pending', 'claimed', 'expired'],
+      enum: ['pending', 'claimed', 'dispatched', 'queued', 'bumped', 'expired', 'cancelled'],
       default: 'pending',
       index: true,
     },
@@ -69,5 +109,13 @@ pickupRequestSchema.index({ location: '2dsphere' });
 pickupRequestSchema.index({ destinationLocation: '2dsphere' });
 pickupRequestSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 pickupRequestSchema.index({ communityId: 1, status: 1, createdAt: -1 });
+pickupRequestSchema.index({ communityId: 1, status: 1, passengerHomePhase: 1, createdAt: -1 });
+
+// Waiting queue: priority-first, then FIFO
+pickupRequestSchema.index({ communityId: 1, status: 1, fareType: -1, createdAt: 1 });
+
+// Dispatch lookup: find passenger's active dispatched request
+pickupRequestSchema.index({ passengerId: 1, status: 1, createdAt: -1 });
 
 module.exports = mongoose.model('PickupRequest', pickupRequestSchema);
+module.exports.FARE_TYPES = FARE_TYPES;

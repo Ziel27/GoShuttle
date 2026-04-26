@@ -1,10 +1,20 @@
 const Shuttle = require('../models/Shuttle');
 const { isLocationInBoundary } = require('./geofence');
+const { retryWaitingQueue } = require('./dispatch.service');
+
 
 const isDriverOrAdmin = (role) => role === 'driver' || role === 'admin';
+const DRIVER_LOCATION_THROTTLE_MS = 500;
+const CAPACITY_UPDATE_THROTTLE_MS = 300;
 
 const registerSocketHandlers = (io) => {
+  // TODO: Move socket event throttling to a shared limiter (Redis) — in-memory socket throttles do not protect multi-instance deployments.
   io.on('connection', (socket) => {
+    const lastEventAt = {
+      driverLocation: 0,
+      capacityUpdate: 0,
+    };
+
     socket.on('join-community', ({ communityId }) => {
       const userCommunityId = socket.data?.user?.communityId?.toString();
       if (!userCommunityId) return;
@@ -25,6 +35,13 @@ const registerSocketHandlers = (io) => {
           socket.emit('socket:error', { error: 'Only drivers and admins can update shuttle location.' });
           return;
         }
+
+        const now = Date.now();
+        if (now - lastEventAt.driverLocation < DRIVER_LOCATION_THROTTLE_MS) {
+          socket.emit('socket:error', { error: 'Too many driver-location updates. Please slow down.' });
+          return;
+        }
+        lastEventAt.driverLocation = now;
 
         if (!shuttleId) {
           socket.emit('socket:error', { error: 'shuttleId is required.' });
@@ -47,6 +64,11 @@ const registerSocketHandlers = (io) => {
         const communityId = shuttle.communityId?.toString();
         if (!communityId || communityId !== socketUser.communityId.toString()) {
           socket.emit('socket:error', { error: 'Access denied for this shuttle.' });
+          return;
+        }
+
+        if (socketUser.role === 'driver' && String(shuttle.driverId || '') !== String(socketUser._id)) {
+          socket.emit('socket:error', { error: 'Access denied. This shuttle is not assigned to you.' });
           return;
         }
 
@@ -106,6 +128,13 @@ const registerSocketHandlers = (io) => {
           return;
         }
 
+        const now = Date.now();
+        if (now - lastEventAt.capacityUpdate < CAPACITY_UPDATE_THROTTLE_MS) {
+          socket.emit('socket:error', { error: 'Too many capacity updates. Please slow down.' });
+          return;
+        }
+        lastEventAt.capacityUpdate = now;
+
         if (!shuttleId) {
           socket.emit('socket:error', { error: 'shuttleId is required.' });
           return;
@@ -129,6 +158,11 @@ const registerSocketHandlers = (io) => {
           return;
         }
 
+        if (socketUser.role === 'driver' && String(shuttle.driverId || '') !== String(socketUser._id)) {
+          socket.emit('socket:error', { error: 'Access denied. This shuttle is not assigned to you.' });
+          return;
+        }
+
         const nextCapacity = shuttle.currentCapacity + parsedDelta;
         if (nextCapacity < 0 || nextCapacity > shuttle.maxCapacity) {
           socket.emit('socket:error', {
@@ -149,6 +183,16 @@ const registerSocketHandlers = (io) => {
           capacityStatus: shuttle.capacityStatus,
           updatedAt: shuttle.updatedAt,
         });
+
+        // DISPATCH: When capacity decreases (passenger unboarded), retry waiting queue
+        if (parsedDelta < 0) {
+          setImmediate(() => {
+            retryWaitingQueue(communityId, io).catch((err) =>
+              console.error('[socket:capacity-update] retryWaitingQueue error:', err)
+            );
+          });
+        }
+
       } catch (error) {
         console.error('Socket capacity-update error:', error);
         socket.emit('socket:error', { error: 'Failed to process capacity-update event.' });
@@ -156,7 +200,7 @@ const registerSocketHandlers = (io) => {
     });
 
     socket.on('disconnect', () => {
-      // no-op for now, hook reserved for presence tracking
+      // no-op for now; clients are expected to auto-reconnect and rejoin via join-community.
     });
   });
 };

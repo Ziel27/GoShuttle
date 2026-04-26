@@ -1,21 +1,114 @@
 import { ThemedText } from '@/components/themed-text';
+import { EmptyState } from '@/components/ui/empty-state';
 import { PremiumButton } from '@/components/ui/premium-button';
 import { PremiumCard } from '@/components/ui/premium-card';
 import { SectionHeader } from '@/components/ui/section-header';
-import { AppPalette } from '@/constants/app-ui';
+import { SkeletonList } from '@/components/ui/skeleton-loader';
+import { AppPalette, chipActiveBg } from '@/constants/app-ui';
 import { DesignTokens, OutfitFonts } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useThemeColor } from '@/hooks/use-theme-color';
+import { getCommunityById } from '@/services/community';
 import { listPassengerRecentRides, PassengerRecentRide } from '@/services/trip';
 import { useAuthStore } from '@/store/auth';
 import { usePreferencesStore } from '@/store/preferences';
 import { formatMoney } from '@/utils/format';
 import { Ionicons } from '@expo/vector-icons';
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, FlatList, Modal, Pressable, StyleSheet, TextInput, View } from 'react-native';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { FlatList, Modal, Pressable, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 type RideWindow = 'all' | '7d' | '30d';
+
+type RideLocationReference = {
+  label: string;
+  type: 'home' | 'fixed';
+  coordinates: [number, number];
+};
+
+const EARTH_RADIUS_METERS = 6_371_000;
+
+const toRadians = (value: number) => (value * Math.PI) / 180;
+
+const getCoordinateDistanceMeters = (from: [number, number], to: [number, number]) => {
+  const [fromLng, fromLat] = from;
+  const [toLng, toLat] = to;
+
+  if (![fromLng, fromLat, toLng, toLat].every((value) => Number.isFinite(value))) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const dLat = toRadians(toLat - fromLat);
+  const dLng = toRadians(toLng - fromLng);
+  const lat1 = toRadians(fromLat);
+  const lat2 = toRadians(toLat);
+
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+  return EARTH_RADIUS_METERS * c;
+};
+
+type RideItemCardProps = {
+  ride: PassengerRecentRide;
+  pickupLabel: string;
+  destinationLabel: string;
+  mutedColor: string;
+  surfaceMutedColor: string;
+  textColor: string;
+  tint: string;
+  onPress: (ride: PassengerRecentRide) => void;
+};
+
+const RideItemCard = memo(function RideItemCard({
+  ride,
+  pickupLabel,
+  destinationLabel,
+  mutedColor,
+  surfaceMutedColor,
+  textColor,
+  tint,
+  onPress,
+}: RideItemCardProps) {
+  const requestedTime = new Date(ride.requestedAt).toLocaleString();
+  const boardedTime = new Date(ride.boardedAt).toLocaleString();
+
+  return (
+    <Pressable
+      onPress={() => onPress(ride)}
+      accessibilityRole="button"
+      accessibilityLabel={`View ride on ${ride.shuttle.plateNumber}`}>
+      <PremiumCard style={styles.recentRideRow}>
+        <View style={[styles.recentRideIconWrap, { backgroundColor: surfaceMutedColor }]}>
+          <Ionicons name="time-outline" size={20} color={tint} />
+        </View>
+        <View style={styles.recentRideMeta}>
+          <ThemedText type="defaultSemiBold" style={{ color: textColor }}>
+            {ride.shuttle.plateNumber || 'Shuttle'}
+            {ride.shuttle.label ? ` · ${ride.shuttle.label}` : ''}
+          </ThemedText>
+          <ThemedText type="caption" style={{ color: mutedColor }}>
+            Boarded: {boardedTime}
+          </ThemedText>
+          <ThemedText type="caption" style={{ color: mutedColor }}>
+            Requested: {requestedTime}
+          </ThemedText>
+          <ThemedText type="caption" style={{ color: mutedColor }}>
+            Fare: {formatMoney(ride.fareAtBoarding)} · Pickup: {pickupLabel}
+          </ThemedText>
+          <ThemedText type="caption" style={{ color: mutedColor }}>
+            Destination: {destinationLabel}
+          </ThemedText>
+          <ThemedText type="overline" style={{ color: tint, marginTop: 4 }}>
+            Tap to view details
+          </ThemedText>
+        </View>
+      </PremiumCard>
+    </Pressable>
+  );
+});
 
 
 
@@ -31,13 +124,13 @@ export default function RidesScreen() {
   const surfaceColor = useThemeColor({}, 'surface');
   const surfaceMutedColor = useThemeColor({}, 'surfaceMuted');
   const borderColor = useThemeColor({}, 'border');
-  const onTint = useThemeColor({}, 'background');
-  const activeChipBackground = colorScheme === 'dark' ? surfaceMutedColor : '#e2e8f0';
+  const activeChipBackground = chipActiveBg[colorScheme ?? 'light'];
   const [rides, setRides] = useState<PassengerRecentRide[]>([]);
   const [loading, setLoading] = useState(false);
   const [feedback, setFeedback] = useState('');
   const [rideSearch, setRideSearch] = useState('');
   const [rideWindow, setRideWindow] = useState<RideWindow>('30d');
+  const [fixedDestinationReferences, setFixedDestinationReferences] = useState<RideLocationReference[]>([]);
   const [selectedRide, setSelectedRide] = useState<PassengerRecentRide | null>(null);
 
   const setPreferenceAwareFeedback = useCallback((
@@ -76,6 +169,102 @@ export default function RidesScreen() {
     loadRides();
   }, [loadRides]);
 
+  useEffect(() => {
+    if (user?.role !== 'passenger' || !user?.communityId) {
+      setFixedDestinationReferences([]);
+      return;
+    }
+
+    let active = true;
+
+    const loadFixedDestinations = async () => {
+      try {
+        const community = await getCommunityById(user.communityId);
+        if (!active) return;
+
+        const nextReferences = (community?.fixedDestinations || [])
+          .filter((destination) => destination.isActive !== false)
+          .filter((destination) => destination.location?.coordinates?.length === 2)
+          .map((destination) => ({
+            label: destination.name,
+            type: 'fixed' as const,
+            coordinates: destination.location.coordinates,
+          }));
+
+        setFixedDestinationReferences(nextReferences);
+      } catch {
+        if (!active) return;
+        setFixedDestinationReferences([]);
+      }
+    };
+
+    void loadFixedDestinations();
+
+    return () => {
+      active = false;
+    };
+  }, [user?.communityId, user?.role]);
+
+  const rideLocationReferences = useMemo(() => {
+    const references: RideLocationReference[] = [...fixedDestinationReferences];
+    const homeCoordinates = user?.homeDestination?.location?.coordinates;
+
+    if (homeCoordinates?.length === 2) {
+      references.unshift({
+        label: user?.homeDestination?.label?.trim() || 'Saved Home Address',
+        type: 'home',
+        coordinates: homeCoordinates,
+      });
+    }
+
+    return references;
+  }, [fixedDestinationReferences, user?.homeDestination?.label, user?.homeDestination?.location?.coordinates]);
+
+  const resolvePickupLabel = useCallback((ride: PassengerRecentRide) => {
+    const pickupCoordinates = ride.pickupLocation?.coordinates;
+
+    if (pickupCoordinates?.length !== 2) {
+      return user?.homeDestination?.label?.trim() || 'Saved Home Address';
+    }
+
+    if (rideLocationReferences.length === 0) {
+      return ride.destinationType === 'home'
+        ? user?.homeDestination?.label?.trim() || 'Saved Home Address'
+        : 'Fixed Destination';
+    }
+
+    let nearestReference = rideLocationReferences[0];
+    let nearestDistance = Number.POSITIVE_INFINITY;
+
+    for (const reference of rideLocationReferences) {
+      const distance = getCoordinateDistanceMeters(pickupCoordinates, reference.coordinates);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearestReference = reference;
+      }
+    }
+
+    return nearestReference.label;
+  }, [rideLocationReferences, user?.homeDestination?.label]);
+
+  const resolveDestinationLabel = useCallback((ride: PassengerRecentRide) => {
+    if (ride.destinationType === 'home') {
+      return user?.homeDestination?.label?.trim() || ride.destinationLabel || 'Saved Home Address';
+    }
+
+    return ride.destinationLabel || 'Fixed Destination';
+  }, [user?.homeDestination?.label]);
+
+  const selectedRidePickupLabel = useMemo(() => {
+    if (!selectedRide) return '';
+    return resolvePickupLabel(selectedRide);
+  }, [resolvePickupLabel, selectedRide]);
+
+  const selectedRideDestinationLabel = useMemo(() => {
+    if (!selectedRide) return '';
+    return resolveDestinationLabel(selectedRide);
+  }, [resolveDestinationLabel, selectedRide]);
+
   const filteredRides = useMemo(() => {
     const now = Date.now();
 
@@ -104,6 +293,31 @@ export default function RidesScreen() {
     });
   }, [rides, rideSearch, rideWindow]);
 
+  const handleSelectRide = useCallback((ride: PassengerRecentRide) => {
+    setSelectedRide(ride);
+  }, []);
+
+  const renderRideItem = useCallback(
+    ({ item: ride }: { item: PassengerRecentRide }) => {
+      const pickupLabel = resolvePickupLabel(ride);
+      const destinationLabel = resolveDestinationLabel(ride);
+
+      return (
+        <RideItemCard
+          ride={ride}
+          pickupLabel={pickupLabel}
+          destinationLabel={destinationLabel}
+          mutedColor={mutedColor}
+          surfaceMutedColor={surfaceMutedColor}
+          textColor={textColor}
+          tint={tint}
+          onPress={handleSelectRide}
+        />
+      );
+    },
+    [handleSelectRide, mutedColor, resolveDestinationLabel, resolvePickupLabel, surfaceMutedColor, textColor, tint]
+  );
+
   if (user?.role !== 'passenger') {
     return (
       <SafeAreaView style={styles.root} edges={['top', 'left', 'right']}>
@@ -117,22 +331,24 @@ export default function RidesScreen() {
 
   return (
     <SafeAreaView style={[styles.root, { backgroundColor: bgColor }]} edges={['top', 'left', 'right']}>
-      <PremiumCard style={[styles.header, { backgroundColor: tint, borderColor: tint }]}>
+      <View style={[styles.header, { borderBottomColor: borderColor }]}>
         <SectionHeader
-          title="Recent Rides"
+          title="Activity History"
           subtitle="Track your ride history and fare details"
-          titleColor={onTint}
-          subtitleColor={onTint}
+          titleColor={textColor}
+          subtitleColor={mutedColor}
           rightAction={
             <PremiumButton style={styles.refreshBtn} onPress={loadRides} variant="secondary">
-              <Ionicons name="refresh" size={16} color={tint} />
-              <ThemedText style={[styles.refreshText, { color: tint }]}>{loading ? 'Refreshing' : 'Refresh'}</ThemedText>
+              <Ionicons name="refresh" size={18} color={tint} />
+              <ThemedText type="defaultSemiBold" style={{ color: tint }}>
+                {loading ? 'Refreshing' : 'Refresh'}
+              </ThemedText>
             </PremiumButton>
           }
         />
-      </PremiumCard>
+      </View>
 
-      <PremiumCard style={styles.filtersCard}>
+      <View style={[styles.filtersCard, { borderColor }]}>
         <TextInput
           value={rideSearch}
           onChangeText={setRideSearch}
@@ -149,6 +365,9 @@ export default function RidesScreen() {
               rideWindow === '7d' && [styles.rideFilterChipActive, { borderColor: tint, backgroundColor: activeChipBackground }],
             ]}
             onPress={() => setRideWindow('7d')}
+            accessibilityRole="button"
+            accessibilityState={{ selected: rideWindow === '7d' }}
+            accessibilityLabel="Filter to last 7 days"
           >
             <ThemedText
               style={[
@@ -166,6 +385,9 @@ export default function RidesScreen() {
               rideWindow === '30d' && [styles.rideFilterChipActive, { borderColor: tint, backgroundColor: activeChipBackground }],
             ]}
             onPress={() => setRideWindow('30d')}
+            accessibilityRole="button"
+            accessibilityState={{ selected: rideWindow === '30d' }}
+            accessibilityLabel="Filter to last 30 days"
           >
             <ThemedText
               style={[
@@ -183,6 +405,9 @@ export default function RidesScreen() {
               rideWindow === 'all' && [styles.rideFilterChipActive, { borderColor: tint, backgroundColor: activeChipBackground }],
             ]}
             onPress={() => setRideWindow('all')}
+            accessibilityRole="button"
+            accessibilityState={{ selected: rideWindow === 'all' }}
+            accessibilityLabel="Show all rides"
           >
             <ThemedText
               style={[
@@ -194,57 +419,31 @@ export default function RidesScreen() {
             </ThemedText>
           </Pressable>
         </View>
-      </PremiumCard>
+      </View>
 
       <FlatList
         data={filteredRides}
         keyExtractor={(ride) => ride.rideId}
         contentContainerStyle={styles.listWrap}
+        showsVerticalScrollIndicator={false}
+        showsHorizontalScrollIndicator={false}
         refreshing={loading}
         onRefresh={loadRides}
         ListEmptyComponent={
           loading ? (
-            <PremiumCard style={styles.centerState} muted>
-              <ActivityIndicator color={tint} size="small" />
-              <ThemedText style={[styles.centerStateText, { color: mutedColor }]}>Loading recent rides...</ThemedText>
-            </PremiumCard>
+            <SkeletonList count={3} />
           ) : (
-            <PremiumCard style={styles.centerState} muted>
-              <Ionicons name="trail-sign-outline" size={18} color={mutedColor} />
-              <ThemedText style={[styles.centerStateText, { color: mutedColor }]}>No rides match your filters yet.</ThemedText>
-            </PremiumCard>
+            <EmptyState
+              icon="trail-sign-outline"
+              title="No rides found"
+              subtitle="No rides match your current filters. Try a different time range or search term."
+            />
           )
         }
         ListFooterComponent={
           feedback ? <ThemedText style={[styles.feedback, { color: mutedColor }]}>{feedback}</ThemedText> : null
         }
-        renderItem={({ item: ride }) => {
-          const requestedTime = new Date(ride.requestedAt).toLocaleString();
-          const boardedTime = new Date(ride.boardedAt).toLocaleString();
-          const [lng, lat] = ride.pickupLocation.coordinates;
-
-          return (
-            <Pressable onPress={() => setSelectedRide(ride)}>
-              <PremiumCard style={styles.recentRideRow}>
-                <View style={[styles.recentRideIconWrap, { backgroundColor: surfaceMutedColor }]}>
-                   <Ionicons name="time-outline" size={20} color={tint} />
-                </View>
-                <View style={styles.recentRideMeta}>
-                  <ThemedText type="defaultSemiBold" style={{ color: textColor }}>
-                    {ride.shuttle.plateNumber || 'Shuttle'}
-                    {ride.shuttle.label ? ` · ${ride.shuttle.label}` : ''}
-                  </ThemedText>
-                  <ThemedText type="caption" style={{ color: mutedColor }}>Boarded: {boardedTime}</ThemedText>
-                  <ThemedText type="caption" style={{ color: mutedColor }}>Requested: {requestedTime}</ThemedText>
-                  <ThemedText type="caption" style={{ color: mutedColor }}> 
-                    Fare: {ride.fareAtBoarding} · Pickup: {lat.toFixed(4)}, {lng.toFixed(4)}
-                  </ThemedText>
-                  <ThemedText type="overline" style={{ color: tint, marginTop: 4 }}>Tap to view details</ThemedText>
-                </View>
-              </PremiumCard>
-            </Pressable>
-          );
-        }}
+        renderItem={renderRideItem}
       />
 
       <Modal
@@ -282,8 +481,10 @@ export default function RidesScreen() {
                   </ThemedText>
                   <ThemedText style={[styles.rideModalLine, { color: mutedColor }]}>Fare: {formatMoney(selectedRide.fareAtBoarding)}</ThemedText>
                   <ThemedText style={[styles.rideModalLine, { color: mutedColor }]}> 
-                    Pickup: {selectedRide.pickupLocation.coordinates[1].toFixed(5)},{' '}
-                    {selectedRide.pickupLocation.coordinates[0].toFixed(5)}
+                    Pickup: {selectedRidePickupLabel}
+                  </ThemedText>
+                  <ThemedText style={[styles.rideModalLine, { color: mutedColor }]}> 
+                    Destination: {selectedRideDestinationLabel}
                   </ThemedText>
                 </View>
               ) : null}
@@ -298,27 +499,31 @@ export default function RidesScreen() {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    padding: DesignTokens.spacing.sm,
-    gap: DesignTokens.spacing.xs,
+    padding: DesignTokens.spacing.md,
+    gap: DesignTokens.spacing.sm,
   },
   header: {
-    minHeight: 80,
+    minHeight: 68,
+    justifyContent: 'center',
+    paddingBottom: DesignTokens.spacing.xs,
+    borderBottomWidth: 1,
   },
   refreshBtn: {
-    minHeight: 40,
+    minHeight: 42,
+    paddingVertical: DesignTokens.spacing.xxs,
     paddingHorizontal: DesignTokens.spacing.xs,
-  },
-  refreshText: {
-    ...DesignTokens.typography.caption,
+    alignSelf: 'center',
   },
   filtersCard: {
     gap: DesignTokens.spacing.xs,
+    paddingBottom: DesignTokens.spacing.xs,
+    borderBottomWidth: 1,
   },
   rideSearchInput: {
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderRadius: DesignTokens.radius.md,
-    minHeight: 44,
-    paddingHorizontal: DesignTokens.spacing.xs,
+    minHeight: 52,
+    paddingHorizontal: DesignTokens.spacing.md,
     fontFamily: OutfitFonts.semiBold,
   },
   rideFilterRow: {
@@ -328,8 +533,11 @@ const styles = StyleSheet.create({
   rideFilterChip: {
     borderWidth: 1,
     borderRadius: DesignTokens.radius.pill,
-    paddingHorizontal: DesignTokens.spacing.xs,
-    paddingVertical: DesignTokens.spacing.xxs,
+    minHeight: 38,
+    paddingHorizontal: DesignTokens.spacing.sm,
+    paddingVertical: DesignTokens.spacing.xs,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   rideFilterChipActive: {
   },
@@ -340,24 +548,25 @@ const styles = StyleSheet.create({
   rideFilterTextActive: {
   },
   listWrap: {
-    paddingBottom: DesignTokens.spacing.md,
-    gap: DesignTokens.spacing.xs,
+    paddingBottom: DesignTokens.spacing.lg,
+    gap: DesignTokens.spacing.sm,
   },
   recentRideRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: DesignTokens.spacing.sm,
+    minHeight: 96,
   },
   recentRideIconWrap: {
-    width: 40,
-    height: 40,
+    width: 44,
+    height: 44,
     borderRadius: DesignTokens.radius.md,
     alignItems: 'center',
     justifyContent: 'center',
   },
   recentRideMeta: {
     flex: 1,
-    gap: 1,
+    gap: 2,
   },
   recentRideHint: {
     fontSize: 10,
@@ -398,7 +607,7 @@ const styles = StyleSheet.create({
     maxWidth: 420,
     borderRadius: DesignTokens.radius.lg,
     borderWidth: 1,
-    padding: DesignTokens.spacing.sm,
+    padding: DesignTokens.spacing.md,
     gap: DesignTokens.spacing.xs,
   },
   rideModalTitle: {
@@ -411,7 +620,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderRadius: 999,
+    borderRadius: DesignTokens.radius.pill,
   },
   rideModalBody: {
     gap: 6,

@@ -23,9 +23,35 @@ export type PickupIntent = {
     type: 'Point';
     coordinates: [number, number];
   };
-  status: 'pending' | 'claimed' | 'expired';
+  passengerHomePhase: string | null;
+  fareType: 'standard' | 'priority';
+  status: 'pending' | 'claimed' | 'dispatched' | 'queued' | 'bumped' | 'expired' | 'cancelled';
   expiresAt: string;
 };
+
+export type AssignedShuttle = {
+  shuttleId: string;
+  plateNumber: string;
+  label: string;
+  assignedPhase?: string | null;
+  location: { type: 'Point'; coordinates: [number, number] };
+  currentCapacity: number;
+  maxCapacity: number;
+  pendingPickupCount: number;
+  status: string;
+};
+
+export type DispatchStatus = {
+  requestId: string;
+  fareType: 'standard' | 'priority';
+  status: 'dispatched' | 'queued';
+  passengerHomePhase?: string | null;
+  queuePosition: number | null;
+  dispatchedAt: string | null;
+  expiresAt: string;
+  assignedShuttle: AssignedShuttle | null;
+};
+
 
 export type PassengerRecentRide = {
   rideId: string;
@@ -62,79 +88,204 @@ export type OnboardDestinationPassenger = {
   };
 };
 
-export const boardPassenger = async (shuttleId: string, boardedCount = 1) => {
+export type CurrentPassenger = {
+  passengerId: string | null;
+  passengerName: string;
+  boardedAt: string;
+  boardLocation: {
+    type: 'Point';
+    coordinates: [number, number];
+  };
+};
+
+export type TripMutationResponse = {
+  trip: Record<string, unknown> | null;
+  shuttle: Record<string, unknown> | null;
+};
+
+export type ShiftStatusUser = Record<string, unknown>;
+
+export type ShiftRemittance = {
+  _id: string;
+  expectedAmount: number;
+  actualAmount: number;
+  varianceAmount: number;
+  status: 'not_submitted' | 'pending' | 'verified' | 'flagged' | 'overdue' | 'escalated';
+  submittedAt: string;
+  receiptUrl?: string;
+  [key: string]: unknown;
+};
+
+/**
+ * Records passenger boarding against a shuttle and active trip.
+ * @throws {Error} When the API request fails.
+ */
+export const boardPassenger = async (shuttleId: string, boardedCount = 1): Promise<TripMutationResponse> => {
   const response = await api.post('/trips/passenger-board', {
     shuttleId,
     boardedCount,
   });
 
   return {
-    trip: response.data?.trip,
-    shuttle: response.data?.shuttle,
+    trip: (response.data?.trip as Record<string, unknown>) || null,
+    shuttle: (response.data?.shuttle as Record<string, unknown>) || null,
   };
 };
 
-export const endShift = async (shuttleId: string) => {
+/**
+ * Ends a driver shift and returns computed summary details.
+ * @throws {Error} When the API request fails.
+ */
+export const endShift = async (shuttleId: string): Promise<ShiftSummary> => {
   const response = await api.post('/trips/shift-end', { shuttleId });
   return response.data?.summary as ShiftSummary;
 };
 
-export const startShift = async () => {
+/**
+ * Updates the current user status to driving.
+ * @throws {Error} When the API request fails.
+ */
+export const startShift = async (): Promise<ShiftStatusUser | null> => {
   const response = await api.patch('/users/me', { status: 'driving' });
-  return response.data?.user;
+  return (response.data?.user as ShiftStatusUser) || null;
 };
 
-export const stopShift = async () => {
+/**
+ * Updates the current user status to offline.
+ * @throws {Error} When the API request fails.
+ */
+export const stopShift = async (): Promise<ShiftStatusUser | null> => {
   const response = await api.patch('/users/me', { status: 'offline' });
-  return response.data?.user;
+  return (response.data?.user as ShiftStatusUser) || null;
 };
 
 type PickupDestinationInput =
   | { type: 'fixed'; fixedDestinationId: string }
   | { type: 'home'; latitude: number; longitude: number; label?: string };
 
+export type QueueReason = 'no_shuttles_on_duty' | 'all_shuttles_full' | 'dispatch_race' | null;
+
+/**
+ * Creates a pickup intent for the current passenger.
+ * @throws {Error} When the API request fails.
+ */
 export const createPickupIntent = async (
   latitude: number,
   longitude: number,
-  destination: PickupDestinationInput
-) => {
+  destination: PickupDestinationInput,
+  fareType: 'standard' | 'priority' = 'standard'
+): Promise<{
+  request: PickupIntent;
+  rideRequestId: string;
+  fareType: 'standard' | 'priority';
+  fareExpected: number;
+  dispatched: boolean;
+  assignedShuttle: AssignedShuttle | null;
+  queuePosition: number | null;
+  queueReason: QueueReason;
+}> => {
   const response = await api.post('/trips/pickup-intent', {
     latitude,
     longitude,
     destination,
+    fareType,
   });
 
+  return {
+    request: response.data?.request as PickupIntent,
+    rideRequestId: response.data?.rideRequestId as string,
+    fareType: (response.data?.fareType as 'standard' | 'priority') ?? fareType,
+    fareExpected: (response.data?.fareExpected as number) ?? 0,
+    dispatched: Boolean(response.data?.dispatched),
+    assignedShuttle: (response.data?.assignedShuttle as AssignedShuttle) ?? null,
+    queuePosition: (response.data?.queuePosition as number | null) ?? null,
+    queueReason: (response.data?.queueReason as QueueReason) ?? null,
+  };
+};
+
+
+
+/**
+ * Cancels a pending pickup intent.
+ * @throws {Error} When the API request fails.
+ */
+export const cancelPickupIntent = async (intentId: string): Promise<PickupIntent> => {
+  const response = await api.delete(`/trips/pickup-intent/${intentId}`);
   return response.data?.request as PickupIntent;
 };
 
-export const listPickupIntents = async () => {
+/**
+ * Cancels ALL active pickup intents for the current passenger.
+ * Should be called before logout to release reserved shuttle slots.
+ * Errors are intentionally swallowed — logout must proceed regardless.
+ */
+export const cancelMyPickupIntents = async (): Promise<{ cancelled: number }> => {
+  try {
+    const response = await api.delete('/trips/my-pickup-intents');
+    return { cancelled: response.data?.cancelled ?? 0 };
+  } catch {
+    return { cancelled: 0 };
+  }
+};
+
+/**
+ * Returns the passenger's current dispatched or queued pickup request.
+ * @throws {Error} When the API request fails.
+ */
+export const getMyDispatch = async (): Promise<DispatchStatus | null> => {
+  const response = await api.get('/trips/my-dispatch');
+  return (response.data?.dispatch as DispatchStatus) ?? null;
+};
+
+
+/**
+ * Lists active pickup intents for driver and admin use.
+ * @throws {Error} When the API request fails.
+ */
+export const listPickupIntents = async (): Promise<PickupIntent[]> => {
   const response = await api.get('/trips/pickup-intents');
   return (response.data?.requests || []) as PickupIntent[];
 };
 
-export const listPassengerRecentRides = async () => {
+/**
+ * Lists a passenger's recent rides.
+ * @throws {Error} When the API request fails.
+ */
+export const listPassengerRecentRides = async (): Promise<PassengerRecentRide[]> => {
   const response = await api.get('/trips/passenger-recent-rides');
   return (response.data?.rides || []) as PassengerRecentRide[];
 };
 
-export const unboardPassenger = async (shuttleId: string, unboardCount = 1) => {
+/**
+ * Records passenger unboarding against a shuttle and active trip.
+ * @throws {Error} When the API request fails.
+ */
+export const unboardPassenger = async (shuttleId: string, unboardCount = 1): Promise<TripMutationResponse> => {
   const response = await api.post('/trips/passenger-unboard', {
     shuttleId,
     unboardCount,
   });
 
   return {
-    trip: response.data?.trip,
-    shuttle: response.data?.shuttle,
+    trip: (response.data?.trip as Record<string, unknown>) || null,
+    shuttle: (response.data?.shuttle as Record<string, unknown>) || null,
   };
 };
 
-export const getCurrentPassengers = async (tripId: string) => {
+/**
+ * Returns passengers currently boarded on a trip.
+ * @throws {Error} When the API request fails.
+ */
+export const getCurrentPassengers = async (tripId: string): Promise<CurrentPassenger[]> => {
   const response = await api.get(`/trips/${tripId}/current-passengers`);
-  return (response.data?.passengers || []);
+  return (response.data?.passengers || []) as CurrentPassenger[];
 };
 
-export const listOnboardDestinations = async (shuttleId: string) => {
+/**
+ * Lists onboard passengers and destination details for a shuttle.
+ * @throws {Error} When the API request fails.
+ */
+export const listOnboardDestinations = async (shuttleId: string): Promise<OnboardDestinationPassenger[]> => {
   const response = await api.get(`/trips/${shuttleId}/onboard-destinations`);
   return (response.data?.passengers || []) as OnboardDestinationPassenger[];
 };
@@ -149,22 +300,59 @@ export type DriverCompletedTrip = {
   fareAtTime: number;
   revenueCollected: number;
   expectedRemittance: number;
-  remittanceStatus: 'not_submitted' | 'pending' | 'verified' | 'flagged';
+  remittanceStatus: 'not_submitted' | 'pending' | 'verified' | 'flagged' | 'overdue' | 'escalated';
   remittanceActualAmount: number | null;
   remittanceVariance: number | null;
   remittanceSubmittedAt: string | null;
+  remittanceDeadlineAt: string | null;
 };
 
-export const listDriverCompletedTrips = async () => {
+/**
+ * Lists completed trips for the current driver.
+ * @throws {Error} When the API request fails.
+ */
+export const listDriverCompletedTrips = async (): Promise<DriverCompletedTrip[]> => {
   const response = await api.get('/trips/driver-completed-trips');
   return (response.data?.trips || []) as DriverCompletedTrip[];
 };
 
-export const submitRemittance = async (tripId: string, actualAmount: number, driverNote?: string) => {
-  const response = await api.post(`/trips/${tripId}/remittance`, {
-    actualAmount,
-    driverNote: driverNote || '',
+/**
+ * Submits remittance details for a completed trip.
+ * @throws {Error} When the API request fails.
+ */
+export const submitRemittance = async (
+  tripId: string,
+  actualAmount: number,
+  driverNote?: string,
+  receiptUri?: string
+): Promise<ShiftRemittance | null> => {
+  const formData = new FormData();
+  formData.append('actualAmount', String(actualAmount));
+  formData.append('driverNote', driverNote || '');
+
+  if (receiptUri) {
+    const filename = `receipt_${tripId}_${Date.now()}.jpg`;
+    formData.append('receipt', {
+      uri: receiptUri,
+      name: filename,
+      type: 'image/jpeg',
+    } as any);
+  }
+
+  const response = await api.post(`/trips/${tripId}/remittance`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
   });
-  return response.data?.remittance;
+  return (response.data?.remittance as ShiftRemittance) || null;
+};
+
+/**
+ * Resolves a pending ride request.
+ * @throws {Error} When the API request fails.
+ */
+export const resolveRideRequest = async (
+  requestId: string,
+  resolution: 'no_show' | 'late_manual'
+): Promise<void> => {
+  await api.post(`/trips/ride-requests/${requestId}/resolve`, { resolution });
 };
 

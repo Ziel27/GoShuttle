@@ -51,9 +51,10 @@ const styles = StyleSheet.create({
   },
   copy: {
     flex: 1,
+    gap: DesignTokens.spacing.xxs,
   },
   title: {
-    lineHeight: 24,
+    lineHeight: 28,
   },
   subtitle: {
     opacity: 0.8,
