@@ -15,7 +15,6 @@ import {
 } from '@/components/ui/table';
 import { useAuth } from '@/context/auth-context';
 import {
-  adminBypassPickupIntent,
   assignShuttleDriver,
   createShuttle,
   fetchCommunityById,
@@ -86,8 +85,6 @@ export const ShuttlesPage = () => {
   const [newMaxCapacity, setNewMaxCapacity] = useState('12');
   const [newAssignedPhase, setNewAssignedPhase] = useState('');
   const [creating, setCreating] = useState(false);
-
-  const [testingPickup, setTestingPickup] = useState(false);
 
   const shuttlesRef = useRef(shuttles);
   useEffect(() => {
@@ -277,37 +274,6 @@ export const ShuttlesPage = () => {
       setError(e instanceof Error ? e.message : 'Failed to create shuttle');
     } finally {
       setCreating(false);
-    }
-  };
-
-  // Improved test pickup using active shuttles location if possible, or fallback
-  const handleSmartTestPickupBypass = async () => {
-    setTestingPickup(true);
-    setError('');
-    setNotice('');
-    try {
-      let lat = 14.5995;
-      let lng = 120.9842;
-      
-      // Try to use a known shuttle's location to pass boundary checks
-      const shuttleWithLoc = shuttles.find(s => s.location && s.location.coordinates && s.location.coordinates.length >= 2);
-      if (shuttleWithLoc && shuttleWithLoc.location?.coordinates) {
-        lng = shuttleWithLoc.location.coordinates[0];
-        lat = shuttleWithLoc.location.coordinates[1];
-      }
-
-      await adminBypassPickupIntent({
-        latitude: lat,
-        longitude: lng,
-        fareType: 'standard',
-      });
-      setNotice('Test pickup intent created successfully (bypassed on-duty check).');
-    } catch (e: any) {
-      // Provide a more detailed error message
-      const errorMsg = e.response?.data?.error || e.message || 'Failed to create test pickup intent';
-      setError(`Test pickup failed: ${errorMsg}`);
-    } finally {
-      setTestingPickup(false);
     }
   };
 
