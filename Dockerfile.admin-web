@@ -3,6 +3,15 @@ FROM node:20-alpine AS admin-web-builder
 
 WORKDIR /app/admin-web
 
+# ─── ADDED: Build Arguments ───
+# These allow docker-compose to pass the URLs into the build
+ARG VITE_ADMIN_API_URL
+ARG VITE_ADMIN_SOCKET_URL
+
+# Set them as Environment Variables for the 'npm run build' process
+ENV VITE_ADMIN_API_URL=$VITE_ADMIN_API_URL
+ENV VITE_ADMIN_SOCKET_URL=$VITE_ADMIN_SOCKET_URL
+
 # Copy package files
 COPY admin-web/package*.json ./
 
@@ -12,7 +21,7 @@ RUN npm ci
 # Copy source code
 COPY admin-web/ .
 
-# Build the application
+# Build the application (Vite will now see the ENV variables)
 RUN npm run build
 
 # Runtime stage
