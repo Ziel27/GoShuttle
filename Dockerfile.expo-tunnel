@@ -1,0 +1,17 @@
+FROM node:20-bullseye
+
+WORKDIR /app
+
+# Required tooling for running Expo tunnel under PM2 inside a container.
+RUN npm install -g pm2 expo @expo/ngrok
+
+# Install project dependencies first for better layer caching.
+COPY package*.json ./
+RUN npm ci
+
+# Copy the rest of the project.
+COPY . .
+
+EXPOSE 8081
+
+CMD ["pm2-runtime", "ecosystem.expo-tunnel.config.js"]
