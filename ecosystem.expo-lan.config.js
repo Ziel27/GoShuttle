@@ -3,7 +3,8 @@ module.exports = {
     {
       name: 'goshuttle-expo-lan',
       script: 'npx',
-      args: 'expo start --lan --port 8081 --clear',
+      // Changed --lan to --offline to bypass the Expo server login prompt
+      args: 'expo start --offline --port 8081 --clear',
       cwd: '/app',
       autorestart: true,
       watch: false,
@@ -12,7 +13,6 @@ module.exports = {
       restart_delay: 5000,
       env: {
         EXPO_NO_TELEMETRY: '1',
-        // Add this line below to force traffic through Cloudflare:
         EXPO_PACKAGER_PROXY_URL: 'https://shuttle.goshuttle.app'
       },
     },
