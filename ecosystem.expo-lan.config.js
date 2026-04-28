@@ -1,9 +1,9 @@
 module.exports = {
   apps: [
     {
-      name: 'goshuttle-expo-tunnel',
+      name: 'goshuttle-expo-lan',
       script: 'npx',
-      args: 'expo start --tunnel --host tunnel --port 8081 --clear',
+      args: 'expo start --lan --host lan --port 8081 --clear',
       cwd: '/app',
       autorestart: true,
       watch: false,
