@@ -10,7 +10,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAuth } from '@/context/auth-context';
-import logo from '../../../../assets/images/logo.png';
 
 const schema = z.object({
   email: z.string().email('Enter a valid email'),
@@ -45,7 +44,7 @@ export const LoginPage = () => {
         <Card className="w-full border-slate-200 bg-white shadow-sm">
           <CardHeader className="space-y-4">
             <div className="mx-auto flex h-16 w-16 items-center justify-center overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-sm">
-              <img src={logo} alt="GoShuttle" className="h-full w-full scale-125 object-cover" />
+              <img src="/favicon.png" alt="GoShuttle" className="h-full w-full scale-125 object-cover" />
             </div>
             <div className="space-y-1 text-center">
               <CardTitle className="text-2xl font-semibold">GoShuttle Admin</CardTitle>

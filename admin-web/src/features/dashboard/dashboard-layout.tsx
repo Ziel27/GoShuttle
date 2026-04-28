@@ -8,7 +8,6 @@ import { LiveEventsPanel } from '@/features/dashboard/live-events-panel';
 import { useLiveEvents } from '@/features/dashboard/use-live-events';
 import { fetchRemittances } from '@/lib/admin-api';
 import { communityIdFromUnknown } from '@/lib/format';
-import logo from '../../../../assets/images/logo.png';
 
 const navItems = [
   { to: '/', label: 'Overview', icon: FiBarChart2, end: true },
@@ -57,7 +56,7 @@ export const DashboardLayout = () => {
         <aside className="flex flex-col rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:sticky lg:top-3 lg:h-[calc(100vh-1.5rem)] lg:overflow-y-auto">
           <div className="mb-5 flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 shadow-sm">
             <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-xl border border-slate-200 bg-white">
-              <img src={logo} alt="GoShuttle" className="h-full w-full scale-125 object-cover" />
+              <img src="/favicon.png" alt="GoShuttle" className="h-full w-full scale-125 object-cover" />
             </div>
             <div>
               <p className="text-sm font-semibold text-slate-900">GoShuttle Admin</p>
