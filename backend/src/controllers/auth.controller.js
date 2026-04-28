@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
+const path = require('path');
 const validator = require('validator');
 const User = require('../models/User');
 const Community = require('../models/Community');
@@ -34,21 +35,21 @@ const generateToken = (user) => {
  */
 const setAuthTokenCookie = (res, token) => {
   const isProduction = process.env.NODE_ENV === 'production';
-  
-  res.cookie('auth_token', token, {
-    httpOnly: true,    // Stays true (Prevents XSS)
-    secure: true,      // Stays true (Required for 'none' and HTTPS)
-    
-    // CHANGE 1: Use 'none' so the browser allows the cookie to be sent 
-    // from the admin subdomain to the api subdomain.
-    sameSite: isProduction ? 'none' : 'lax', 
-    
-    // CHANGE 2: Add the leading dot. This makes the cookie valid for 
-    // ALL subdomains under goshuttle.app.
-    domain: isProduction ? '.goshuttle.app' : 'localhost',
-    
+
+  const cookieOptions = {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: isProduction ? 'none' : 'lax',
     path: '/',
-    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  };
+
+  if (isProduction) {
+    cookieOptions.domain = '.goshuttle.app';
+  }
+
+  res.cookie('auth_token', token, {
+    ...cookieOptions,
   });
 };
 
@@ -66,26 +67,136 @@ const hashResetCode = (code) => {
  */
 // NOTE: In-memory rate limiter. Resets on server restart.
 // Replace with Redis-based limiter (e.g. rate-limiter-flexible) before scaling to multiple instances.
-const resetAttempts = new Map(); // {email: [{timestamp, attempts}]}
+const resetAttempts = new Map(); // {key: number[]}
+const RESET_LIMIT_WINDOW_MS = 60 * 60 * 1000;
+const RESET_LIMIT_MAX = 3;
+const RESET_ATTEMPT_CLEANUP_MS = 15 * 60 * 1000;
 
-const isResetAttemptAllowed = (email) => {
-  const now = Date.now();
-  const oneHourAgo = now - 60 * 60 * 1000;
-  
-  if (!resetAttempts.has(email)) {
-    resetAttempts.set(email, []);
+const pruneResetAttempts = (key, now = Date.now()) => {
+  const attempts = resetAttempts.get(key) || [];
+  const freshAttempts = attempts.filter((timestamp) => timestamp > now - RESET_LIMIT_WINDOW_MS);
+
+  if (freshAttempts.length === 0) {
+    resetAttempts.delete(key);
+  } else {
+    resetAttempts.set(key, freshAttempts);
   }
-  
-  const attempts = resetAttempts.get(email);
-  const recentAttempts = attempts.filter(t => t > oneHourAgo);
-  
-  if (recentAttempts.length >= 3) {
+
+  return freshAttempts;
+};
+
+const isResetAttemptAllowed = (key) => {
+  const now = Date.now();
+  const recentAttempts = pruneResetAttempts(key, now);
+
+  if (recentAttempts.length >= RESET_LIMIT_MAX) {
     return false;
   }
-  
+
   recentAttempts.push(now);
-  resetAttempts.set(email, recentAttempts);
+  resetAttempts.set(key, recentAttempts);
   return true;
+};
+
+const pruneStaleResetAttempts = () => {
+  const now = Date.now();
+  for (const key of resetAttempts.keys()) {
+    pruneResetAttempts(key, now);
+  }
+};
+
+if (process.env.NODE_ENV !== 'test') {
+  const timer = setInterval(pruneStaleResetAttempts, RESET_ATTEMPT_CLEANUP_MS);
+  timer.unref?.();
+}
+
+const buildResetPasswordEmail = ({ code, email }) => {
+  const supportEmail = process.env.SMTP_FROM || process.env.SMTP_USER || 'GoShuttle Support';
+  const safeCode = String(code).trim();
+  const safeEmail = String(email).trim();
+  const logoPath = path.resolve(__dirname, '../../../assets/images/logo.png');
+
+  const text = [
+    'GoShuttle Password Reset',
+    '',
+    `Your verification code is: ${safeCode}`,
+    '',
+    'This code expires in 10 minutes.',
+    'If you did not request this reset, you can ignore this message.',
+  ].join('\n');
+
+  const html = `
+    <div style="margin:0;padding:0;background:#0f1f14;font-family:Arial,Helvetica,sans-serif;color:#eaf4ec;">
+      <div style="max-width:640px;margin:0 auto;padding:32px 16px;">
+        <div style="overflow:hidden;border-radius:28px;background:#14261a;box-shadow:0 24px 60px rgba(0,0,0,0.34);border:1px solid rgba(133,173,143,0.18);">
+          <div style="background:linear-gradient(145deg,#17351f 0%,#21472b 52%,#0f1f14 100%);padding:30px 28px 26px;position:relative;">
+            <div style="display:inline-flex;align-items:center;gap:12px;border-radius:999px;background:rgba(255,255,255,0.08);padding:8px 14px;color:#f4fbf5;font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;">
+              Secure reset
+            </div>
+            <table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:18px;">
+              <tr>
+                <td style="width:88px;height:88px;border-radius:24px;background:#f6fbf6;overflow:hidden;box-shadow:0 12px 28px rgba(0,0,0,0.18);">
+                  <img src="cid:goshuttle-logo" alt="GoShuttle" width="88" height="88" style="display:block;width:88px;height:88px;object-fit:cover;" />
+                </td>
+                <td style="padding-left:16px;vertical-align:middle;">
+                  <div style="font-size:12px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:#9fc5a9;margin-bottom:6px;">GoShuttle</div>
+                  <h1 style="margin:0;font-size:30px;line-height:1.15;color:#ffffff;">Password reset code</h1>
+                </td>
+              </tr>
+            </table>
+            <p style="margin:18px 0 0;font-size:15px;line-height:1.6;color:rgba(234,244,236,0.92);max-width:500px;">
+              Use the code below to continue resetting your password for your GoShuttle account.
+            </p>
+          </div>
+
+          <div style="padding:30px 28px 26px;background:linear-gradient(180deg,#14261a 0%,#101d14 100%);">
+            <p style="margin:0 0 14px;font-size:14px;line-height:1.6;color:#c9d8cc;">Hello ${safeEmail},</p>
+            <p style="margin:0 0 18px;font-size:14px;line-height:1.6;color:#c9d8cc;">
+              We received a request to reset your GoShuttle password. Enter this verification code in the app:
+            </p>
+
+            <div style="margin:22px 0 24px;padding:22px;border-radius:22px;background:#f4fbf6;border:1px solid #d1e4d4;text-align:center;box-shadow:inset 0 0 0 1px rgba(255,255,255,0.55);">
+              <div style="font-size:12px;font-weight:700;letter-spacing:0.18em;text-transform:uppercase;color:#5a8266;margin-bottom:10px;">Verification Code</div>
+              <div style="font-size:40px;line-height:1.1;font-weight:800;letter-spacing:0.24em;color:#1d5f39;">${safeCode}</div>
+            </div>
+
+            <div style="margin:0 0 18px;padding:16px 18px;border-radius:18px;background:#0c1710;border:1px solid rgba(159,197,169,0.18);">
+              <div style="font-size:12px;font-weight:700;letter-spacing:0.16em;text-transform:uppercase;color:#8fb39a;margin-bottom:10px;">Next steps</div>
+              <div style="display:flex;flex-direction:column;gap:8px;">
+                <div style="font-size:14px;line-height:1.55;color:#edf5ef;">1. Open the GoShuttle app.</div>
+                <div style="font-size:14px;line-height:1.55;color:#edf5ef;">2. Enter the verification code above.</div>
+                <div style="font-size:14px;line-height:1.55;color:#edf5ef;">3. Create your new password and sign in again.</div>
+              </div>
+            </div>
+
+            <div style="display:flex;gap:12px;flex-wrap:wrap;">
+              <div style="flex:1 1 180px;padding:14px 16px;border-radius:16px;background:#0d1911;border:1px solid rgba(159,197,169,0.16);">
+                <div style="font-size:12px;font-weight:700;color:#9db4a2;margin-bottom:4px;">Expires</div>
+                <div style="font-size:14px;font-weight:700;color:#f2f8f3;">10 minutes</div>
+              </div>
+              <div style="flex:1 1 180px;padding:14px 16px;border-radius:16px;background:#0d1911;border:1px solid rgba(159,197,169,0.16);">
+                <div style="font-size:12px;font-weight:700;color:#9db4a2;margin-bottom:4px;">Account</div>
+                <div style="font-size:14px;font-weight:700;color:#f2f8f3;word-break:break-word;">${safeEmail}</div>
+              </div>
+            </div>
+
+            <p style="margin:22px 0 0;font-size:13px;line-height:1.7;color:#aebfb3;">
+              If you did not request this password reset, you can safely ignore this email.
+            </p>
+          </div>
+
+          <div style="padding:0 28px 28px;background:#101d14;">
+            <div style="height:1px;background:rgba(159,197,169,0.14);margin-bottom:18px;"></div>
+            <p style="margin:0;font-size:12px;line-height:1.6;color:#92a593;">
+              Sent by ${supportEmail}. This is an automated message from GoShuttle.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  return { text, html };
 };
 
 const sendResetCodeEmail = async (email, code) => {
@@ -109,11 +220,21 @@ const sendResetCodeEmail = async (email, code) => {
     },
   });
 
+  const message = buildResetPasswordEmail({ code, email });
+
   await transporter.sendMail({
     from: fromEmail,
     to: email,
-    subject: 'GoShuttle Password Reset Verification Code',
-    text: `Your GoShuttle verification code is ${code}. It expires in 10 minutes.`,
+    subject: 'Your GoShuttle password reset code',
+    text: message.text,
+    html: message.html,
+    attachments: [
+      {
+        filename: 'logo.png',
+        path: logoPath,
+        cid: 'goshuttle-logo',
+      },
+    ],
   });
 
   return true;
@@ -305,9 +426,10 @@ const requestPasswordReset = async (req, res) => {
     }
 
     const normalizedEmail = String(email).toLowerCase();
+    const attemptKey = `request:${normalizedEmail}:${req.ip}`;
 
     // Rate limit password reset attempts (3 per hour)
-    if (!isResetAttemptAllowed(normalizedEmail)) {
+    if (!isResetAttemptAllowed(attemptKey)) {
       return res.status(429).json({ error: 'Too many password reset attempts. Please try again in an hour.' });
     }
 
@@ -354,9 +476,10 @@ const verifyPasswordResetCode = async (req, res) => {
     }
 
     const normalizedEmail = String(email).toLowerCase();
+    const attemptKey = `verify:${normalizedEmail}:${req.ip}`;
 
     // Rate limit verification attempts (3 per hour per email)
-    if (!isResetAttemptAllowed(normalizedEmail)) {
+    if (!isResetAttemptAllowed(attemptKey)) {
       return res.status(429).json({ error: 'Too many verification attempts. Please try again later.' });
     }
 
@@ -395,6 +518,12 @@ const resetPassword = async (req, res) => {
     }
 
     const normalizedEmail = String(email).toLowerCase();
+    const attemptKey = `reset:${normalizedEmail}:${req.ip}`;
+
+    if (!isResetAttemptAllowed(attemptKey)) {
+      return res.status(429).json({ error: 'Too many password reset attempts. Please try again later.' });
+    }
+
     const user = await User.findOne({ email: normalizedEmail }).select('+password +resetPasswordCodeHash +resetPasswordCodeExpiresAt');
 
     if (!user || !user.resetPasswordCodeHash || !user.resetPasswordCodeExpiresAt) {
@@ -414,6 +543,10 @@ const resetPassword = async (req, res) => {
     user.resetPasswordCodeHash = null;
     user.resetPasswordCodeExpiresAt = null;
     await user.save();
+
+    resetAttempts.delete(`request:${normalizedEmail}:${req.ip}`);
+    resetAttempts.delete(`verify:${normalizedEmail}:${req.ip}`);
+    resetAttempts.delete(attemptKey);
 
     return res.status(200).json({ message: 'Password updated successfully. Please login.' });
   } catch (error) {
@@ -435,7 +568,18 @@ const logout = async (req, res) => {
   } catch {
     // Non-fatal — still clear the cookie
   }
-  res.clearCookie('auth_token', { path: '/' });
+  const isProduction = process.env.NODE_ENV === 'production';
+  const clearOptions = {
+    path: '/',
+    sameSite: isProduction ? 'none' : 'lax',
+    secure: isProduction,
+  };
+
+  if (isProduction) {
+    clearOptions.domain = '.goshuttle.app';
+  }
+
+  res.clearCookie('auth_token', clearOptions);
   res.status(200).json({ message: 'Logged out successfully.' });
 };
 

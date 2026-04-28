@@ -6,12 +6,12 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
-    Table,
-    TableBody,
-    TableCell,
-    TableHead,
-    TableHeader,
-    TableRow,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
 } from '@/components/ui/table';
 import { useAuth } from '@/context/auth-context';
 import {
@@ -20,8 +20,8 @@ import {
   fetchCommunityById,
   fetchPhaseGeofences,
   fetchShuttles,
-  updateCommunity,
   fetchUsers,
+  updateCommunity,
   type PhaseGeofence,
 } from '@/lib/admin-api';
 import { communityIdFromUnknown, toShortDate } from '@/lib/format';
@@ -63,7 +63,7 @@ const driverStatusDot = (status?: string) => {
 };
 
 export const ShuttlesPage = () => {
-  const { user, token } = useAuth();
+  const { user } = useAuth();
   const communityId = communityIdFromUnknown(user?.communityId);
 
   const [shuttles, setShuttles] = useState<Shuttle[]>([]);
@@ -162,7 +162,7 @@ export const ShuttlesPage = () => {
   useEffect(() => {
     if (!communityId) return;
 
-    const socket = connectAdminSocket(token, communityId);
+    const socket = connectAdminSocket(communityId);
 
     const onLocationUpdated = (payload: {
       shuttleId?: string;
@@ -215,7 +215,7 @@ export const ShuttlesPage = () => {
       socket.off('shuttle:capacity-updated', onCapacityUpdated);
       disconnectAdminSocket();
     };
-  }, [communityId, token]);
+  }, [communityId]);
 
   const onAssignDriver = async (shuttleId: string) => {
     setAssigningId(shuttleId);

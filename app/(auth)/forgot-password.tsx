@@ -10,6 +10,7 @@ import { ROUTES } from '@/constants/routes';
 import { DesignTokens, OutfitFonts } from '@/constants/theme';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { api } from '@/services/api';
+import logoSource from '../../assets/images/logo.png';
 
 type Step = 'request' | 'verify' | 'reset';
 const CODE_LENGTH = 6;
@@ -148,7 +149,12 @@ export default function ForgotPasswordScreen() {
   }, [email, code, newPassword, confirmPassword]);
 
   return (
-    <AuthShell icon="key-outline" title="Forgot Password" subtitle="Recover your account securely" heroHeight="40%">
+    <AuthShell
+      icon="key-outline"
+      logoSource={logoSource}
+      title="Forgot Password"
+      subtitle="Recover your account securely"
+      heroHeight="40%">
       <View style={[styles.card, isCompact && styles.cardCompact, { backgroundColor: surface, borderColor: border }]}>
         <ThemedText type="caption" style={{ color: muted, marginBottom: DesignTokens.spacing.xs }}> 
           {step === 'request'

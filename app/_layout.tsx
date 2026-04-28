@@ -1,21 +1,23 @@
 import {
-    Outfit_400Regular,
-    Outfit_500Medium,
-    Outfit_600SemiBold,
-    Outfit_700Bold,
-    Outfit_800ExtraBold,
-    useFonts
+  Outfit_400Regular,
+  Outfit_500Medium,
+  Outfit_600SemiBold,
+  Outfit_700Bold,
+  Outfit_800ExtraBold,
+  useFonts
 } from '@expo-google-fonts/outfit';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
-import { ActivityIndicator, View } from 'react-native';
+import { ActivityIndicator, Image, StyleSheet, Text, View } from 'react-native';
 import 'react-native-reanimated';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useAuthStore } from '@/store/auth';
 import { usePreferencesStore } from '@/store/preferences';
+
+const logoSource = require('../assets/images/logo.png');
 
 export const unstable_settings = {
   anchor: '(tabs)',
@@ -45,8 +47,15 @@ export default function RootLayout() {
 
   if (!hydrated || !preferencesHydrated || !fontsLoaded) {
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-        <ActivityIndicator size="large" />
+      <View style={styles.loadingScreen}>
+        <View style={styles.loadingCard}>
+          <View style={styles.loadingLogoFrame}>
+            <Image source={logoSource} resizeMode="cover" style={styles.loadingLogo} />
+          </View>
+          <Text style={styles.loadingTitle}>GoShuttle</Text>
+          <Text style={styles.loadingSubtitle}>Preparing your shuttle experience...</Text>
+        </View>
+        <ActivityIndicator size="small" style={styles.loadingSpinner} />
       </View>
     );
   }
@@ -68,3 +77,44 @@ export default function RootLayout() {
     </ThemeProvider>
   );
 }
+
+const styles = StyleSheet.create({
+  loadingScreen: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 24,
+  },
+  loadingCard: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+    paddingVertical: 20,
+  },
+  loadingLogoFrame: {
+    width: 128,
+    height: 128,
+    borderRadius: 28,
+    overflow: 'hidden',
+    backgroundColor: '#f0f7f2',
+  },
+  loadingLogo: {
+    width: '100%',
+    height: '100%',
+    transform: [{ scale: 1.18 }],
+  },
+  loadingTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#17351f',
+    letterSpacing: 0.2,
+  },
+  loadingSubtitle: {
+    fontSize: 13,
+    color: '#5d6d61',
+  },
+  loadingSpinner: {
+    marginTop: 10,
+  },
+});

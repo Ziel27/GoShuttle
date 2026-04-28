@@ -7,6 +7,7 @@ import { AuthEntryRoute, ROUTES } from '@/constants/routes';
 import { DesignTokens, OutfitFonts } from '@/constants/theme';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { useAuthStore } from '@/store/auth';
+import logoSource from '../assets/images/logo.png';
 
 export default function WelcomeScreen() {
   const markWelcomeSeen = useAuthStore((state) => state.markWelcomeSeen);
@@ -21,11 +22,16 @@ export default function WelcomeScreen() {
   };
 
   return (
-    <AuthShell icon="bus" title="GoShuttle" subtitle="Private rides for your community" heroHeight="58%">
-      <View style={[styles.sheet, { backgroundColor: surface, borderColor: border }]}> 
+    <AuthShell
+      icon="bus"
+      logoSource={logoSource}
+      title="GoShuttle"
+      subtitle="Private rides for your community"
+      heroHeight="58%">
+      <View style={[styles.sheet, { backgroundColor: surface, borderColor: border }]}>
         <ThemedText type="title">Welcome</ThemedText>
         <ThemedText style={styles.copy}>
-          Track shuttles in real time, request pickups, and board passengers with a fast, role-based experience.
+          GoShuttle makes shuttle transportation easier by helping riders, drivers, and coordinators stay connected in one simple app.
         </ThemedText>
 
         <Pressable style={[styles.primaryButton, { backgroundColor: tint }]} onPress={() => goToAuth(ROUTES.authRegister)}>

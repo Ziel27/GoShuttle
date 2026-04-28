@@ -1,6 +1,7 @@
-import { Component, type ReactNode } from 'react';
+import { Component, type ReactNode, useEffect } from 'react';
 
 import { AppRouter } from '@/app-router';
+import logo from '../../assets/images/logo.png';
 
 type ErrorBoundaryState = {
   hasError: boolean;
@@ -55,6 +56,19 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryS
 }
 
 function App() {
+  useEffect(() => {
+    const existing = document.querySelector("link[rel*='icon']") as HTMLLinkElement | null;
+    const link = existing || document.createElement('link');
+
+    link.type = 'image/png';
+    link.rel = 'icon';
+    link.href = logo;
+
+    if (!existing) {
+      document.head.appendChild(link);
+    }
+  }, []);
+
   return (
     <AppErrorBoundary>
       <AppRouter />

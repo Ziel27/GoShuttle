@@ -8,6 +8,7 @@ import { LiveEventsPanel } from '@/features/dashboard/live-events-panel';
 import { useLiveEvents } from '@/features/dashboard/use-live-events';
 import { fetchRemittances } from '@/lib/admin-api';
 import { communityIdFromUnknown } from '@/lib/format';
+import logo from '../../../../assets/images/logo.png';
 
 const navItems = [
   { to: '/', label: 'Overview', icon: FiBarChart2, end: true },
@@ -20,9 +21,9 @@ const navItems = [
 ];
 
 export const DashboardLayout = () => {
-  const { user, token, logout } = useAuth();
+  const { user, logout } = useAuth();
   const communityId = communityIdFromUnknown(user?.communityId);
-  const { events, connected } = useLiveEvents(token, communityId);
+  const { events, connected } = useLiveEvents(communityId);
 
   const [alertCounts, setAlertCounts] = useState({ overdue: 0, escalated: 0 });
 
@@ -54,6 +55,15 @@ export const DashboardLayout = () => {
     <div className="min-h-screen w-full bg-slate-100">
       <div className="grid min-h-screen w-full gap-3 p-2 lg:grid-cols-[280px_minmax(0,1fr)] lg:p-3">
         <aside className="flex flex-col rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:sticky lg:top-3 lg:h-[calc(100vh-1.5rem)] lg:overflow-y-auto">
+          <div className="mb-5 flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 shadow-sm">
+            <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-xl border border-slate-200 bg-white">
+              <img src={logo} alt="GoShuttle" className="h-full w-full scale-125 object-cover" />
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-slate-900">GoShuttle Admin</p>
+              <p className="text-xs text-slate-500">Operations dashboard</p>
+            </div>
+          </div>
           <div className="mb-5 flex items-center gap-3">
             <Avatar className="size-9 bg-emerald-100 text-emerald-700">
               <AvatarFallback>{user?.firstName?.[0] || 'A'}</AvatarFallback>

@@ -12,7 +12,7 @@ const makeEvent = (label: string): LiveEvent => ({
   createdAt: Date.now(),
 });
 
-export const useLiveEvents = (token: string | null, communityId: string) => {
+export const useLiveEvents = (communityId: string) => {
   const [events, setEvents] = useState<LiveEvent[]>([]);
   const [connected, setConnected] = useState(false);
 
@@ -21,7 +21,7 @@ export const useLiveEvents = (token: string | null, communityId: string) => {
       return;
     }
 
-    const socket = connectAdminSocket(token, communityId);
+    const socket = connectAdminSocket(communityId);
 
     const append = (event: LiveEvent) => {
       setEvents((prev) => [event, ...prev].slice(0, MAX_EVENTS));
@@ -102,7 +102,7 @@ export const useLiveEvents = (token: string | null, communityId: string) => {
       disconnectAdminSocket();
       setConnected(false);
     };
-  }, [token, communityId]);
+  }, [communityId]);
 
   const formatted = useMemo(
     () =>

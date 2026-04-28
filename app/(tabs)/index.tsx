@@ -21,6 +21,7 @@ import {
 } from '@/services/shuttle';
 import { connectCommunitySocket } from '@/services/socket';
 import {
+  AssignedShuttle,
   boardPassenger,
   cancelPickupIntent,
   createPickupIntent,
@@ -28,10 +29,8 @@ import {
   listPickupIntents,
   OnboardDestinationPassenger,
   PickupIntent,
-  unboardPassenger,
-  AssignedShuttle,
-  getMyDispatch,
   QueueReason,
+  unboardPassenger
 } from '@/services/trip';
 
 
@@ -54,7 +53,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
 import { type ComponentRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { AppState, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import MapView, { Callout, Circle, LatLng, Marker, Polygon, Region } from 'react-native-maps';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -179,6 +178,7 @@ export default function HomeScreen() {
   });
   const offlineSyncNoticeRef = useRef(0);
   const recentPickupCancelEventRef = useRef<{ requestId: string; at: number } | null>(null);
+  const appStateRef = useRef(AppState.currentState);
 
   // ── Dispatch state (passenger-only) ───────────────────────────────────────
   const [fareType, setFareType] = useState<'standard' | 'priority'>('standard');
@@ -201,6 +201,16 @@ export default function HomeScreen() {
     }
     return 'You are in the queue and will be dispatched when a shuttle is available.';
   }, []);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      appStateRef.current = nextState;
+    });
+
+    return () => subscription.remove();
+  }, []);
+
+  const isAppActive = useCallback(() => appStateRef.current === 'active', []);
 
   const [communityFares, setCommunityFares] = useState<{ base: number; priorityMultiplier: number } | null>(null);
   const [phaseGeofences, setPhaseGeofences] = useState<PhaseGeofence[]>([]);
@@ -252,16 +262,16 @@ export default function HomeScreen() {
 
     if (selectedDestinationType === 'home') {
       if (!hasSavedHomeDestination) {
-        return 'Home - not set yet (set it in Settings)';
+        return 'Home pickup - not set yet (set it in Settings)';
       }
-      return `Home - ${user?.homeDestination?.label || 'Home'}`;
+      return `Home pickup - ${user?.homeDestination?.label || 'Home'}`;
     }
 
     if (!selectedFixedDestination) {
-      return 'Fixed - no destination selected';
+      return 'Fixed stop - no destination selected';
     }
 
-    return `Fixed - ${selectedFixedDestination.name}`;
+    return `Fixed stop - ${selectedFixedDestination.name}`;
   }, [hasSavedHomeDestination, selectedDestinationType, selectedFixedDestination, user?.homeDestination?.label]);
 
   const activePickupDestinationSummary = useMemo(() => {
@@ -789,6 +799,8 @@ export default function HomeScreen() {
     let mounted = true;
 
     const loadPickupIntents = async () => {
+      if (!isAppActive()) return;
+
       try {
         const requests = await listPickupIntents();
         if (!mounted) return;
@@ -820,6 +832,8 @@ export default function HomeScreen() {
     let mounted = true;
 
     const loadOnboardDestinations = async () => {
+      if (!isAppActive()) return;
+
       try {
         const passengers = await listOnboardDestinations(assignedShuttle._id);
         if (!mounted) return;
@@ -851,6 +865,8 @@ export default function HomeScreen() {
     let active = true;
 
     const loadCommunityBoundary = async () => {
+      if (!isAppActive()) return;
+
       try {
         const community = await getCommunityById(activeCommunityId);
         const ring = community?.boundaries?.coordinates?.[0] || [];
@@ -966,6 +982,8 @@ export default function HomeScreen() {
     let active = true;
 
     const loadPhaseGeofencesData = async () => {
+      if (!isAppActive()) return;
+
       try {
         const phases = await getPhaseGeofences(activeCommunityId);
         if (!active) return;
@@ -985,7 +1003,7 @@ export default function HomeScreen() {
   }, [activeCommunityId, communitySyncTick]);
 
   useEffect(() => {
-    if (user?.role !== 'passenger') return;
+    if (user?.role !== 'passenger' || !isAppActive()) return;
 
     const timeoutMs = 90;
     const stepCount = 8;
@@ -1006,7 +1024,7 @@ export default function HomeScreen() {
       }
 
       if (Platform.OS === 'android') {
-          markerRefs.current[shuttle._id]?.animateMarkerToCoordinate?.(coordinate, 800);
+        markerRefs.current[shuttle._id]?.animateMarkerToCoordinate?.(coordinate, 800);
       } else if (
         previous.latitude !== coordinate.latitude ||
         previous.longitude !== coordinate.longitude
@@ -1057,17 +1075,19 @@ export default function HomeScreen() {
         delete markerRefs.current[shuttleId];
       }
     }
-  }, [mapShuttles, user?.role]);
+  }, [isAppActive, mapShuttles, user?.role]);
 
   useEffect(() => {
     const timer = setInterval(() => {
+      if (!isAppActive()) return;
+
       setPickupIntents((items) => items.filter((item) => !isExpiredIntent(item)));
     }, 30_000);
 
     return () => {
       clearInterval(timer);
     };
-  }, []);
+  }, [isAppActive]);
 
   useEffect(() => {
     const timers = markerAnimTimers.current;
@@ -2177,8 +2197,36 @@ export default function HomeScreen() {
             <View style={[styles.passengerHubCard, { borderColor, backgroundColor: surfaceColor }]}>
               <SectionHeader
                 title="Ride Center"
-                subtitle="Live fleet and pickup status"
+                subtitle="Choose where you want to go, then request the next available shuttle."
               />
+
+              <View style={[styles.passengerGuideCard, { borderColor, backgroundColor: bgColor }]}> 
+                <View style={styles.passengerGuideHeader}>
+                  <Ionicons name="help-circle-outline" size={16} color={tint} />
+                  <ThemedText style={[styles.passengerGuideTitle, { color: textColor }]}>How to book</ThemedText>
+                </View>
+                <ThemedText style={[styles.passengerGuideText, { color: mutedColor }]}>Pick a destination type, choose the stop or home location, then send your request to the drivers currently on shift.</ThemedText>
+                <View style={styles.passengerGuideSteps}>
+                  <View style={[styles.passengerGuideStep, { borderColor, backgroundColor: surfaceColor }]}>
+                    <View style={[styles.passengerGuideStepNumber, { backgroundColor: tint }]}>
+                      <ThemedText style={styles.passengerGuideStepNumberText}>1</ThemedText>
+                    </View>
+                    <ThemedText style={[styles.passengerGuideStepText, { color: textColor }]}>Choose Fixed stop or Home pickup</ThemedText>
+                  </View>
+                  <View style={[styles.passengerGuideStep, { borderColor, backgroundColor: surfaceColor }]}>
+                    <View style={[styles.passengerGuideStepNumber, { backgroundColor: successColor }]}>
+                      <ThemedText style={styles.passengerGuideStepNumberText}>2</ThemedText>
+                    </View>
+                    <ThemedText style={[styles.passengerGuideStepText, { color: textColor }]}>Select your stop or saved home location</ThemedText>
+                  </View>
+                  <View style={[styles.passengerGuideStep, { borderColor, backgroundColor: surfaceColor }]}>
+                    <View style={[styles.passengerGuideStepNumber, { backgroundColor: palette.navy }]}>
+                      <ThemedText style={styles.passengerGuideStepNumberText}>3</ThemedText>
+                    </View>
+                    <ThemedText style={[styles.passengerGuideStepText, { color: textColor }]}>Tap Request Shuttle to notify on-shift drivers</ThemedText>
+                  </View>
+                </View>
+              </View>
 
               <View style={[styles.fleetStatCard, { 
                 backgroundColor: colorScheme === 'dark' ? surfaceColor : tint,
@@ -2214,8 +2262,8 @@ export default function HomeScreen() {
               <View style={styles.destinationTypeRow}>
                 <Pressable
                   accessibilityRole="button"
-                  accessibilityLabel="Choose fixed destination"
-                  accessibilityHint="Use destination points configured by your admin"
+                  accessibilityLabel="Choose fixed stop destination"
+                  accessibilityHint="Use a community stop configured by your admin"
                   accessibilityState={{ selected: selectedDestinationType === 'fixed' }}
                   style={({ pressed }) => [
                     styles.destinationTypeCard,
@@ -2251,14 +2299,24 @@ export default function HomeScreen() {
                         color={selectedDestinationType === 'fixed' ? palette.white : tint}
                       />
                     </View>
-                    <ThemedText
-                      numberOfLines={1}
-                      style={[
-                        styles.destinationTypeLabel,
-                        { color: selectedDestinationType === 'fixed' ? palette.white : tint },
-                      ]}>
-                      Fixed
-                    </ThemedText>
+                    <View style={styles.destinationTypeLabelWrap}>
+                      <ThemedText
+                        numberOfLines={1}
+                        style={[
+                          styles.destinationTypeLabel,
+                          { color: selectedDestinationType === 'fixed' ? palette.white : tint },
+                        ]}>
+                        Fixed stop
+                      </ThemedText>
+                      <ThemedText
+                        numberOfLines={1}
+                        style={[
+                          styles.destinationTypeCaption,
+                          { color: selectedDestinationType === 'fixed' ? 'rgba(255,255,255,0.82)' : mutedColor },
+                        ]}>
+                        Community stop
+                      </ThemedText>
+                    </View>
                   </View>
                   <Ionicons
                     name={selectedDestinationType === 'fixed' ? 'checkmark-circle' : 'chevron-forward'}
@@ -2269,8 +2327,8 @@ export default function HomeScreen() {
 
                 <Pressable
                   accessibilityRole="button"
-                  accessibilityLabel="Choose home destination"
-                  accessibilityHint="Request pickup to your saved home destination"
+                  accessibilityLabel="Choose home pickup destination"
+                  accessibilityHint="Request pickup to your saved home location"
                   accessibilityState={{ selected: selectedDestinationType === 'home' }}
                   style={({ pressed }) => [
                     styles.destinationTypeCard,
@@ -2306,14 +2364,24 @@ export default function HomeScreen() {
                         color={selectedDestinationType === 'home' ? palette.white : successColor}
                       />
                     </View>
-                    <ThemedText
-                      numberOfLines={1}
-                      style={[
-                        styles.destinationTypeLabel,
-                        { color: selectedDestinationType === 'home' ? palette.white : successColor },
-                      ]}>
-                      Home
-                    </ThemedText>
+                    <View style={styles.destinationTypeLabelWrap}>
+                      <ThemedText
+                        numberOfLines={1}
+                        style={[
+                          styles.destinationTypeLabel,
+                          { color: selectedDestinationType === 'home' ? palette.white : successColor },
+                        ]}>
+                        Home pickup
+                      </ThemedText>
+                      <ThemedText
+                        numberOfLines={1}
+                        style={[
+                          styles.destinationTypeCaption,
+                          { color: selectedDestinationType === 'home' ? 'rgba(255,255,255,0.82)' : mutedColor },
+                        ]}>
+                        Saved GPS location
+                      </ThemedText>
+                    </View>
                   </View>
                   <Ionicons
                     name={selectedDestinationType === 'home' ? 'checkmark-circle' : 'chevron-forward'}
@@ -2323,15 +2391,9 @@ export default function HomeScreen() {
                 </Pressable>
               </View>
 
-              <View style={styles.passengerStatsRow}>
-                <View style={[styles.passengerStatPill, { borderColor, backgroundColor: bgColor }]}>
-                  <Ionicons name="play-circle-outline" size={14} color={successColor} />
-                  <ThemedText style={[styles.passengerStatText, { color: textColor }]}>On Shift: {passengerStats.activeShiftCount}</ThemedText>
-                </View>
-                <View style={[styles.passengerStatPill, { borderColor, backgroundColor: bgColor }]}>
-                  <Ionicons name="pause-circle-outline" size={14} color={mutedColor} />
-                  <ThemedText style={[styles.passengerStatText, { color: textColor }]}>Off Shift: {passengerStats.offShiftCount}</ThemedText>
-                </View>
+              <View style={[styles.dispatchHintCard, { borderColor, backgroundColor: bgColor }]}> 
+                <Ionicons name="people-outline" size={14} color={tint} />
+                <ThemedText style={[styles.dispatchHintText, { color: textColor }]}>Your request goes to the next available shuttle driver on shift.</ThemedText>
               </View>
 
               {selectedDestinationType === 'fixed' ? (
@@ -2549,7 +2611,7 @@ export default function HomeScreen() {
                 onPress={handleRequestPickup}
                 disabled={pickupDisabled || !isDestinationReady || (selectedDestinationType === 'fixed' && fixedDestinations.length === 0)}
                 accessibilityRole="button"
-                accessibilityLabel="Request pickup from shuttle"
+                accessibilityLabel="Request shuttle"
               >
                 <Ionicons
                   name={pickupSubmitting ? 'time-outline' : 'navigate'}
@@ -2560,12 +2622,12 @@ export default function HomeScreen() {
                   {!selectedDestinationType
                     ? 'Select Destination'
                     : pickupSubmitting
-                    ? 'Sending Pickup...'
+                    ? 'Sending Request...'
                     : activePassengerPickupIntents.length > 0
                       ? 'Pickup Active'
                       : noDriversOnDuty
                         ? 'No Driver On Duty'
-                        : 'Request Pickup'}
+                        : 'Request Shuttle'}
                 </ThemedText>
               </Pressable>
 
@@ -3264,6 +3326,57 @@ const styles = StyleSheet.create({
     padding: DesignTokens.spacing.md,
     borderRadius: DesignTokens.radius.lg,
   },
+  passengerGuideCard: {
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.lg,
+    padding: DesignTokens.spacing.sm,
+    gap: DesignTokens.spacing.xs,
+  },
+  passengerGuideHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: DesignTokens.spacing.xs,
+  },
+  passengerGuideTitle: {
+    fontFamily: OutfitFonts.extraBold,
+    fontSize: 13,
+  },
+  passengerGuideText: {
+    fontFamily: OutfitFonts.semiBold,
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  passengerGuideSteps: {
+    gap: DesignTokens.spacing.xs,
+  },
+  passengerGuideStep: {
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.md,
+    paddingHorizontal: DesignTokens.spacing.sm,
+    paddingVertical: DesignTokens.spacing.xs,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: DesignTokens.spacing.sm,
+  },
+  passengerGuideStepNumber: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  passengerGuideStepNumberText: {
+    color: palette.white,
+    fontFamily: OutfitFonts.extraBold,
+    fontSize: 12,
+  },
+  passengerGuideStepText: {
+    flex: 1,
+    fontFamily: OutfitFonts.bold,
+    fontSize: 12,
+    lineHeight: 16,
+  },
   fleetStatCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -3379,6 +3492,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: DesignTokens.spacing.xs,
   },
+  destinationTypeLabelWrap: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
   destinationTypeIconBubble: {
     width: 26,
     height: 26,
@@ -3388,7 +3506,13 @@ const styles = StyleSheet.create({
   },
   destinationTypeLabel: {
     fontFamily: OutfitFonts.bold,
-    fontSize: 14,
+    fontSize: 13,
+    flexShrink: 1,
+  },
+  destinationTypeCaption: {
+    fontFamily: OutfitFonts.semiBold,
+    fontSize: 11,
+    lineHeight: 14,
     flexShrink: 1,
   },
   destinationPromptCard: {
@@ -3424,6 +3548,22 @@ const styles = StyleSheet.create({
     color: palette.navy,
     fontFamily: OutfitFonts.bold,
     fontSize: 12,
+  },
+  dispatchHintCard: {
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.md,
+    paddingHorizontal: DesignTokens.spacing.sm,
+    paddingVertical: DesignTokens.spacing.xs,
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: DesignTokens.spacing.xs,
+  },
+  dispatchHintText: {
+    flex: 1,
+    fontFamily: OutfitFonts.semiBold,
+    fontSize: 12,
+    lineHeight: 16,
   },
   destinationIndicatorCard: {
     borderWidth: 1,
