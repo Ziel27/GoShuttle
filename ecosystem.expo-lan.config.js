@@ -12,6 +12,8 @@ module.exports = {
       restart_delay: 5000,
       env: {
         EXPO_NO_TELEMETRY: '1',
+        // Add this line below to force traffic through Cloudflare:
+        EXPO_PACKAGER_PROXY_URL: 'https://shuttle.goshuttle.app'
       },
     },
   ],
