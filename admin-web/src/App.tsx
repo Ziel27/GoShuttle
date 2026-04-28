@@ -1,7 +1,6 @@
 import { Component, type ReactNode, useEffect } from 'react';
 
 import { AppRouter } from '@/app-router';
-import logo from '../../assets/images/logo.png';
 
 type ErrorBoundaryState = {
   hasError: boolean;
@@ -62,7 +61,7 @@ function App() {
 
     link.type = 'image/png';
     link.rel = 'icon';
-    link.href = logo;
+    link.href = '/favicon.png';
 
     if (!existing) {
       document.head.appendChild(link);
