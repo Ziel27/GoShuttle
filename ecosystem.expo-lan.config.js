@@ -3,7 +3,7 @@ module.exports = {
     {
       name: 'goshuttle-expo-lan',
       script: 'npx',
-      args: 'expo start --lan --host lan --port 8081 --clear',
+      args: 'expo start --lan --port 8081 --clear',
       cwd: '/app',
       autorestart: true,
       watch: false,

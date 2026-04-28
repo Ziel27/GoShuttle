@@ -14,7 +14,7 @@ services:
     expose:
       - "8081"
     networks:
-      - expo-net
+      - proxy
 
   cloudflared:
     image: cloudflare/cloudflared:latest
@@ -26,7 +26,8 @@ services:
     depends_on:
       - expo-lan
     networks:
-      - expo-net
+      - proxy
 
 networks:
-  expo-net:
+  proxy:
+    external: true
