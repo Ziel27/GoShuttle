@@ -13,6 +13,8 @@ import { getPhaseGeofences, listCommunities, type PhaseGeofence } from '@/servic
 import { useAuthStore } from '@/store/auth';
 import { Ionicons } from '@expo/vector-icons';
 
+const logoSource = require('../../assets/images/logo.png');
+
 export default function RegisterScreen() {
   const register = useAuthStore((state) => state.register);
   const loading = useAuthStore((state) => state.loading);
@@ -130,6 +132,7 @@ export default function RegisterScreen() {
   return (
     <AuthShell
       icon="person-add-outline"
+      logoSource={logoSource}
       title="Create Account"
       subtitle="Join your private community transit network"
       heroHeight="40%">

@@ -11,6 +11,7 @@ import { DesignTokens, OutfitFonts } from '@/constants/theme';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { api } from '@/services/api';
 import { useAuthStore } from '@/store/auth';
+import logoSource from '../assets/images/logo.png';
 
 type Step = 'request' | 'verify' | 'reset';
 const CODE_LENGTH = 6;
@@ -157,7 +158,12 @@ export default function ChangePasswordScreen() {
   }, [targetEmail, code, newPassword, confirmPassword]);
 
   return (
-    <AuthShell icon="key-outline" title="Change Password" subtitle="Securely update your password" heroHeight="34%">
+    <AuthShell
+      icon="key-outline"
+      logoSource={logoSource}
+      title="Change Password"
+      subtitle="Securely update your password"
+      heroHeight="34%">
       <View style={[styles.card, { backgroundColor: surface, borderColor: border }]}>
         <ThemedText type="title">Change Password</ThemedText>
         <ThemedText type="caption" style={{ color: muted, marginBottom: DesignTokens.spacing.xs }}>

@@ -10,6 +10,7 @@ import { ROUTES } from '@/constants/routes';
 import { DesignTokens, OutfitFonts } from '@/constants/theme';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { useAuthStore } from '@/store/auth';
+import logoSource from '../../assets/images/logo.png';
 
 export default function LoginScreen() {
   const login = useAuthStore((state) => state.login);
@@ -47,6 +48,7 @@ export default function LoginScreen() {
   return (
     <AuthShell
       icon="shield-checkmark-outline"
+      logoSource={logoSource}
       title="Welcome Back"
       subtitle="Sign in to continue your route"
       heroHeight="46%">

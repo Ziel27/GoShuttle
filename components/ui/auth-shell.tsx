@@ -4,17 +4,20 @@ import { useThemeColor } from '@/hooks/use-theme-color';
 import { Ionicons } from '@expo/vector-icons';
 import { ReactNode } from 'react';
 import {
-    DimensionValue,
-    KeyboardAvoidingView,
-    Platform,
-    ScrollView,
-    StyleSheet,
-    useWindowDimensions,
-    View,
+  DimensionValue,
+  Image,
+  type ImageSourcePropType,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  useWindowDimensions,
+  View,
 } from 'react-native';
 
 type AuthShellProps = {
   icon: keyof typeof Ionicons.glyphMap;
+  logoSource?: ImageSourcePropType;
   title: string;
   subtitle: string;
   children: ReactNode;
@@ -23,6 +26,7 @@ type AuthShellProps = {
 
 export function AuthShell({
   icon,
+  logoSource,
   title,
   subtitle,
   children,
@@ -46,9 +50,19 @@ export function AuthShell({
         <View style={[styles.heroBlobPrimaryGlow, { backgroundColor: heroSoft }]} />
         <View style={[styles.heroBlobSecondary, { backgroundColor: tint }]} />
         <View style={[styles.heroBlobSecondaryGlow, { backgroundColor: heroSoft }]} />
-        <View style={[styles.heroIconWrap, isCompact && styles.heroIconWrapCompact, { borderColor: 'rgba(255,255,255,0.35)' }]}> 
-          <Ionicons name={icon} size={24} color={onTint} />
-        </View>
+        {logoSource ? (
+          <View style={[styles.heroLogoFrame, isCompact && styles.heroLogoFrameCompact]}>
+            <Image
+              source={logoSource}
+              resizeMode="cover"
+              style={[styles.heroLogo, isCompact && styles.heroLogoCompact]}
+            />
+          </View>
+        ) : (
+          <View style={[styles.heroIconWrap, isCompact && styles.heroIconWrapCompact, { borderColor: 'rgba(255,255,255,0.35)' }]}>
+            <Ionicons name={icon} size={24} color={onTint} />
+          </View>
+        )}
         <ThemedText 
           type="display" 
           style={[styles.heroTitle, isCompact && styles.heroTitleCompact, { color: onTint }]}
@@ -159,6 +173,28 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 22,
+  },
+  heroLogoFrame: {
+    width: 112,
+    height: 112,
+    borderRadius: 28,
+    borderWidth: 2,
+    borderColor: 'rgba(255,255,255,0.35)',
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    overflow: 'hidden',
+  },
+  heroLogoFrameCompact: {
+    width: 98,
+    height: 98,
+    borderRadius: 24,
+  },
+  heroLogo: {
+    width: '100%',
+    height: '100%',
+    transform: [{ scale: 1.16 }],
+  },
+  heroLogoCompact: {
+    transform: [{ scale: 1.18 }],
   },
   heroTitle: {
     ...DesignTokens.typography.display,

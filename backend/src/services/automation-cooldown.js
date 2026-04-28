@@ -12,6 +12,7 @@ const MANUAL_AUTOMATION_COOLDOWN_MS = parseDuration(
   process.env.MANUAL_AUTOMATION_COOLDOWN_MS,
   DEFAULT_MANUAL_AUTOMATION_COOLDOWN_MS
 );
+const AUTOMATION_COOLDOWN_SWEEP_MS = 10 * 60 * 1000;
 
 // NOTE: In-memory cooldown map. For multi-instance deployments, migrate this to Redis.
 const manualAutomationCooldownByShuttleId = new Map();
@@ -53,9 +54,25 @@ const clearManualAutomationCooldown = (shuttleId) => {
   manualAutomationCooldownByShuttleId.delete(key);
 };
 
+const pruneExpiredAutomationCooldowns = () => {
+  const now = Date.now();
+
+  for (const [key, cooldownUntil] of manualAutomationCooldownByShuttleId.entries()) {
+    if (cooldownUntil <= now) {
+      manualAutomationCooldownByShuttleId.delete(key);
+    }
+  }
+};
+
+if (process.env.NODE_ENV !== 'test') {
+  const timer = setInterval(pruneExpiredAutomationCooldowns, AUTOMATION_COOLDOWN_SWEEP_MS);
+  timer.unref?.();
+}
+
 module.exports = {
   MANUAL_AUTOMATION_COOLDOWN_MS,
   startManualAutomationCooldown,
   getManualAutomationCooldownRemainingMs,
   clearManualAutomationCooldown,
+  pruneExpiredAutomationCooldowns,
 };
