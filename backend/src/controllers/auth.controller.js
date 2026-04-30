@@ -29,6 +29,15 @@ const generateToken = (user) => {
   );
 };
 
+const getSmtpValue = (...keys) => {
+  for (const key of keys) {
+    const value = process.env[key];
+    if (value && String(value).trim()) return String(value).trim();
+  }
+
+  return '';
+};
+
 /**
  * Set HTTP-only, secure, sameSite cookie for auth token.
  * Protects against XSS attacks by preventing JavaScript access.
@@ -111,7 +120,7 @@ if (process.env.NODE_ENV !== 'test') {
 }
 
 const buildResetPasswordEmail = ({ code, email }) => {
-  const supportEmail = process.env.SMTP_FROM || process.env.SMTP_USER || 'GoShuttle Support';
+  const supportEmail = getSmtpValue('SMTP_FROM', 'SMTP_FROM_EMAIL', 'SMTP_USER') || 'GoShuttle Support';
   const safeCode = String(code).trim();
   const safeEmail = String(email).trim();
   const logoPath = path.resolve(__dirname, '../../../assets/images/logo.png');
@@ -200,14 +209,14 @@ const buildResetPasswordEmail = ({ code, email }) => {
 };
 
 const sendResetCodeEmail = async (email, code) => {
-  const smtpHost = process.env.SMTP_HOST;
-  const smtpPort = Number(process.env.SMTP_PORT || 587);
-  const smtpUser = process.env.SMTP_USER;
-  const smtpPass = process.env.SMTP_PASS;
-  const fromEmail = process.env.SMTP_FROM || process.env.SMTP_USER;
+  const smtpHost = getSmtpValue('SMTP_HOST');
+  const smtpPort = Number(getSmtpValue('SMTP_PORT') || 587);
+  const smtpUser = getSmtpValue('SMTP_USER');
+  const smtpPass = getSmtpValue('SMTP_PASS', 'SMTP_PASSWORD');
+  const fromEmail = getSmtpValue('SMTP_FROM', 'SMTP_FROM_EMAIL', 'SMTP_USER');
 
   if (!smtpHost || !smtpUser || !smtpPass || !fromEmail || !nodemailer) {
-    console.warn('[WARN] SMTP configuration missing. Email sending disabled. Configure SMTP_HOST, SMTP_USER, SMTP_PASS, and SMTP_FROM to enable.');
+    console.warn('[WARN] SMTP configuration missing. Email sending disabled. Configure SMTP_HOST, SMTP_USER, SMTP_PASS (or SMTP_PASSWORD), and SMTP_FROM (or SMTP_FROM_EMAIL) to enable.');
     return false;
   }
 

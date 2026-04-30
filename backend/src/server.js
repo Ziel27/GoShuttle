@@ -28,17 +28,27 @@ const validateEnvironment = () => {
     process.exit(1);
   }
 
+  const hasValue = (...keys) => keys.some((key) => {
+    const value = process.env[key];
+    return value && String(value).trim();
+  });
+
   // Check SMTP configuration for password reset emails
-  const smtpRequired = ['SMTP_HOST', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM'];
-  const missingSMTP = smtpRequired.filter(key => !process.env[key]);
+  const smtpChecks = [
+    { label: 'SMTP_HOST', keys: ['SMTP_HOST'] },
+    { label: 'SMTP_USER', keys: ['SMTP_USER'] },
+    { label: 'SMTP_PASS or SMTP_PASSWORD', keys: ['SMTP_PASS', 'SMTP_PASSWORD'] },
+    { label: 'SMTP_FROM or SMTP_FROM_EMAIL', keys: ['SMTP_FROM', 'SMTP_FROM_EMAIL'] },
+  ];
+  const missingSMTP = smtpChecks.filter(({ keys }) => !hasValue(...keys)).map(({ label }) => label);
 
   if (missingSMTP.length > 0) {
     console.warn(`⚠️  Missing SMTP configuration: ${missingSMTP.join(', ')}`);
     console.warn('   Password reset emails will NOT be sent. Configure these variables to enable:');
     console.warn('   - SMTP_HOST: Your SMTP server hostname');
     console.warn('   - SMTP_USER: SMTP username/email');
-    console.warn('   - SMTP_PASS: SMTP password');
-    console.warn('   - SMTP_FROM: Sender name/address, e.g. "GoShuttle Support <noreply@goshuttle.app>"');
+    console.warn('   - SMTP_PASS (or SMTP_PASSWORD): SMTP password');
+    console.warn('   - SMTP_FROM (or SMTP_FROM_EMAIL): Sender name/address, e.g. "GoShuttle Support <noreply@goshuttle.app>"');
     console.warn('   - SMTP_PORT (optional): Default is 587');
   }
 
