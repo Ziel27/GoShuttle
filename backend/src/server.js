@@ -28,9 +28,23 @@ const validateEnvironment = () => {
     process.exit(1);
   }
 
+  // Check SMTP configuration for password reset emails
+  const smtpRequired = ['SMTP_HOST', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM'];
+  const missingSMTP = smtpRequired.filter(key => !process.env[key]);
+
+  if (missingSMTP.length > 0) {
+    console.warn(`⚠️  Missing SMTP configuration: ${missingSMTP.join(', ')}`);
+    console.warn('   Password reset emails will NOT be sent. Configure these variables to enable:');
+    console.warn('   - SMTP_HOST: Your SMTP server hostname');
+    console.warn('   - SMTP_USER: SMTP username/email');
+    console.warn('   - SMTP_PASS: SMTP password');
+    console.warn('   - SMTP_FROM: Sender name/address, e.g. "GoShuttle Support <noreply@goshuttle.app>"');
+    console.warn('   - SMTP_PORT (optional): Default is 587');
+  }
+
   // Warn about missing optional variables in production
   if (process.env.NODE_ENV === 'production') {
-    const recommended = ['JWT_RESET_SECRET', 'CORS_ORIGIN', 'SMTP_HOST', 'SMTP_USER'];
+    const recommended = ['JWT_RESET_SECRET', 'CORS_ORIGIN'];
     const missingOptional = recommended.filter(key => !process.env[key]);
     if (missingOptional.length > 0) {
       console.warn(`⚠️  Missing recommended environment variables: ${missingOptional.join(', ')}`);
@@ -130,20 +144,10 @@ const io = new Server(server, {
 
 io.use(async (socket, next) => {
   try {
-    // Try to get token from cookies first (secure approach)
-    let token = socket.handshake.headers.cookie
-      ? socket.handshake.headers.cookie
-        .split('; ')
-        .find(c => c.startsWith('auth_token='))
-        ?.slice(11)
-      : null;
+    let token = socket.handshake.auth?.token || socket.handshake.headers.authorization;
 
-    // Fall back to auth token in handshake or Authorization header
-    if (!token) {
-      const rawToken = socket.handshake.auth?.token || socket.handshake.headers.authorization;
-      token = typeof rawToken === 'string' && rawToken.startsWith('Bearer ')
-        ? rawToken.slice(7)
-        : rawToken;
+    if (typeof token === 'string' && token.startsWith('Bearer ')) {
+      token = token.slice(7);
     }
 
     if (!token) {
