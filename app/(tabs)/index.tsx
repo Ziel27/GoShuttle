@@ -1,8 +1,8 @@
 import { ThemedText } from '@/components/themed-text';
 import { MapIndicator, MapLoadingPlaceholder } from '@/components/ui/home-map-primitives';
 import {
-  FixedDestinationChip,
-  type FixedDestinationOption,
+    FixedDestinationChip,
+    type FixedDestinationOption,
 } from '@/components/ui/home-screen-primitives';
 import { PremiumButton } from '@/components/ui/premium-button';
 import { SectionHeader } from '@/components/ui/section-header';
@@ -14,40 +14,40 @@ import { useThemeColor } from '@/hooks/use-theme-color';
 import { getCommunityById, getPhaseGeofences, type PhaseGeofence } from '@/services/community';
 import { syncOfflineBoardings } from '@/services/offline-boarding-queue';
 import {
-  AutomationDiagnostics,
-  listShuttles,
-  Shuttle,
-  updateShuttleLocation,
+    AutomationDiagnostics,
+    listShuttles,
+    Shuttle,
+    updateShuttleLocation,
 } from '@/services/shuttle';
 import { connectCommunitySocket } from '@/services/socket';
 import {
-  AssignedShuttle,
-  boardPassenger,
-  cancelPickupIntent,
-  createPickupIntent,
-  listOnboardDestinations,
-  listPickupIntents,
-  OnboardDestinationPassenger,
-  PickupIntent,
-  QueueReason,
-  unboardPassenger
+    AssignedShuttle,
+    boardPassenger,
+    cancelPickupIntent,
+    createPickupIntent,
+    listOnboardDestinations,
+    listPickupIntents,
+    OnboardDestinationPassenger,
+    PickupIntent,
+    QueueReason,
+    unboardPassenger
 } from '@/services/trip';
 
 
 import { useAuthStore } from '@/store/auth';
 import { usePreferencesStore } from '@/store/preferences';
 import {
-  describeBoardingReason,
-  describeUnboardingReason,
-  getDistanceMeters,
-  isExpiredIntent,
-  type PickupIntentEventPayload,
-  toCommunityIdString,
-  toMaxZoomOutRegionFromBoundary,
-  toPickupIntent,
-  toRegionFromBoundary,
-  toShuttleCoordinate,
-  upsertPickupIntent,
+    describeBoardingReason,
+    describeUnboardingReason,
+    getDistanceMeters,
+    isExpiredIntent,
+    type PickupIntentEventPayload,
+    toCommunityIdString,
+    toMaxZoomOutRegionFromBoundary,
+    toPickupIntent,
+    toRegionFromBoundary,
+    toShuttleCoordinate,
+    upsertPickupIntent,
 } from '@/utils/home-screen';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
@@ -2496,6 +2496,10 @@ export default function HomeScreen() {
                   <Pressable
                     style={[
                       styles.fareTypePill,
+                      !fareType || fareType !== 'standard' && {
+                        borderColor: colorScheme === 'dark' ? borderColor : AppPalette.slateBorder,
+                        backgroundColor: colorScheme === 'dark' ? AppPalette.darkSkyBg : AppPalette.slateBg,
+                      },
                       fareType === 'standard' && styles.fareTypePillActive,
                       fareType === 'standard' && {
                         borderColor: tint,
@@ -2537,10 +2541,14 @@ export default function HomeScreen() {
                   <Pressable
                     style={[
                       styles.fareTypePill,
+                      !fareType || fareType !== 'priority' && {
+                        borderColor: colorScheme === 'dark' ? borderColor : AppPalette.slateBorder,
+                        backgroundColor: colorScheme === 'dark' ? AppPalette.darkMintBg : AppPalette.slateBg,
+                      },
                       fareType === 'priority' && styles.fareTypePillActive,
                       fareType === 'priority' && {
                         borderColor: '#f59e0b',
-                        backgroundColor: colorScheme === 'dark' ? '#451a03' : '#fffbeb',
+                        backgroundColor: colorScheme === 'dark' ? '#5C3d1f' : '#fffbeb',
                       },
                     ]}
                     onPress={() => setFareType('priority')}
@@ -2580,7 +2588,7 @@ export default function HomeScreen() {
                         styles.fareTypeSkipBadge,
                         {
                           backgroundColor: fareType === 'priority'
-                            ? colorScheme === 'dark' ? '#78350f' : '#fef3c7'
+                            ? colorScheme === 'dark' ? '#6B4423' : '#fef3c7'
                             : colorScheme === 'dark' ? AppPalette.darkOverlaySoft : AppPalette.slateBg,
                           borderColor: fareType === 'priority' ? '#f59e0b' : AppPalette.slateBorder,
                         },
@@ -2589,7 +2597,7 @@ export default function HomeScreen() {
                       <ThemedText
                         style={[
                           styles.fareTypeSkipText,
-                          { color: fareType === 'priority' ? '#d97706' : mutedColor },
+                          { color: fareType === 'priority' ? '#fbbf24' : mutedColor },
                         ]}
                       >
                         ⚡ Skip queue
@@ -2726,19 +2734,19 @@ export default function HomeScreen() {
                           borderColor: fareType === 'priority'
                             ? (colorScheme === 'dark' ? '#fbbf24' : '#f59e0b')
                             : (colorScheme === 'dark' ? tint : tint),
-                          backgroundColor: colorScheme === 'dark' ? 'rgba(0,0,0,0.25)' : AppPalette.white,
+                          backgroundColor: colorScheme === 'dark' ? '#22283C' : AppPalette.white,
                         },
                       ]}
                     >
                       <Ionicons
                         name={fareType === 'priority' ? 'flash' : 'car-outline'}
                         size={11}
-                        color={fareType === 'priority' ? '#f59e0b' : tint}
+                        color={fareType === 'priority' ? '#fbbf24' : tint}
                       />
                       <ThemedText
                         style={[
                           styles.pickupActiveChipText,
-                          { color: fareType === 'priority' ? '#f59e0b' : tint },
+                          { color: fareType === 'priority' ? '#fbbf24' : tint },
                         ]}
                       >
                         {fareType === 'priority' ? 'Priority' : 'Standard'}

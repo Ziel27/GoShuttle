@@ -207,37 +207,43 @@ const sendResetCodeEmail = async (email, code) => {
   const fromEmail = process.env.SMTP_FROM || process.env.SMTP_USER;
 
   if (!smtpHost || !smtpUser || !smtpPass || !fromEmail || !nodemailer) {
+    console.warn('[WARN] SMTP configuration missing. Email sending disabled. Configure SMTP_HOST, SMTP_USER, SMTP_PASS, and SMTP_FROM to enable.');
     return false;
   }
 
-  const transporter = nodemailer.createTransport({
-    host: smtpHost,
-    port: smtpPort,
-    secure: smtpPort === 465,
-    auth: {
-      user: smtpUser,
-      pass: smtpPass,
-    },
-  });
-
-  const message = buildResetPasswordEmail({ code, email });
-
-  await transporter.sendMail({
-    from: fromEmail,
-    to: email,
-    subject: 'Your GoShuttle password reset code',
-    text: message.text,
-    html: message.html,
-    attachments: [
-      {
-        filename: 'logo.png',
-        path: logoPath,
-        cid: 'goshuttle-logo',
+  try {
+    const transporter = nodemailer.createTransport({
+      host: smtpHost,
+      port: smtpPort,
+      secure: smtpPort === 465,
+      auth: {
+        user: smtpUser,
+        pass: smtpPass,
       },
-    ],
-  });
+    });
 
-  return true;
+    const message = buildResetPasswordEmail({ code, email });
+
+    await transporter.sendMail({
+      from: fromEmail,
+      to: email,
+      subject: 'Your GoShuttle password reset code',
+      text: message.text,
+      html: message.html,
+      attachments: [
+        {
+          filename: 'logo.png',
+          path: logoPath,
+          cid: 'goshuttle-logo',
+        },
+      ],
+    });
+
+    return true;
+  } catch (error) {
+    console.error('[ERROR] Failed to send password reset email to:', email, 'Error:', error.message);
+    return false;
+  }
 };
 
 /**
