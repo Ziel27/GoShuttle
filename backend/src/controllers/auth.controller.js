@@ -231,6 +231,7 @@ const sendResetCodeEmail = async (email, code) => {
       },
     });
 
+    const logoPath = path.resolve(__dirname, '../../../assets/images/logo.png');
     const message = buildResetPasswordEmail({ code, email });
 
     await transporter.sendMail({
