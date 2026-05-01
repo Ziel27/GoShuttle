@@ -13,10 +13,15 @@ export type PickupIntent = {
   _id: string;
   communityId: string;
   passengerId: string;
+  bookingOwner?: string | null;
   location: {
     type: 'Point';
     coordinates: [number, number];
   };
+  pickupLocation?: {
+    type: 'Point';
+    coordinates: [number, number];
+  } | null;
   destinationType: 'fixed' | 'home';
   destinationLabel: string;
   destinationLocation: {
@@ -27,6 +32,11 @@ export type PickupIntent = {
   fareType: 'standard' | 'priority';
   status: 'pending' | 'claimed' | 'dispatched' | 'queued' | 'bumped' | 'expired' | 'cancelled';
   expiresAt: string;
+  passengerManifest?: Array<{
+    passengerId?: string | null;
+    name?: string | null;
+    phone?: string | null;
+  }>;
 };
 
 export type AssignedShuttle = {
@@ -163,6 +173,17 @@ type PickupDestinationInput =
   | { type: 'fixed'; fixedDestinationId: string }
   | { type: 'home'; latitude: number; longitude: number; label?: string };
 
+export type PassengerManifestEntry = {
+  passengerId?: string;
+  name?: string;
+  phone?: string;
+};
+
+export type PickupLocationInput = {
+  latitude: number;
+  longitude: number;
+};
+
 export type QueueReason = 'no_shuttles_on_duty' | 'all_shuttles_full' | 'dispatch_race' | null;
 
 /**
@@ -173,7 +194,12 @@ export const createPickupIntent = async (
   latitude: number,
   longitude: number,
   destination: PickupDestinationInput,
-  fareType: 'standard' | 'priority' = 'standard'
+  fareType: 'standard' | 'priority' = 'standard',
+  detectedPhase?: string | null,
+  booking?: {
+    pickupLocation?: PickupLocationInput;
+    passengerManifest?: PassengerManifestEntry[];
+  }
 ): Promise<{
   request: PickupIntent;
   rideRequestId: string;
@@ -189,6 +215,9 @@ export const createPickupIntent = async (
     longitude,
     destination,
     fareType,
+    detectedPhase,
+    ...(booking?.pickupLocation ? { pickupLocation: booking.pickupLocation } : {}),
+    ...(booking?.passengerManifest?.length ? { passengerManifest: booking.passengerManifest } : {}),
   });
 
   return {

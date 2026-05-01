@@ -15,6 +15,13 @@ type GeofenceMapProps = {
     coordinates: number[][][];
     color?: string;
   }>;
+  /** Optional read-only markers (e.g. fixed destinations). */
+  overlayPoints?: Array<{
+    name?: string;
+    coordinates: [number, number];
+    color?: string;
+    radius?: number;
+  }>;
   /** Exposed so the parent can programmatically fit the map to the geofence. */
   onMapReady?: (controls: { fitGeofence: () => void; fitReference: () => void }) => void;
 };
@@ -169,7 +176,7 @@ const enableLayerEditing = (layer: L.Layer) => {
   });
 };
 
-export const GeofenceMap = ({ coordinates, onChange, referenceCoordinates, overlayPolygons, onMapReady }: GeofenceMapProps) => {
+export const GeofenceMap = ({ coordinates, onChange, referenceCoordinates, overlayPolygons, overlayPoints, onMapReady }: GeofenceMapProps) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
   const drawnItemsRef = useRef<L.FeatureGroup | null>(null);
@@ -205,6 +212,16 @@ export const GeofenceMap = ({ coordinates, onChange, referenceCoordinates, overl
         coordinates: normalizeCoordinates(item.coordinates),
       })),
     [overlayPolygons]
+  );
+  const normalizedOverlayPoints = useMemo(
+    () =>
+      (overlayPoints || []).map((item) => ({
+        name: item.name || '',
+        color: item.color || '#94a3b8',
+        coordinates: item.coordinates,
+        radius: item.radius || 80,
+      })),
+    [overlayPoints]
   );
   const serializedCoordinates = useMemo(() => serializeCoordinates(normalizedCoordinates), [normalizedCoordinates]);
   const latestSerializedRef = useRef(serializedCoordinates);
@@ -516,7 +533,38 @@ export const GeofenceMap = ({ coordinates, onChange, referenceCoordinates, overl
         overlayLayersRef.current.push(label);
       }
     });
-  }, [mapReady, normalizedOverlayPolygons]);
+
+    normalizedOverlayPoints.forEach((item) => {
+      const latLng: [number, number] = [item.coordinates[1], item.coordinates[0]];
+      const safeColor = /^#[0-9a-fA-F]{6}$/.test(item.color) ? item.color : '#94a3b8';
+      
+      const circle = L.circle(latLng, {
+        color: safeColor,
+        weight: 2,
+        fillColor: safeColor,
+        fillOpacity: 0.15,
+        radius: item.radius,
+        interactive: false,
+      });
+      circle.addTo(map);
+      overlayLayersRef.current.push(circle);
+
+      if (item.name) {
+        const label = L.tooltip({
+          permanent: true,
+          direction: 'top',
+          offset: [0, -8],
+          className: 'phase-geofence-label',
+        })
+          .setLatLng(latLng)
+          .setContent(
+            `<span class="phase-geofence-label__dot" style="background:${safeColor};"></span>${item.name}`
+          );
+        label.addTo(map);
+        overlayLayersRef.current.push(label);
+      }
+    });
+  }, [mapReady, normalizedOverlayPolygons, normalizedOverlayPoints]);
 
   return (
     <div className="space-y-2">

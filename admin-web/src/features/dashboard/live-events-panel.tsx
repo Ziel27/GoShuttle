@@ -35,6 +35,15 @@ export const LiveEventsPanel = ({
                   <FiActivity className="mt-0.5 h-4 w-4 text-emerald-600" />
                   <span>{event.label}</span>
                 </p>
+                {event.details && event.details.length > 0 ? (
+                  <ul className="mt-2 space-y-1 pl-6 text-xs text-slate-600">
+                    {event.details.map((detail) => (
+                      <li key={detail} className="list-disc">
+                        {detail}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
                 <p className="mt-1 text-xs text-muted-foreground">{event.dateLabel}</p>
               </li>
             ))}

@@ -19,6 +19,8 @@ export interface Community {
       type: 'Point';
       coordinates: [number, number];
     };
+    pickupRadiusMeters?: number;
+    color?: string;
     order?: number;
     isActive?: boolean;
   }[];

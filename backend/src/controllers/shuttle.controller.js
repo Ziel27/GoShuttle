@@ -6,9 +6,12 @@ const Trip = require('../models/Trip');
 const Community = require('../models/Community');
 const PickupRequest = require('../models/PickupRequest');
 const PassengerRide = require('../models/PassengerRide');
+const RideRequest = require('../models/RideRequest');
 const { isLocationInBoundary } = require('../services/geofence');
+const { completeRideRequestsForPassengers } = require('../services/ride-request-lifecycle');
 const { getManualAutomationCooldownRemainingMs } = require('../services/automation-cooldown');
 const { normalizePhase, buildPhaseAwareRequestQuery } = require('../utils/phase');
+const { retryWaitingQueue } = require('../services/dispatch.service');
 
 const AUTO_PICKUP_RADIUS_METERS = 140;
 const AUTO_UNBOARD_RADIUS_METERS = 20;
@@ -202,36 +205,99 @@ const autoBoardNearbyPickups = async ({ session, shuttle, driverId }) => {
   }
 
   const boardedAt = new Date();
-  await PassengerRide.insertMany(
-    nearbyRequests.map((request) => ({
-      communityId: shuttle.communityId,
-      passengerId: request.passengerId,
-      shuttleId: shuttle._id,
-      driverId,
-      tripId: activeTrip._id,
-      fareAtBoarding: activeTrip.fareAtTime,
-      pickupLocation: request.location,
-      destinationType: request.destinationType || 'fixed',
-      destinationLabel: request.destinationLabel || 'Destination',
-      destinationLocation: request.destinationLocation || request.location,
-      requestedAt: request.createdAt,
-      boardedAt,
-      status: 'boarded',
-    })),
-    { session }
-  );
+  const passengerRidesToInsert = [];
+  for (const request of nearbyRequests) {
+    // Prefer authoritative RideRequest documents linked to this pickup request
+    const linkedRideRequests = await RideRequest.find({ pickupRequestId: request._id, status: 'pending' }).session(session);
+    if (linkedRideRequests && linkedRideRequests.length > 0) {
+      for (const rr of linkedRideRequests) {
+        passengerRidesToInsert.push({
+          communityId: shuttle.communityId,
+          passengerId: rr.passengerId || null,
+          passengerName: rr.passengerName || null,
+          passengerPhone: rr.passengerPhone || null,
+          shuttleId: shuttle._id,
+          driverId,
+          tripId: activeTrip._id,
+          rideRequestId: rr._id,
+          fareAtBoarding: activeTrip.fareAtTime,
+          pickupLocation: rr.pickupLocation || request.pickupLocation || request.location,
+          destinationType: rr.destination?.type || request.destinationType || 'fixed',
+          destinationLabel: rr.destination?.label || request.destinationLabel || 'Destination',
+          destinationLocation: rr.destination?.location || request.destinationLocation,
+          requestedAt: rr.createdAt || request.createdAt,
+          boardedAt,
+          status: 'boarded',
+        });
+      }
+    } else if (Array.isArray(request.passengerManifest) && request.passengerManifest.length > 0) {
+      for (const entry of request.passengerManifest) {
+        passengerRidesToInsert.push({
+          communityId: shuttle.communityId,
+          passengerId: entry.passengerId || null,
+          passengerName: entry.name || null,
+          passengerPhone: entry.phone || null,
+          shuttleId: shuttle._id,
+          driverId,
+          tripId: activeTrip._id,
+          fareAtBoarding: activeTrip.fareAtTime,
+          pickupLocation: request.pickupLocation || request.location,
+          destinationType: request.destinationType || 'fixed',
+          destinationLabel: request.destinationLabel || 'Destination',
+          destinationLocation: request.destinationLocation,
+          requestedAt: request.createdAt,
+          boardedAt,
+          status: 'boarded',
+        });
+      }
+    } else {
+      passengerRidesToInsert.push({
+        communityId: shuttle.communityId,
+        passengerId: request.passengerId,
+        shuttleId: shuttle._id,
+        driverId,
+        tripId: activeTrip._id,
+        fareAtBoarding: activeTrip.fareAtTime,
+        pickupLocation: request.pickupLocation || request.location,
+        destinationType: request.destinationType || 'fixed',
+        destinationLabel: request.destinationLabel || 'Destination',
+        destinationLocation: request.destinationLocation,
+        requestedAt: request.createdAt,
+        boardedAt,
+        status: 'boarded',
+      });
+    }
+  }
 
-  activeTrip.passengersBoarded += nearbyRequests.length;
+  if (passengerRidesToInsert.length > 0) {
+    await PassengerRide.insertMany(passengerRidesToInsert, { session });
+  }
+  const insertedCount = passengerRidesToInsert.length;
+
+  // Persist boarded status back to RideRequest documents when we have linked rideRequestIds
+  const linkedRideRequestIds = passengerRidesToInsert
+    .map((r) => r.rideRequestId)
+    .filter(Boolean);
+
+  if (linkedRideRequestIds.length > 0) {
+    const boardedAtForUpdate = boardedAt || new Date();
+    await RideRequest.updateMany(
+      { _id: { $in: linkedRideRequestIds }, status: 'pending' },
+      { $set: { status: 'boarded', shuttleId: shuttle._id, tripId: activeTrip._id, boardedAt: boardedAtForUpdate } },
+      { session }
+    );
+  }
+  activeTrip.passengersBoarded += insertedCount;
   activeTrip.revenueCollected = activeTrip.passengersBoarded * activeTrip.fareAtTime;
   await activeTrip.save({ session });
 
-  shuttle.currentCapacity += nearbyRequests.length;
+  shuttle.currentCapacity += insertedCount;
   if (shuttle.status === 'idle') {
     shuttle.status = 'en_route';
   }
 
   return {
-    autoBoardedCount: nearbyRequests.length,
+    autoBoardedCount: insertedCount,
     trip: activeTrip,
     claimedRequests: nearbyRequests.map((request) => ({
       requestId: request._id,
@@ -262,7 +328,7 @@ const autoUnboardArrivedPassengers = async ({ session, shuttle }) => {
       },
     },
   })
-    .select('_id')
+    .select('_id passengerId rideRequestId')
     .session(session);
 
   if (arrivedRides.length === 0) {
@@ -283,6 +349,26 @@ const autoUnboardArrivedPassengers = async ({ session, shuttle }) => {
     },
     { session }
   );
+
+  const arrivedPassengerIds = arrivedRides.map((ride) => ride.passengerId).filter(Boolean);
+  const arrivedRideRequestIds = arrivedRides.map((ride) => ride.rideRequestId).filter(Boolean);
+
+  if (arrivedRideRequestIds.length > 0) {
+    await completeRideRequestsForPassengers({
+      rideRequestIds: arrivedRideRequestIds,
+      completedAt: now,
+      session,
+    });
+  }
+
+  if (arrivedPassengerIds.length > 0) {
+    await completeRideRequestsForPassengers({
+      tripId: activeTrip._id,
+      passengerIds: arrivedPassengerIds,
+      completedAt: now,
+      session,
+    });
+  }
 
   const effectiveUnboardCount = unboardedRideIds.length;
   shuttle.currentCapacity = Math.max(0, shuttle.currentCapacity - effectiveUnboardCount);
@@ -707,6 +793,13 @@ const updateShuttleLocation = async (req, res) => {
           currentCapacity: shuttle.currentCapacity,
           maxCapacity: shuttle.maxCapacity,
           rideIds: autoUnboardingResult.unboardedRideIds,
+        });
+
+        // DISPATCH: Seats freed by auto-unboard — retry waiting queue so queued passengers get dispatched
+        setImmediate(() => {
+          retryWaitingQueue(shuttle.communityId, io).catch((err) =>
+            console.error('[updateShuttleLocation] retryWaitingQueue after auto-unboard error:', err)
+          );
         });
       }
 

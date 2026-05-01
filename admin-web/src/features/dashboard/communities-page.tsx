@@ -8,16 +8,16 @@ import { useAuth } from '@/context/auth-context';
 import { GeofenceMap } from '@/features/dashboard/geofence-map';
 import { LocationPickerMap } from '@/features/dashboard/location-picker-map';
 import {
-  archiveFixedDestination,
-  archivePhaseGeofence,
-  createFixedDestination,
-  createPhaseGeofence,
-  fetchCommunityById,
-  fetchFixedDestinations,
-  fetchPhaseGeofences,
-  updateCommunity,
-  updateFixedDestination,
-  updatePhaseGeofence,
+    archiveFixedDestination,
+    archivePhaseGeofence,
+    createFixedDestination,
+    createPhaseGeofence,
+    fetchCommunityById,
+    fetchFixedDestinations,
+    fetchPhaseGeofences,
+    updateCommunity,
+    updateFixedDestination,
+    updatePhaseGeofence,
 } from '@/lib/admin-api';
 import { communityIdFromUnknown } from '@/lib/format';
 import type { Community } from '@/types/domain';
@@ -62,6 +62,20 @@ const parseLngLat = (point: unknown): [number, number] | null => {
 };
 
 const isHexColor = (value: string) => /^#[0-9a-fA-F]{6}$/.test(String(value || '').trim());
+const DEFAULT_FIXED_DESTINATION_PICKUP_RADIUS_METERS = 80;
+
+const parsePickupRadiusMeters = (value: string) => {
+  if (!String(value || '').trim()) {
+    return DEFAULT_FIXED_DESTINATION_PICKUP_RADIUS_METERS;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 1 || parsed > 10000) {
+    return null;
+  }
+
+  return Math.round(parsed);
+};
 
 const isPhaseRingInsideCommunityRing = (phaseRing: number[][], communityRing: number[][]) =>
   phaseRing.every((point) => {
@@ -107,12 +121,16 @@ export const CommunitiesPage = () => {
   const [destinationName, setDestinationName] = useState('');
   const [destinationLatitude, setDestinationLatitude] = useState('');
   const [destinationLongitude, setDestinationLongitude] = useState('');
+  const [destinationPickupRadiusInput, setDestinationPickupRadiusInput] = useState('');
+  const [destinationColorInput, setDestinationColorInput] = useState('#94a3b8');
   const [destinationInputMode, setDestinationInputMode] = useState<'manual' | 'map'>('manual');
   const [destinationSaving, setDestinationSaving] = useState(false);
   const [editingDestinationId, setEditingDestinationId] = useState('');
   const [editingDestinationName, setEditingDestinationName] = useState('');
   const [editingDestinationLatitude, setEditingDestinationLatitude] = useState('');
   const [editingDestinationLongitude, setEditingDestinationLongitude] = useState('');
+  const [editingDestinationPickupRadiusInput, setEditingDestinationPickupRadiusInput] = useState(String(DEFAULT_FIXED_DESTINATION_PICKUP_RADIUS_METERS));
+  const [editingDestinationColor, setEditingDestinationColor] = useState('#94a3b8');
   const [destinationUpdating, setDestinationUpdating] = useState(false);
   const [phaseGeofences, setPhaseGeofences] = useState<PhaseGeofence[]>([]);
   const [phaseNameInput, setPhaseNameInput] = useState('');
@@ -201,12 +219,13 @@ export const CommunitiesPage = () => {
     const normalized = normalizeCoordinates(coordinates);
 
     const normalizedDestinationName = destinationName.trim();
+    const parsedDestinationRadius = parsePickupRadiusMeters(destinationPickupRadiusInput);
     const hasPendingDestinationDraft =
       normalizedDestinationName.length > 0 ||
       destinationLatitude.trim().length > 0 ||
       destinationLongitude.trim().length > 0;
 
-    let destinationPayload: { name: string; latitude: number; longitude: number } | null = null;
+    let destinationPayload: { name: string; latitude: number; longitude: number; pickupRadiusMeters: number; color?: string } | null = null;
     if (hasPendingDestinationDraft) {
       if (!normalizedDestinationName) {
         setError('Destination name is required when destination coordinates are provided.');
@@ -225,10 +244,8 @@ export const CommunitiesPage = () => {
         return;
       }
 
-      // Validate destination is inside the geofence
-      const geofenceRing = normalized[0] || [];
-      if (geofenceRing.length >= 4 && !isPointInsideRing(latitude, longitude, geofenceRing)) {
-        setError('Destination must be inside the geofence boundary.');
+      if (parsedDestinationRadius === null) {
+        setError('Pickup radius must be between 1 and 10000 meters.');
         return;
       }
 
@@ -236,6 +253,8 @@ export const CommunitiesPage = () => {
         name: normalizedDestinationName,
         latitude,
         longitude,
+        pickupRadiusMeters: parsedDestinationRadius,
+        color: destinationColorInput,
       };
     }
 
@@ -274,6 +293,8 @@ export const CommunitiesPage = () => {
         setDestinationName('');
         setDestinationLatitude('');
         setDestinationLongitude('');
+        setDestinationPickupRadiusInput('');
+        setDestinationColorInput('#94a3b8');
         destinationSaved = true;
       }
 
@@ -313,6 +334,8 @@ export const CommunitiesPage = () => {
     setEditingDestinationName(destination.name);
     setEditingDestinationLatitude(String(destination.location.coordinates[1]));
     setEditingDestinationLongitude(String(destination.location.coordinates[0]));
+    setEditingDestinationPickupRadiusInput(String(destination.pickupRadiusMeters ?? DEFAULT_FIXED_DESTINATION_PICKUP_RADIUS_METERS));
+    setEditingDestinationColor(destination.color || '#94a3b8');
     setError('');
     setNotice('');
   };
@@ -322,6 +345,8 @@ export const CommunitiesPage = () => {
     setEditingDestinationName('');
     setEditingDestinationLatitude('');
     setEditingDestinationLongitude('');
+    setEditingDestinationPickupRadiusInput(String(DEFAULT_FIXED_DESTINATION_PICKUP_RADIUS_METERS));
+    setEditingDestinationColor('#94a3b8');
   };
 
   const handleUpdateDestination = async () => {
@@ -345,10 +370,9 @@ export const CommunitiesPage = () => {
       return;
     }
 
-    // Validate destination is inside the geofence
-    const geofenceRing = normalizedCoordinates[0] || [];
-    if (geofenceRing.length >= 4 && !isPointInsideRing(latitude, longitude, geofenceRing)) {
-      setError('Destination must be inside the geofence boundary.');
+    const parsedRadius = parsePickupRadiusMeters(editingDestinationPickupRadiusInput);
+    if (parsedRadius === null) {
+      setError('Pickup radius must be between 1 and 10000 meters.');
       return;
     }
 
@@ -360,6 +384,8 @@ export const CommunitiesPage = () => {
         name: normalizedName,
         latitude,
         longitude,
+        pickupRadiusMeters: parsedRadius,
+        color: editingDestinationColor,
       });
 
       setDestinations((prev) =>
@@ -394,6 +420,12 @@ export const CommunitiesPage = () => {
     name: phase.name,
     coordinates: phase.boundaries?.coordinates || [],
     color: phase.color || '#6366f1',
+  }));
+  const fixedDestinationOverlayPoints = destinations.map((dest) => ({
+    name: dest.name,
+    coordinates: dest.location.coordinates,
+    color: dest.color || '#94a3b8',
+    radius: dest.pickupRadiusMeters || DEFAULT_FIXED_DESTINATION_PICKUP_RADIUS_METERS,
   }));
 
   const handleCreatePhase = async () => {
@@ -642,6 +674,7 @@ export const CommunitiesPage = () => {
                 <GeofenceMap
                   coordinates={coordinates}
                   overlayPolygons={phaseOverlayPolygons}
+                  overlayPoints={fixedDestinationOverlayPoints}
                   onChange={(nextCoordinates) => setCoordinates(normalizeCoordinates(nextCoordinates))}
                   onMapReady={(controls) => {
                     fitGeofenceRef.current = controls.fitGeofence;
@@ -657,12 +690,33 @@ export const CommunitiesPage = () => {
 
             <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
               <p className="text-sm font-medium text-slate-900">Fixed Destinations</p>
-              <div className="grid gap-2 md:grid-cols-1">
+              <div className="grid gap-2 md:grid-cols-2">
                 <Input
                   placeholder="Destination name"
                   value={destinationName}
                   onChange={(e) => setDestinationName(e.target.value)}
                 />
+                <Input
+                  type="color"
+                  value={destinationColorInput}
+                  onChange={(e) => setDestinationColorInput(e.target.value)}
+                  aria-label="Destination color picker"
+                />
+              </div>
+
+              <div className="grid gap-2 md:grid-cols-2">
+                <Input
+                  type="number"
+                  min="1"
+                  max="10000"
+                  step="1"
+                  placeholder="Pickup radius (meters)"
+                  value={destinationPickupRadiusInput}
+                  onChange={(e) => setDestinationPickupRadiusInput(e.target.value)}
+                />
+                <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+                  Passengers can request pickup from within this radius. Fixed destinations may be placed outside the community boundary.
+                </div>
               </div>
 
               <div className="flex flex-wrap gap-2">
@@ -720,11 +774,17 @@ export const CommunitiesPage = () => {
                     <div key={destination._id} className="space-y-2 rounded border border-slate-200 bg-white p-3">
                       {editingDestinationId === destination._id ? (
                         <>
-                          <div className="grid gap-2 md:grid-cols-3">
+                            <div className="grid gap-2 md:grid-cols-5">
                             <Input
                               value={editingDestinationName}
                               onChange={(event) => setEditingDestinationName(event.target.value)}
                               placeholder="Destination name"
+                            />
+                            <Input
+                              type="color"
+                              value={editingDestinationColor}
+                              onChange={(event) => setEditingDestinationColor(event.target.value)}
+                              aria-label="Edit destination color picker"
                             />
                             <Input
                               value={editingDestinationLatitude}
@@ -735,6 +795,15 @@ export const CommunitiesPage = () => {
                               value={editingDestinationLongitude}
                               onChange={(event) => setEditingDestinationLongitude(event.target.value)}
                               placeholder="Longitude"
+                            />
+                            <Input
+                              type="number"
+                              min="1"
+                              max="10000"
+                              step="1"
+                              value={editingDestinationPickupRadiusInput}
+                              onChange={(event) => setEditingDestinationPickupRadiusInput(event.target.value)}
+                              placeholder="Pickup radius (m)"
                             />
                           </div>
                           <div className="flex flex-wrap justify-end gap-2">
@@ -755,11 +824,20 @@ export const CommunitiesPage = () => {
                         </>
                       ) : (
                         <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <p className="text-sm font-medium text-slate-900">{destination.name}</p>
+                          <div className="flex items-start gap-2">
+                            <span
+                              className="mt-1 inline-block h-3 w-3 rounded-full border border-slate-300 flex-shrink-0"
+                              style={{ backgroundColor: destination.color || '#94a3b8' }}
+                            />
+                            <div>
+                              <p className="text-sm font-medium text-slate-900">{destination.name}</p>
                             <p className="text-xs text-slate-500">
                               {destination.location.coordinates[1]}, {destination.location.coordinates[0]}
                             </p>
+                            <p className="text-xs text-slate-500">
+                              Pickup radius: {destination.pickupRadiusMeters ?? DEFAULT_FIXED_DESTINATION_PICKUP_RADIUS_METERS} m
+                            </p>
+                            </div>
                           </div>
                           <div className="flex flex-wrap gap-2">
                             <Button variant="outline" onClick={() => startEditingDestination(destination)}>
@@ -800,6 +878,7 @@ export const CommunitiesPage = () => {
                   coordinates={phaseCoordinates}
                   referenceCoordinates={normalizedCoordinates}
                   overlayPolygons={phaseOverlayPolygons}
+                  overlayPoints={fixedDestinationOverlayPoints}
                   onChange={(nextCoordinates) => setPhaseCoordinates(normalizeCoordinates(nextCoordinates))}
                   onMapReady={(controls) => {
                     fitCreatePhaseCommunityRef.current = controls.fitReference;
@@ -853,6 +932,7 @@ export const CommunitiesPage = () => {
                               coordinates={editingPhaseCoordinates}
                               referenceCoordinates={normalizedCoordinates}
                               overlayPolygons={phaseOverlayPolygons}
+                              overlayPoints={fixedDestinationOverlayPoints}
                               onChange={(nextCoordinates) => setEditingPhaseCoordinates(normalizeCoordinates(nextCoordinates))}
                               onMapReady={(controls) => {
                                 fitEditPhaseCommunityRef.current = controls.fitReference;

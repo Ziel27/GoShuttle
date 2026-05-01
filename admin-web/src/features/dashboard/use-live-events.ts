@@ -12,6 +12,36 @@ const makeEvent = (label: string): LiveEvent => ({
   createdAt: Date.now(),
 });
 
+const formatPickupIntentEvent = (payload: {
+  passengerId?: string;
+  passengerManifest?: Array<{ name?: string | null; phone?: string | null }>;
+  destinationType?: string;
+  destinationLabel?: string;
+  fareType?: string;
+}) => {
+  const guestCount = payload.passengerManifest?.length || 0;
+  const label = `Pickup request${guestCount > 0 ? ` with ${guestCount} guest${guestCount > 1 ? 's' : ''}` : ''}`;
+  const details: string[] = [];
+
+  if (payload.destinationType || payload.destinationLabel) {
+    details.push(`${payload.destinationType || 'destination'} · ${payload.destinationLabel || 'Unknown'}`);
+  }
+
+  if (payload.fareType) {
+    details.push(`Fare: ${payload.fareType}`);
+  }
+
+  if (guestCount > 0) {
+    for (const guest of payload.passengerManifest || []) {
+      const chunks = [guest.name || 'Guest'];
+      if (guest.phone) chunks.push(guest.phone);
+      details.push(chunks.join(' · '));
+    }
+  }
+
+  return { label, details };
+};
+
 export const useLiveEvents = (communityId: string) => {
   const [events, setEvents] = useState<LiveEvent[]>([]);
   const [connected, setConnected] = useState(false);
@@ -53,6 +83,22 @@ export const useLiveEvents = (communityId: string) => {
       );
     };
 
+    const onPickupIntent = (payload: {
+      passengerId?: string;
+      passengerManifest?: Array<{ name?: string | null; phone?: string | null }>;
+      destinationType?: string;
+      destinationLabel?: string;
+      fareType?: string;
+    }) => {
+      const formatted = formatPickupIntentEvent(payload);
+      append({
+        id: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
+        label: formatted.label,
+        details: formatted.details,
+        createdAt: Date.now(),
+      });
+    };
+
     const onCapacityUpdated = (payload: {
       shuttleId?: string;
       currentCapacity?: number;
@@ -88,6 +134,7 @@ export const useLiveEvents = (communityId: string) => {
     socket.on('connect_error', onConnectError);
     socket.on('trip:passenger-boarded', onPassengerBoarded);
     socket.on('trip:passenger-unboarded', onPassengerUnboarded);
+    socket.on('trip:pickup-intent', onPickupIntent);
     socket.on('shuttle:capacity-updated', onCapacityUpdated);
     socket.on('shuttle:location-updated', onLocationUpdated);
 
@@ -97,6 +144,7 @@ export const useLiveEvents = (communityId: string) => {
       socket.off('connect_error', onConnectError);
       socket.off('trip:passenger-boarded', onPassengerBoarded);
       socket.off('trip:passenger-unboarded', onPassengerUnboarded);
+      socket.off('trip:pickup-intent', onPickupIntent);
       socket.off('shuttle:capacity-updated', onCapacityUpdated);
       socket.off('shuttle:location-updated', onLocationUpdated);
       disconnectAdminSocket();

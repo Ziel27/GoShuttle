@@ -8,7 +8,8 @@ const PassengerRide = require('../models/PassengerRide');
 const User = require('../models/User');
 const ShiftRemittance = require('../models/ShiftRemittance');
 const RideRequest = require('../models/RideRequest');
-const { isLocationInBoundary } = require('../services/geofence');
+const { distanceMeters } = require('../services/geofence');
+const { completeRideRequestsForPassengers } = require('../services/ride-request-lifecycle');
 const { startManualAutomationCooldown } = require('../services/automation-cooldown');
 const { uploadReceiptImage } = require('../services/cloudinary');
 const { findAndDispatch, releaseAndRetry, retryWaitingQueue, releasePendingSlot } = require('../services/dispatch.service');
@@ -20,6 +21,7 @@ const {
 
 
 const MAX_REMITTANCE_AMOUNT = 1000000;
+const DEFAULT_FIXED_DESTINATION_PICKUP_RADIUS_METERS = 80;
 
 const isPlatformAdmin = (req) => req.user?.role === 'admin';
 
@@ -83,6 +85,84 @@ const parseMoney = (value) => {
   }
 
   return Number(parsed.toFixed(2));
+};
+
+const getFixedDestinationPickupRadiusMeters = (destination) => {
+  const radius = Number(destination?.pickupRadiusMeters);
+  if (!Number.isFinite(radius) || radius <= 0) {
+    return DEFAULT_FIXED_DESTINATION_PICKUP_RADIUS_METERS;
+  }
+
+  return radius;
+};
+
+const findNearbyHomeDestination = (homeDestination, latitude, longitude) => {
+  const coordinates = homeDestination?.location?.coordinates;
+  if (!Array.isArray(coordinates) || coordinates.length !== 2) {
+    return null;
+  }
+
+  const homePoint = {
+    latitude: Number(coordinates[1]),
+    longitude: Number(coordinates[0]),
+  };
+
+  const distance = distanceMeters({ latitude, longitude }, homePoint);
+  if (distance > DEFAULT_FIXED_DESTINATION_PICKUP_RADIUS_METERS) {
+    return null;
+  }
+
+  return {
+    type: 'home',
+    label: homeDestination?.label?.trim() || 'Home address',
+  };
+};
+
+const findNearbyFixedDestination = (fixedDestinations, latitude, longitude) => {
+  const pickupPoint = { latitude, longitude };
+  let nearestDestination = null;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+
+  for (const destination of fixedDestinations || []) {
+    if (destination?.isActive === false) continue;
+
+    const coordinates = destination?.location?.coordinates;
+    if (!Array.isArray(coordinates) || coordinates.length !== 2) continue;
+
+    const destinationPoint = {
+      latitude: Number(coordinates[1]),
+      longitude: Number(coordinates[0]),
+    };
+
+    const radiusMeters = getFixedDestinationPickupRadiusMeters(destination);
+    const distance = distanceMeters(pickupPoint, destinationPoint);
+    if (distance > radiusMeters || distance >= nearestDistance) continue;
+
+    nearestDistance = distance;
+    nearestDestination = destination;
+  }
+
+  return nearestDestination;
+};
+
+const detectPickupOrigin = ({ homeDestination, fixedDestinations, latitude, longitude }) => {
+  const nearbyHome = findNearbyHomeDestination(homeDestination, latitude, longitude);
+  if (nearbyHome) {
+    return nearbyHome;
+  }
+
+  const nearbyFixed = findNearbyFixedDestination(fixedDestinations, latitude, longitude);
+  if (nearbyFixed) {
+    return {
+      type: 'fixed',
+      label: nearbyFixed.name,
+    };
+  }
+
+  return {
+    type: 'unknown',
+    label: 'Current pickup location not matched to Home or a fixed stop yet.',
+  };
 };
 
 const parseDestinationPayload = (destination) => {
@@ -362,24 +442,75 @@ const passengerBoard = async (req, res) => {
     if (pendingRequests.length > 0) {
       const boardedAt = new Date();
 
-      await PassengerRide.insertMany(
-        pendingRequests.map((request) => ({
-          communityId: shuttle.communityId,
-          passengerId: request.passengerId,
-          shuttleId: shuttle._id,
-          driverId: req.user._id,
-          tripId: activeTrip._id,
-          fareAtBoarding: activeTrip.fareAtTime,
-          pickupLocation: request.location,
-          destinationType: request.destinationType || 'fixed',
-          destinationLabel: request.destinationLabel || 'Destination',
-          destinationLocation: request.destinationLocation || request.location,
-          requestedAt: request.createdAt,
-          boardedAt,
-          status: 'boarded',
-        })),
-        { session }
-      );
+      const passengerRidesToInsert = [];
+      for (const request of pendingRequests) {
+        // Prefer authoritative RideRequest documents linked to this pickup request so
+        // we accurately create PassengerRide rows and keep linkage to the audit ledger.
+        const linkedRideRequests = await RideRequest.find({ pickupRequestId: request._id, status: 'pending' }).session(session);
+
+        if (linkedRideRequests && linkedRideRequests.length > 0) {
+          for (const rr of linkedRideRequests) {
+            passengerRidesToInsert.push({
+              communityId: shuttle.communityId,
+              passengerId: rr.passengerId || null,
+              passengerName: rr.passengerName || null,
+              passengerPhone: rr.passengerPhone || null,
+              shuttleId: shuttle._id,
+              driverId: req.user._id,
+              tripId: activeTrip._id,
+              rideRequestId: rr._id,
+              fareAtBoarding: activeTrip.fareAtTime,
+              pickupLocation: rr.pickupLocation || request.pickupLocation || request.location,
+              destinationType: rr.destination?.type || request.destinationType || 'fixed',
+              destinationLabel: rr.destination?.label || request.destinationLabel || 'Destination',
+              destinationLocation: rr.destination?.location || request.destinationLocation,
+              requestedAt: rr.createdAt || request.createdAt,
+              boardedAt,
+              status: 'boarded',
+            });
+          }
+        } else if (Array.isArray(request.passengerManifest) && request.passengerManifest.length > 0) {
+          for (const entry of request.passengerManifest) {
+            passengerRidesToInsert.push({
+              communityId: shuttle.communityId,
+              passengerId: entry.passengerId || null,
+              passengerName: entry.name || null,
+              passengerPhone: entry.phone || null,
+              shuttleId: shuttle._id,
+              driverId: req.user._id,
+              tripId: activeTrip._id,
+              fareAtBoarding: activeTrip.fareAtTime,
+              pickupLocation: request.pickupLocation || request.location,
+              destinationType: request.destinationType || 'fixed',
+              destinationLabel: request.destinationLabel || 'Destination',
+              destinationLocation: request.destinationLocation,
+              requestedAt: request.createdAt,
+              boardedAt,
+              status: 'boarded',
+            });
+          }
+        } else {
+          passengerRidesToInsert.push({
+            communityId: shuttle.communityId,
+            passengerId: request.passengerId,
+            shuttleId: shuttle._id,
+            driverId: req.user._id,
+            tripId: activeTrip._id,
+            fareAtBoarding: activeTrip.fareAtTime,
+            pickupLocation: request.pickupLocation || request.location,
+            destinationType: request.destinationType || 'fixed',
+            destinationLabel: request.destinationLabel || 'Destination',
+            destinationLocation: request.destinationLocation,
+            requestedAt: request.createdAt,
+            boardedAt,
+            status: 'boarded',
+          });
+        }
+      }
+
+      if (passengerRidesToInsert.length > 0) {
+        await PassengerRide.insertMany(passengerRidesToInsert, { session });
+      }
 
       // PERSISTENCE: Update linked RideRequest records to reflect successful boarding
       const claimedPickupIds = pendingRequests.map((r) => r._id);
@@ -654,7 +785,7 @@ const syncOfflineTrips = async (req, res) => {
  */
 const createPickupIntent = async (req, res) => {
   try {
-    const { latitude, longitude, destination } = req.body;
+    const { latitude, longitude, destination, detectedPhase, pickupLocation, passengerManifest } = req.body;
     const fareType = ['priority', 'standard'].includes(req.body.fareType) ? req.body.fareType : 'standard';
 
 
@@ -663,25 +794,39 @@ const createPickupIntent = async (req, res) => {
       return res.status(400).json({ error: coords.message });
     }
 
-    const insideBoundary = await isLocationInBoundary({
-      communityId: req.user.communityId,
-      latitude: coords.lat,
-      longitude: coords.lng,
-    });
-
-    if (!insideBoundary) {
-      return res.status(403).json({
-        error: 'Pickup request rejected. Location is outside your community boundary.',
-      });
-    }
-
     const community = await Community.findById(req.user.communityId).select('fixedDestinations baseFare');
     if (!community) {
       return res.status(404).json({ error: 'Community not found.' });
     }
 
-    const passenger = await User.findById(req.user._id).select('homePhase').lean();
+    const passenger = await User.findById(req.user._id).select('homePhase homeDestination').lean();
     const passengerHomePhase = normalizePhase(passenger?.homePhase);
+
+    // If client provided an explicit pickupLocation (booking-for-others), validate it
+    let explicitPickupPoint = null;
+    let pickupDetectionLat = coords.lat;
+    let pickupDetectionLng = coords.lng;
+    if (pickupLocation && typeof pickupLocation === 'object') {
+      const pcoords = validateCoordinates(pickupLocation.latitude, pickupLocation.longitude);
+      if (!pcoords.valid) {
+        return res.status(400).json({ error: `pickupLocation invalid: ${pcoords.message}` });
+      }
+      explicitPickupPoint = { type: 'Point', coordinates: [pcoords.lng, pcoords.lat] };
+      pickupDetectionLat = pcoords.lat;
+      pickupDetectionLng = pcoords.lng;
+    }
+
+    const pickupOrigin = detectPickupOrigin({
+      homeDestination: passenger?.homeDestination,
+      fixedDestinations: community.fixedDestinations,
+      latitude: pickupDetectionLat,
+      longitude: pickupDetectionLng,
+    });
+
+    // Use detected phase from current location, fallback to saved homePhase
+    const passsengerPhaseForDispatch = detectedPhase
+      ? normalizePhase(detectedPhase)
+      : passengerHomePhase;
 
     // Backward-compatible default destination for legacy clients not sending destination payload.
     let destinationType = 'fixed';
@@ -700,6 +845,12 @@ const createPickupIntent = async (req, res) => {
       destinationType = destinationPayload.type;
 
       if (destinationPayload.type === 'fixed') {
+        if (pickupOrigin.type !== 'home') {
+          return res.status(403).json({
+            error: 'Fixed destinations are only available when you are at your home pickup location.',
+          });
+        }
+
         const selectedFixed = (community.fixedDestinations || []).find(
           (item) => String(item._id) === destinationPayload.fixedDestinationId && item.isActive !== false
         );
@@ -709,15 +860,9 @@ const createPickupIntent = async (req, res) => {
         destinationLabel = selectedFixed.name;
         destinationLocation = selectedFixed.location;
       } else {
-        const destinationInsideBoundary = await isLocationInBoundary({
-          communityId: req.user.communityId,
-          latitude: destinationPayload.latitude,
-          longitude: destinationPayload.longitude,
-        });
-
-        if (!destinationInsideBoundary) {
+        if (pickupOrigin.type !== 'fixed') {
           return res.status(403).json({
-            error: 'Home destination rejected. Destination is outside your community boundary.',
+            error: 'Home destinations are only available when you are at a fixed destination.',
           });
         }
 
@@ -731,50 +876,84 @@ const createPickupIntent = async (req, res) => {
 
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
+    // explicitPickupPoint (if any) is already validated above and will be used when creating RideRequests
+
     const fareExpected = fareType === 'priority'
       ? Number((community.baseFare * (community.priorityFareMultiplier ?? 1.5)).toFixed(2))
       : community.baseFare;
 
-    // PERSISTENCE: Create permanent ride request BEFORE ephemeral pickup intent.
-    // This record survives TTL deletion and shift-end — it is the audit ledger.
-    const rideRequest = await RideRequest.create({
-      communityId: req.user.communityId,
-      passengerId: req.user._id,
-      pickupLocation: {
-        type: 'Point',
-        coordinates: [coords.lng, coords.lat],
-      },
-      passengerHomePhase,
-      destination: {
-        type: destinationType,
-        label: destinationLabel,
-        location: destinationLocation,
-      },
-      fareExpected,
-      status: 'pending',
-    });
+    // PERSISTENCE: Create permanent ride request(s) BEFORE ephemeral pickup intent.
+    // Support passengerManifest for delegated/group bookings. For backward compatibility,
+    // if no manifest is provided create the single legacy RideRequest.
+    const rideRequestsToCreate = [];
+    if (Array.isArray(passengerManifest) && passengerManifest.length > 0) {
+      for (const entry of passengerManifest) {
+        const rr = {
+          communityId: req.user.communityId,
+          passengerId: entry.passengerId && mongoose.Types.ObjectId.isValid(String(entry.passengerId)) ? entry.passengerId : null,
+          passengerName: entry.name || null,
+          passengerPhone: entry.phone || null,
+          bookingOwner: req.user._id,
+          pickupLocation: explicitPickupPoint || { type: 'Point', coordinates: [coords.lng, coords.lat] },
+          passengerHomePhase: passsengerPhaseForDispatch,
+          destination: {
+            type: destinationType,
+            label: destinationLabel,
+            location: destinationLocation,
+          },
+          fareExpected,
+          status: 'pending',
+        };
+        rideRequestsToCreate.push(rr);
+      }
+    } else {
+      rideRequestsToCreate.push({
+        communityId: req.user.communityId,
+        passengerId: req.user._id,
+        bookingOwner: req.user._id,
+        pickupLocation: explicitPickupPoint || { type: 'Point', coordinates: [coords.lng, coords.lat] },
+        passengerHomePhase: passsengerPhaseForDispatch,
+        destination: {
+          type: destinationType,
+          label: destinationLabel,
+          location: destinationLocation,
+        },
+        fareExpected,
+        status: 'pending',
+      });
+    }
 
+    const createdRideRequests = await RideRequest.create(rideRequestsToCreate);
 
     const pickupRequest = await PickupRequest.create({
       communityId: req.user.communityId,
       passengerId: req.user._id,
-      location: {
+      bookingOwner: req.user._id,
+      passengerManifest: Array.isArray(passengerManifest) && passengerManifest.length > 0 ? passengerManifest.map((p) => ({
+        passengerId: p.passengerId && mongoose.Types.ObjectId.isValid(String(p.passengerId)) ? p.passengerId : null,
+        name: p.name || null,
+        phone: p.phone || null,
+      })) : undefined,
+      location: explicitPickupPoint || {
         type: 'Point',
         coordinates: [coords.lng, coords.lat],
       },
+      pickupLocation: explicitPickupPoint,
       destinationType,
       destinationLabel,
       destinationLocation,
-      passengerHomePhase,
+      passengerHomePhase: passsengerPhaseForDispatch,
       fareType,
       status: 'pending',
       expiresAt,
     });
 
 
-    // Link the permanent ride request to the ephemeral pickup intent
-    rideRequest.pickupRequestId = pickupRequest._id;
-    await rideRequest.save();
+    // Link the permanent ride requests to the ephemeral pickup intent
+    await RideRequest.updateMany(
+      { _id: { $in: createdRideRequests.map((r) => r._id) } },
+      { $set: { pickupRequestId: pickupRequest._id } }
+    );
 
     const io = req.app.get('io');
 
@@ -794,7 +973,7 @@ const createPickupIntent = async (req, res) => {
         location: pickupRequest.location,
         fareType,
         fareExpected,
-        passengerHomePhase,
+        passengerHomePhase: passsengerPhaseForDispatch,
         pickupRequest,
         io,
       });
@@ -805,6 +984,9 @@ const createPickupIntent = async (req, res) => {
       requestId: pickupRequest._id,
       communityId: pickupRequest.communityId,
       passengerId: pickupRequest.passengerId,
+      bookingOwner: pickupRequest.bookingOwner || pickupRequest.passengerId,
+      // Expose explicit pickupLocation when present so drivers can use authoritative coords
+      pickupLocation: pickupRequest.pickupLocation || null,
       location: pickupRequest.location,
       destinationType: pickupRequest.destinationType,
       destinationLabel: pickupRequest.destinationLabel,
@@ -814,13 +996,15 @@ const createPickupIntent = async (req, res) => {
       fareExpected,
       expiresAt: pickupRequest.expiresAt,
       status: pickupRequest.status,
+      passengerManifest: Array.isArray(pickupRequest.passengerManifest) ? pickupRequest.passengerManifest : [],
       assignedShuttleId: dispatchResult.dispatched ? dispatchResult.shuttle?._id : null,
     });
 
     return res.status(201).json({
       message: 'Pickup intent submitted.',
       request: pickupRequest,
-      rideRequestId: rideRequest._id,
+      rideRequestId: Array.isArray(createdRideRequests) && createdRideRequests.length > 0 ? createdRideRequests[0]._id : null,
+      rideRequestIds: createdRideRequests.map((r) => r._id),
       fareType,
       fareExpected,
       dispatched: dispatchResult.dispatched,
@@ -876,8 +1060,8 @@ const cancelPickupIntent = async (req, res) => {
     request.status = 'cancelled';
     await request.save();
 
-    // PERSISTENCE: Cancel the linked permanent ride request
-    await RideRequest.updateOne(
+    // PERSISTENCE: Cancel ALL linked permanent ride requests (updateMany for multi-guest bookings)
+    await RideRequest.updateMany(
       { pickupRequestId: request._id, status: 'pending' },
       {
         $set: {
@@ -1047,7 +1231,7 @@ const listPickupIntents = async (req, res) => {
     }
 
     const requests = await PickupRequest.find(query)
-      .select('communityId passengerId location destinationType destinationLabel destinationLocation passengerHomePhase status expiresAt createdAt')
+      .select('communityId passengerId location pickupLocation destinationType destinationLabel destinationLocation passengerHomePhase status expiresAt createdAt')
       .sort({ createdAt: -1 })
       .limit(100);
 
@@ -2154,14 +2338,15 @@ const getRemittanceSummary = async (req, res) => {
 /**
  * POST /api/trips/passenger-unboard
  * Driver's passenger unboarding action. Updates passenger ride status and shuttle capacity.
- * Uses FIFO: first boarded passengers are unboarded first.
+ * When shuttle coordinates are provided, passengers whose destination is nearest to the
+ * shuttle are unboarded first (destination-aware). Falls back to FIFO when no coordinates.
  */
 const passengerUnboard = async (req, res) => {
   const session = await createOptionalSession();
   if (session) session.startTransaction();
 
   try {
-    const { shuttleId, unboardCount } = req.body;
+    const { shuttleId, unboardCount, latitude, longitude } = req.body;
     const count = unboardCount === undefined ? 1 : Number(unboardCount);
 
     if (!shuttleId) {
@@ -2222,39 +2407,93 @@ const passengerUnboard = async (req, res) => {
       return res.status(404).json({ error: 'Active trip not found for this shuttle.' });
     }
 
-    // Find the most recent boarded passengers (FIFO: earliest boarders first)
-    // Sort by boardedAt ascending to get first boarded first
-    const boardedPassengers = await PassengerRide.find({
+    // Fetch all currently boarded passengers with destination data
+    const allBoardedPassengers = await PassengerRide.find({
       tripId: activeTrip._id,
       status: 'boarded',
     })
       .session(session)
-      .sort({ boardedAt: 1 })
-      .limit(count);
+      .select('passengerId rideRequestId destinationLocation boardedAt')
+      .sort({ boardedAt: 1 });
 
-    const effectiveUnboardCount = Math.min(count, boardedPassengers.length);
-    if (effectiveUnboardCount === 0) {
+    if (allBoardedPassengers.length === 0) {
       if (session) await session.abortTransaction();
       return res.status(409).json({
         error: 'No boarded passengers found for unboarding.',
       });
     }
 
+    // Destination-aware selection: if shuttle coordinates provided, sort by
+    // proximity to each passenger's destination (nearest destination = unboard first).
+    // Falls back to FIFO (boardedAt ascending) when coordinates are not provided.
+    const shuttleCoords = validateCoordinates(latitude, longitude);
+    let passengersToUnboard;
+
+    if (shuttleCoords.valid) {
+      // Sort by distance from shuttle to each passenger's destination (ascending)
+      const withDistance = allBoardedPassengers.map((p) => {
+        const destCoords = p.destinationLocation?.coordinates;
+        let distance = Number.POSITIVE_INFINITY;
+        if (Array.isArray(destCoords) && destCoords.length === 2) {
+          distance = distanceMeters(
+            { latitude: shuttleCoords.lat, longitude: shuttleCoords.lng },
+            { latitude: Number(destCoords[1]), longitude: Number(destCoords[0]) }
+          );
+        }
+        return { passenger: p, distance };
+      });
+
+      withDistance.sort((a, b) => a.distance - b.distance);
+      passengersToUnboard = withDistance.slice(0, count).map((item) => item.passenger);
+    } else {
+      // Fallback: FIFO (already sorted by boardedAt ascending from query)
+      passengersToUnboard = allBoardedPassengers.slice(0, count);
+    }
+
+    const effectiveUnboardCount = passengersToUnboard.length;
+
     // Update those PassengerRide records with unboarded status
     const now = new Date();
-    const unboardedPassengerIds = boardedPassengers.map((p) => p._id);
+    const unboardedRideIds = passengersToUnboard.map((p) => p._id);
+
+    // Build unboard location from shuttle's current position if available
+    const unboardLocation = shuttleCoords.valid
+      ? { type: 'Point', coordinates: [shuttleCoords.lng, shuttleCoords.lat] }
+      : (shuttle.location || undefined);
 
     await PassengerRide.updateMany(
-      { _id: { $in: unboardedPassengerIds } },
+      { _id: { $in: unboardedRideIds } },
       {
         $set: {
           status: 'unboarded',
           unboardedAt: now,
-          // unboardLocation would be set by driver/GPS if available in future
+          ...(unboardLocation ? { unboardLocation } : {}),
         },
       },
       { session }
     );
+
+    // Complete linked RideRequests — use rideRequestIds when available (guest/manifest flows),
+    // fall back to passengerIds for legacy flows
+    const linkedRideRequestIds = passengersToUnboard.map((p) => p.rideRequestId).filter(Boolean);
+    const passengerIds = passengersToUnboard.map((p) => p.passengerId).filter(Boolean);
+
+    if (linkedRideRequestIds.length > 0) {
+      await completeRideRequestsForPassengers({
+        rideRequestIds: linkedRideRequestIds,
+        completedAt: now,
+        session,
+      });
+    }
+
+    if (passengerIds.length > 0) {
+      await completeRideRequestsForPassengers({
+        tripId: activeTrip._id,
+        passengerIds,
+        completedAt: now,
+        session,
+      });
+    }
 
     // Decrement shuttle capacity
     shuttle.currentCapacity = Math.max(0, shuttle.currentCapacity - effectiveUnboardCount);
@@ -2265,7 +2504,6 @@ const passengerUnboard = async (req, res) => {
     await shuttle.save({ session });
 
     // Note: Trip.passengersBoarded is NOT decremented - it stays as total boarded in shift
-    // Only Trip.passengersBoarded is updated, status remains active per spec
 
     // Commit transaction
     if (session) await session.commitTransaction();
@@ -2284,6 +2522,13 @@ const passengerUnboard = async (req, res) => {
       currentCapacity: shuttle.currentCapacity,
       maxCapacity: shuttle.maxCapacity,
       timestamp: now,
+    });
+
+    // DISPATCH: Retry waiting queue — freed seats should be offered to queued passengers
+    setImmediate(() => {
+      retryWaitingQueue(shuttle.communityId, io).catch((err) =>
+        console.error('[passengerUnboard] retryWaitingQueue error:', err)
+      );
     });
 
     return res.status(200).json({

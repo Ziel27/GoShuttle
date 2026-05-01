@@ -37,46 +37,18 @@ const normalizeRing = (coordinates?: number[][][]) => {
   return closed.length >= 4 ? closed : [];
 };
 
-/**
- * Ray-casting point-in-polygon test.
- * @param lat - latitude of the test point
- * @param lng - longitude of the test point
- * @param ring - closed ring in [lng, lat] (GeoJSON) order
- */
-const isPointInsideRing = (lat: number, lng: number, ring: [number, number][]) => {
-  if (ring.length < 4) return false;
-
-  let inside = false;
-  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-    const xi = ring[i][1]; // lat
-    const yi = ring[i][0]; // lng
-    const xj = ring[j][1]; // lat
-    const yj = ring[j][0]; // lng
-
-    const intersect = yi > lng !== yj > lng && lat < ((xj - xi) * (lng - yi)) / (yj - yi) + xi;
-    if (intersect) inside = !inside;
-  }
-
-  return inside;
-};
-
 export const LocationPickerMap = ({ latitude, longitude, geofenceCoordinates, onPick }: LocationPickerMapProps) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
   const markerRef = useRef<L.CircleMarker | null>(null);
   const geofenceLayerRef = useRef<L.Polygon | null>(null);
   const onPickRef = useRef(onPick);
-  const ringRef = useRef<[number, number][]>([]);
 
   const ring = useMemo(() => normalizeRing(geofenceCoordinates), [geofenceCoordinates]);
 
   useEffect(() => {
     onPickRef.current = onPick;
   }, [onPick]);
-
-  useEffect(() => {
-    ringRef.current = ring;
-  }, [ring]);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -93,12 +65,6 @@ export const LocationPickerMap = ({ latitude, longitude, geofenceCoordinates, on
     map.on('click', (event: L.LeafletMouseEvent) => {
       const nextLatitude = event.latlng.lat;
       const nextLongitude = event.latlng.lng;
-
-      // If a geofence exists, only allow picks inside it
-      const currentRing = ringRef.current;
-      if (currentRing.length >= 4 && !isPointInsideRing(nextLatitude, nextLongitude, currentRing)) {
-        return;
-      }
 
       if (!markerRef.current) {
         markerRef.current = L.circleMarker([nextLatitude, nextLongitude], {
@@ -197,8 +163,8 @@ export const LocationPickerMap = ({ latitude, longitude, geofenceCoordinates, on
         className="h-72 w-full overflow-hidden rounded-lg border border-slate-300"
       />
       <p className="text-xs text-slate-600">
-        Click inside the geofence boundary to choose destination coordinates.
-        {ring.length >= 4 ? '' : ' No geofence set — clicks anywhere are allowed.'}
+        Click anywhere to choose destination coordinates.
+        {ring.length >= 4 ? ' The community geofence is shown for reference.' : ' No geofence set — clicks anywhere are allowed.'}
       </p>
     </div>
   );

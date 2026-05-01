@@ -7,6 +7,7 @@ const Trip = require('../models/Trip');
 const RideRequest = require('../models/RideRequest');
 const Shuttle = require('../models/Shuttle');
 const { normalizePhase, buildPhaseAwareRequestQuery } = require('../utils/phase');
+const { pointInPolygon } = require('../services/geofence');
 
 const parseCoordinate = (value) => {
   const num = Number(value);
@@ -30,6 +31,21 @@ const validateCoordinates = (latitude, longitude) => {
   }
 
   return { valid: true, lat, lng };
+};
+
+const detectPhaseForCoordinates = (phaseGeofences, latitude, longitude) => {
+  for (const phase of phaseGeofences || []) {
+    if (phase?.isActive === false) continue;
+
+    const ring = phase?.boundaries?.coordinates?.[0] || [];
+    if (ring.length < 4) continue;
+
+    if (pointInPolygon(latitude, longitude, ring)) {
+      return normalizePhase(phase.name);
+    }
+  }
+
+  return null;
 };
 
 const isPlatformAdmin = (req) => req.user?.role === 'admin';
@@ -427,6 +443,9 @@ const updateOwnHomeDestination = async (req, res) => {
     const normalizedLabel = rawLabel.slice(0, 120);
     const userId = req.user._id;
 
+    const community = await Community.findById(req.user.communityId).select('phaseGeofences').lean();
+    const detectedHomePhase = detectPhaseForCoordinates(community?.phaseGeofences || [], coords.lat, coords.lng);
+
     const update = {
       homeDestination: {
         label: normalizedLabel,
@@ -438,7 +457,9 @@ const updateOwnHomeDestination = async (req, res) => {
       },
     };
 
-    if (req.body.homePhase !== undefined) {
+    if (detectedHomePhase) {
+      update.homePhase = detectedHomePhase;
+    } else if (req.body.homePhase !== undefined) {
       update.homePhase = normalizePhase(req.body.homePhase);
     }
 

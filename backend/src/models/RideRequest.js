@@ -14,7 +14,26 @@ const rideRequestSchema = new mongoose.Schema(
     passengerId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      required: [true, 'Passenger assignment is required'],
+      required: false,
+      default: null,
+      index: true,
+    },
+    // For delegated/guest bookings when passengerId is not set
+    passengerName: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    passengerPhone: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    // Who created the booking (may be same as passengerId)
+    bookingOwner: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
       index: true,
     },
     shuttleId: {
@@ -135,11 +154,10 @@ rideRequestSchema.index({ passengerId: 1, createdAt: -1 });
 // Per-trip summary
 rideRequestSchema.index({ tripId: 1, status: 1 });
 
-// Link back to ephemeral pickup request (unique when set, sparse allows nulls)
+// Link back to ephemeral pickup request (non-unique: multiple guests share one PickupRequest)
 rideRequestSchema.index(
   { pickupRequestId: 1 },
   {
-    unique: true,
     partialFilterExpression: {
       pickupRequestId: { $type: 'objectId' },
     },

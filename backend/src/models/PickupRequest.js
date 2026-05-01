@@ -16,6 +16,33 @@ const pickupRequestSchema = new mongoose.Schema(
       required: [true, 'Passenger assignment is required'],
       index: true,
     },
+    // Optional explicit pickup location when booking for someone else or specifying a pickup point
+    pickupLocation: {
+      type: {
+        type: String,
+        enum: ['Point'],
+        default: 'Point',
+      },
+      coordinates: {
+        type: [Number],
+        default: null,
+      },
+    },
+    // Booking owner when someone creates a request on behalf of others
+    bookingOwner: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+      index: true,
+    },
+    // Optional passenger manifest to support group/delegated bookings
+    passengerManifest: [
+      {
+        passengerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+        name: { type: String, trim: true, default: null },
+        phone: { type: String, trim: true, default: null },
+      },
+    ],
     location: {
       type: {
         type: String,

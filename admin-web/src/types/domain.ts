@@ -15,6 +15,8 @@ export type Community = {
       type: 'Point';
       coordinates: [number, number];
     };
+    pickupRadiusMeters?: number;
+    color?: string;
     order?: number;
     isActive?: boolean;
   }>;
@@ -111,6 +113,7 @@ export type LiveEvent = {
   id: string;
   label: string;
   createdAt: number;
+  details?: string[];
 };
 
 export type DriverAnalyticsRow = {
