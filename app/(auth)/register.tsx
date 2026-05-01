@@ -1,6 +1,6 @@
 import { Link, router, type Href } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { Pressable, StyleSheet, useWindowDimensions, View } from 'react-native';
+import { StyleSheet, useWindowDimensions, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { AnimatedPressable } from '@/components/ui/animated-pressable';
@@ -28,9 +28,7 @@ export default function RegisterScreen() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [phone, setPhone] = useState('');
   const [communityId, setCommunityId] = useState<string | undefined>(undefined);
-  const [communityName, setCommunityName] = useState<string>('Select community');
-  const [showCommunityDropdown, setShowCommunityDropdown] = useState(false);
-  const [communities, setCommunities] = useState<Array<{ _id: string; name: string }>>([]);
+  const [communityName, setCommunityName] = useState<string>('');
   const [clientError, setClientError] = useState('');
   const tint = useThemeColor({}, 'tint');
   const danger = useThemeColor({}, 'danger');
@@ -46,7 +44,6 @@ export default function RegisterScreen() {
     const loadCommunities = async () => {
       try {
         const rows = await listCommunities();
-        setCommunities(rows);
         if (rows.length > 0) {
           setCommunityId(rows[0]._id);
           setCommunityName(rows[0].name);
@@ -145,46 +142,14 @@ export default function RegisterScreen() {
           placeholder="Phone (optional)"
         />
 
-        <View style={styles.phaseSection}>
-          <ThemedText type="caption" style={{ color: mutedColor, marginBottom: 4 }}>
-            Community
-          </ThemedText>
-          <Pressable
-            style={[styles.phaseButton, { borderColor: border, backgroundColor: surfaceMuted }]}
-            onPress={() => setShowCommunityDropdown(!showCommunityDropdown)}
-            accessibilityRole="button"
-            accessibilityLabel="Select community"
-          >
-            <ThemedText style={{ color: communityId ? tint : mutedColor, flex: 1 }}>
+        {communityName ? (
+          <View style={[styles.communityBadge, { borderColor: border, backgroundColor: surfaceMuted }]}>
+            <Ionicons name="shield-checkmark" size={16} color={tint} />
+            <ThemedText style={{ color: tint, fontFamily: OutfitFonts.bold, fontSize: 13 }}>
               {communityName}
             </ThemedText>
-            <Ionicons
-              name={showCommunityDropdown ? 'chevron-up' : 'chevron-down'}
-              size={16}
-              color={mutedColor}
-            />
-          </Pressable>
-          {showCommunityDropdown && (
-            <View style={[styles.phaseDropdown, { borderColor: border, backgroundColor: surface }]}>
-              {communities.map((community) => (
-                <Pressable
-                  key={community._id}
-                  style={[styles.phaseOption, { backgroundColor: communityId === community._id ? surfaceMuted : surface }]}
-                  onPress={() => {
-                    setCommunityId(community._id);
-                    setCommunityName(community.name);
-                    setShowCommunityDropdown(false);
-                  }}
-                >
-                  <ThemedText style={{ color: communityId === community._id ? tint : mutedColor }}>
-                    {community.name}
-                  </ThemedText>
-                </Pressable>
-              ))}
-            </View>
-          )}
-        </View>
-
+          </View>
+        ) : null}
 
         <View style={styles.phaseSection}>
           <ThemedText type="caption" style={{ color: mutedColor, marginBottom: 4 }}>
@@ -268,6 +233,15 @@ const styles = StyleSheet.create({
   },
   phaseSection: {
     marginTop: DesignTokens.spacing.xs,
+  },
+  communityBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: DesignTokens.spacing.xs,
+    paddingHorizontal: DesignTokens.spacing.sm,
+    paddingVertical: DesignTokens.spacing.xs,
+    borderRadius: DesignTokens.radius.md,
+    borderWidth: 1,
   },
   phaseButton: {
     flexDirection: 'row',
