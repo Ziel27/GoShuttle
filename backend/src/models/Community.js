@@ -56,6 +56,16 @@ const communitySchema = new mongoose.Schema(
             required: true,
           },
         },
+        pickupRadiusMeters: {
+          type: Number,
+          default: 80,
+          min: [1, 'Pickup radius must be at least 1 meter.'],
+          max: [10000, 'Pickup radius cannot exceed 10000 meters.'],
+        },
+        color: {
+          type: String,
+          default: '#94a3b8', // default slate color
+        },
         order: {
           type: Number,
           default: 0,

@@ -11,8 +11,27 @@ const passengerRideSchema = new mongoose.Schema(
     passengerId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      required: true,
+      required: false,
+      default: null,
       index: true,
+    },
+    // Link back to the permanent RideRequest when available
+    rideRequestId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'RideRequest',
+      default: null,
+      index: true,
+    },
+    // For guest/delegated entries when passengerId is not provided
+    passengerName: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    passengerPhone: {
+      type: String,
+      trim: true,
+      default: null,
     },
     shuttleId: {
       type: mongoose.Schema.Types.ObjectId,

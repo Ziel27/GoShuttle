@@ -1,12 +1,13 @@
 import { ThemedText } from '@/components/themed-text';
 import { MapIndicator, MapLoadingPlaceholder } from '@/components/ui/home-map-primitives';
 import {
-    FixedDestinationChip,
-    type FixedDestinationOption,
+  FixedDestinationChip,
+  type FixedDestinationOption,
 } from '@/components/ui/home-screen-primitives';
 import { PremiumButton } from '@/components/ui/premium-button';
 import { SectionHeader } from '@/components/ui/section-header';
 import { StatusBanner } from '@/components/ui/status-banner';
+import { HowToBookModal } from '@/components/HowToBookModal';
 import { AppPalette, getCapacityColor } from '@/constants/app-ui';
 import { DesignTokens, OutfitFonts, SemanticColors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
@@ -14,46 +15,51 @@ import { useThemeColor } from '@/hooks/use-theme-color';
 import { getCommunityById, getPhaseGeofences, type PhaseGeofence } from '@/services/community';
 import { syncOfflineBoardings } from '@/services/offline-boarding-queue';
 import {
-    AutomationDiagnostics,
-    listShuttles,
-    Shuttle,
-    updateShuttleLocation,
+  AutomationDiagnostics,
+  listShuttles,
+  Shuttle,
+  updateShuttleLocation,
 } from '@/services/shuttle';
 import { connectCommunitySocket } from '@/services/socket';
 import {
-    AssignedShuttle,
-    boardPassenger,
-    cancelPickupIntent,
-    createPickupIntent,
-    listOnboardDestinations,
-    listPickupIntents,
-    OnboardDestinationPassenger,
-    PickupIntent,
-    QueueReason,
-    unboardPassenger
+  AssignedShuttle,
+  boardPassenger,
+  cancelPickupIntent,
+  createPickupIntent,
+  listOnboardDestinations,
+  listPickupIntents,
+  OnboardDestinationPassenger,
+  PickupIntent,
+  QueueReason,
+  unboardPassenger
 } from '@/services/trip';
 
 
 import { useAuthStore } from '@/store/auth';
 import { usePreferencesStore } from '@/store/preferences';
 import {
-    describeBoardingReason,
-    describeUnboardingReason,
-    getDistanceMeters,
-    isExpiredIntent,
-    type PickupIntentEventPayload,
-    toCommunityIdString,
-    toMaxZoomOutRegionFromBoundary,
-    toPickupIntent,
-    toRegionFromBoundary,
-    toShuttleCoordinate,
-    upsertPickupIntent,
+  describeBoardingReason,
+  describeUnboardingReason,
+  detectPhaseFromCoordinates,
+  detectPickupOrigin,
+  getDistanceMeters,
+  getPickupIntentCoordinate,
+  isExpiredIntent,
+  type PickupIntentEventPayload,
+  type PickupOriginContext,
+  toCommunityIdString,
+  toMaxZoomOutRegionFromBoundary,
+  toPickupIntent,
+  toRegionFromBoundary,
+  toShuttleCoordinate,
+  upsertPickupIntent,
 } from '@/utils/home-screen';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { type ComponentRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppState, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { AppState, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import MapView, { Callout, Circle, LatLng, Marker, Polygon, Region } from 'react-native-maps';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -69,6 +75,12 @@ const POLL_ERROR_NOTICE_COOLDOWN_MS = 120_000;
 const COMMUNITY_SETTINGS_SYNC_POLL_MS = 45_000;
 const AUTOMATION_STALE_MULTIPLIER = 2;
 const MANUAL_AUTOMATION_COOLDOWN_MS = 15_000;
+
+type ManifestDraftEntry = {
+  id: string;
+  name: string;
+  phone: string;
+};
 
 const palette = {
   navy: AppPalette.navy,
@@ -151,6 +163,15 @@ export default function HomeScreen() {
   const [selectedDestinationType, setSelectedDestinationType] = useState<'fixed' | 'home' | null>(null);
   const [selectedFixedDestinationId, setSelectedFixedDestinationId] = useState('');
   const [fixedDestinations, setFixedDestinations] = useState<FixedDestinationOption[]>([]);
+  const [pickupOriginContext, setPickupOriginContext] = useState<PickupOriginContext | null>(null);
+  const [bookForOthers, setBookForOthers] = useState(false);
+  const [manifestDraft, setManifestDraft] = useState<ManifestDraftEntry[]>([
+    { id: 'guest-1', name: '', phone: '' },
+  ]);
+  const [guestPickupType, setGuestPickupType] = useState<'fixed' | 'home' | null>(null);
+  const [guestPickupFixedId, setGuestPickupFixedId] = useState<string>('');
+  const [guestDropoffType, setGuestDropoffType] = useState<'fixed' | 'home' | null>(null);
+  const [guestDropoffFixedId, setGuestDropoffFixedId] = useState<string>('');
   const [communitySyncTick, setCommunitySyncTick] = useState(0);
   const [onboardDestinations, setOnboardDestinations] = useState<OnboardDestinationPassenger[]>([]);
   const [autoSyncStatus, setAutoSyncStatus] = useState<'idle' | 'syncing' | 'error'>('idle');
@@ -179,6 +200,7 @@ export default function HomeScreen() {
   const offlineSyncNoticeRef = useRef(0);
   const recentPickupCancelEventRef = useRef<{ requestId: string; at: number } | null>(null);
   const appStateRef = useRef(AppState.currentState);
+  const pickupOriginDetectionKeyRef = useRef('');
 
   // ── Dispatch state (passenger-only) ───────────────────────────────────────
   const [fareType, setFareType] = useState<'standard' | 'priority'>('standard');
@@ -215,6 +237,19 @@ export default function HomeScreen() {
   const [communityFares, setCommunityFares] = useState<{ base: number; priorityMultiplier: number } | null>(null);
   const [phaseGeofences, setPhaseGeofences] = useState<PhaseGeofence[]>([]);
   const [opsBypassMode, setOpsBypassMode] = useState(false);
+  const [showHowToBookModal, setShowHowToBookModal] = useState(false);
+
+  useEffect(() => {
+    async function checkHowToBook() {
+      if (user?.role === 'passenger') {
+        const seen = await AsyncStorage.getItem('@how_to_book_seen');
+        if (!seen) {
+          setShowHowToBookModal(true);
+        }
+      }
+    }
+    checkHowToBook();
+  }, [user?.role]);
 
 
   const getDriverId = (driverId: Shuttle['driverId']): string | null => {
@@ -233,6 +268,26 @@ export default function HomeScreen() {
   const isDriverOnShift = user?.role === 'driver' && user?.status === 'driving';
   const hasSavedHomeDestination = (user?.homeDestination?.location?.coordinates || []).length === 2;
   const activeCommunityId = useMemo(() => toCommunityIdString(user?.communityId), [user?.communityId]);
+
+  const allowedPickupDestinationTypes = useMemo(() => {
+    const hasFixedDestinations = fixedDestinations.length > 0;
+    const hasHomeDestination = hasSavedHomeDestination;
+
+    if (pickupOriginContext?.type === 'home') {
+      if (hasFixedDestinations) return ['fixed'] as const;
+      if (hasHomeDestination) return ['home'] as const;
+    }
+
+    if (pickupOriginContext?.type === 'fixed') {
+      if (hasHomeDestination) return ['home'] as const;
+      if (hasFixedDestinations) return ['fixed'] as const;
+    }
+
+    const options: Array<'fixed' | 'home'> = [];
+    if (hasFixedDestinations) options.push('fixed');
+    if (hasHomeDestination) options.push('home');
+    return options;
+  }, [fixedDestinations.length, hasSavedHomeDestination, pickupOriginContext?.type]);
 
   const assignedShuttle = useMemo(() => {
     if (!user) return null;
@@ -297,6 +352,74 @@ export default function HomeScreen() {
         : surfaceColor;
   const activePickupDestinationType = activePassengerPickupIntents[0]?.destinationType || selectedDestinationType || 'fixed';
   const activePickupDestinationAccent = activePickupDestinationType === 'home' ? successColor : tint;
+  const activePickupManifestSummary = useMemo(() => {
+    const manifest = activePassengerPickupIntents[0]?.passengerManifest || [];
+    if (manifest.length === 0) return null;
+
+    return manifest
+      .map((entry) => [entry.name || 'Guest', entry.phone ? `(${entry.phone})` : null].filter(Boolean).join(' '))
+      .join(', ');
+  }, [activePassengerPickupIntents]);
+
+  const manifestSummary = useMemo(() => {
+    const filledEntries = manifestDraft
+      .map((entry) => ({
+        name: entry.name.trim(),
+        phone: entry.phone.trim(),
+      }))
+      .filter((entry) => entry.name.length > 0 || entry.phone.length > 0);
+
+    if (filledEntries.length === 0) return null;
+
+    return filledEntries
+      .map((entry) => [entry.name || 'Guest', entry.phone ? `(${entry.phone})` : null].filter(Boolean).join(' '))
+      .join(', ');
+  }, [manifestDraft]);
+
+  const normalizedPassengerManifest = useMemo(
+    () =>
+      manifestDraft
+        .map((entry) => ({
+          name: entry.name.trim(),
+          phone: entry.phone.trim(),
+        }))
+        .filter((entry) => entry.name.length > 0 || entry.phone.length > 0),
+    [manifestDraft]
+  );
+
+  // When booking for others, ensure the guest pickup/dropoff types are opposite
+  useEffect(() => {
+    if (!bookForOthers) return;
+    if (guestPickupType === 'fixed' && guestDropoffType === 'fixed') {
+      setGuestDropoffType('home');
+    }
+    if (guestPickupType === 'home' && guestDropoffType === 'home') {
+      setGuestDropoffType('fixed');
+    }
+  }, [bookForOthers, guestPickupType, guestDropoffType]);
+
+  const pickupOriginCopy = useMemo(() => {
+    if (user?.role !== 'passenger') return '';
+
+    if (!pickupOriginContext) {
+      return '';
+    }
+
+    if (pickupOriginContext.type === 'home') {
+      return `Pickup detected at ${pickupOriginContext.label}. Only fixed destinations are shown.`;
+    }
+
+    if (pickupOriginContext.type === 'fixed') {
+      return `Pickup detected at ${pickupOriginContext.label}. Only home destinations are shown.`;
+    }
+
+    return '';
+  }, [pickupOriginContext, user?.role]);
+
+  const canUsePickupDestinationType = useCallback(
+    (type: 'fixed' | 'home') => allowedPickupDestinationTypes.some((item) => item === type),
+    [allowedPickupDestinationTypes]
+  );
 
   const feedbackVariant = useMemo(() => {
     if (feedback?.type === 'critical') return 'error' as const;
@@ -304,12 +427,26 @@ export default function HomeScreen() {
     return 'success' as const;
   }, [feedback?.type]);
 
+  const feedbackBanner = (
+    <StatusBanner
+      visible={Boolean(feedback)}
+      message={feedback?.message || ''}
+      variant={feedbackVariant}
+      onDismiss={() => setFeedback(null)}
+    />
+  );
+
   const isDestinationReady =
-    selectedDestinationType === 'fixed'
-      ? Boolean(selectedFixedDestinationId)
-      : selectedDestinationType === 'home'
-        ? hasSavedHomeDestination
-        : false;
+    bookForOthers
+      ? normalizedPassengerManifest.length > 0 && (
+          (guestDropoffType === 'fixed' && Boolean(guestDropoffFixedId)) ||
+          (guestDropoffType === 'home' && hasSavedHomeDestination)
+        )
+      : selectedDestinationType === 'fixed'
+        ? Boolean(selectedFixedDestinationId)
+        : selectedDestinationType === 'home'
+          ? hasSavedHomeDestination
+          : false;
   const activeCommunityPickupIntents = useMemo(
     () => pickupIntents.filter((item) => item.status === 'pending' && !isExpiredIntent(item)),
     [pickupIntents]
@@ -828,6 +965,113 @@ export default function HomeScreen() {
   }, [activeCommunityId, setPreferenceAwareFeedback, user?.role]);
 
   useEffect(() => {
+    if (user?.role !== 'passenger') return;
+
+    const detectionKey = JSON.stringify({
+      communityId: activeCommunityId,
+      homeCoordinates: user?.homeDestination?.location?.coordinates ?? null,
+      homeLabel: user?.homeDestination?.label ?? null,
+      fixedDestinations: fixedDestinations.map((item) => ({
+        id: item._id,
+        name: item.name,
+        coordinates: item.location.coordinates,
+      })),
+    });
+
+    if (pickupOriginDetectionKeyRef.current === detectionKey) return;
+    pickupOriginDetectionKeyRef.current = detectionKey;
+
+    let active = true;
+
+    const detectCurrentPickupOrigin = async () => {
+      try {
+        const permission = await Location.requestForegroundPermissionsAsync();
+        if (permission.status !== 'granted') {
+          if (active) {
+            setPickupOriginContext({
+              type: 'unknown',
+              label: 'Location permission is required to detect your pickup location.',
+              matchedDestinationId: null,
+              matchedDestinationLabel: null,
+            });
+          }
+          return;
+        }
+
+        const lastKnownPosition = await Location.getLastKnownPositionAsync();
+        const position = lastKnownPosition || await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced,
+        });
+
+        if (!active) return;
+
+        const detectedOrigin = detectPickupOrigin({
+          currentLocation: {
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+          },
+          homeDestination: user?.homeDestination
+            ? {
+              label: user.homeDestination.label,
+              location: {
+                coordinates: user.homeDestination.location.coordinates,
+              },
+            }
+            : null,
+          fixedDestinations,
+          detectionRadiusMeters: precisePickup ? 50 : 80,
+        });
+
+        if (!active) return;
+        setPickupOriginContext(detectedOrigin);
+      } catch (error) {
+        if (!active) return;
+        setPickupOriginContext({
+          type: 'unknown',
+          label: error instanceof Error ? error.message : 'Unable to detect your current pickup location.',
+          matchedDestinationId: null,
+          matchedDestinationLabel: null,
+        });
+      }
+    };
+
+    void detectCurrentPickupOrigin();
+
+    return () => {
+      active = false;
+    };
+  }, [activeCommunityId, fixedDestinations, precisePickup, user?.homeDestination?.label, user?.homeDestination?.location?.coordinates, user?.role]);
+
+  useEffect(() => {
+    if (allowedPickupDestinationTypes.length === 1) {
+      const [onlyAllowedType] = allowedPickupDestinationTypes;
+      if (selectedDestinationType !== onlyAllowedType) {
+        setSelectedDestinationType(onlyAllowedType);
+      }
+      return;
+    }
+
+    if (selectedDestinationType && !canUsePickupDestinationType(selectedDestinationType)) {
+      setSelectedDestinationType(null);
+    }
+  }, [allowedPickupDestinationTypes, canUsePickupDestinationType, selectedDestinationType]);
+
+  useEffect(() => {
+    if (selectedDestinationType !== 'fixed' && selectedFixedDestinationId) {
+      setSelectedFixedDestinationId('');
+      return;
+    }
+
+    if (
+      selectedDestinationType === 'fixed' &&
+      selectedFixedDestinationId &&
+      !fixedDestinations.some((item) => item._id === selectedFixedDestinationId)
+    ) {
+      setSelectedFixedDestinationId('');
+    }
+  }, [fixedDestinations, selectedDestinationType, selectedFixedDestinationId]);
+
+  useEffect(() => {
     if (user?.role !== 'driver' || !assignedShuttle?._id) return;
     let mounted = true;
 
@@ -895,12 +1139,25 @@ export default function HomeScreen() {
         if (!active) return;
 
         setCommunityBoundary(normalized);
-        const maxZoomRegion = toMaxZoomOutRegionFromBoundary(normalized);
+
+        // Build an extended set of points that includes both community boundary and fixed destinations
+        // so the map region encompasses everything, even destinations outside the boundary.
+        const allPoints: LatLng[] = [...normalized];
+        for (const dest of destinationRows) {
+          if (dest.location?.coordinates?.length === 2) {
+            const [lng, lat] = dest.location.coordinates;
+            if (Number.isFinite(lat) && Number.isFinite(lng)) {
+              allPoints.push({ latitude: lat, longitude: lng });
+            }
+          }
+        }
+
+        const maxZoomRegion = toMaxZoomOutRegionFromBoundary(allPoints);
         if (maxZoomRegion) {
           setMaxZoomOutRegion(maxZoomRegion);
         }
 
-        const regionFromBoundary = toRegionFromBoundary(normalized);
+        const regionFromBoundary = toRegionFromBoundary(allPoints);
         if (regionFromBoundary) {
           if (user?.role === 'passenger') {
             setPassengerRegion(regionFromBoundary);
@@ -1524,58 +1781,160 @@ export default function HomeScreen() {
       return;
     }
 
-    if (!selectedDestinationType) {
-      setPreferenceAwareFeedback('Select Fixed or Home destination first.', 'critical');
-      return;
-    }
-
-    if (selectedDestinationType === 'fixed' && !selectedFixedDestinationId) {
-      setPreferenceAwareFeedback('Select a fixed destination first.', 'critical');
-      return;
-    }
-
+    // Validate either normal booking or guest booking fields.
     const savedHomeCoords = user?.homeDestination?.location?.coordinates;
-    if (selectedDestinationType === 'home' && !hasSavedHomeDestination) {
-      setPreferenceAwareFeedback('Set your Home destination in Settings first.', 'critical');
-      return;
-    }
-
-    try {
-      setPickupSubmitting(true);
-      const permission = await Location.requestForegroundPermissionsAsync();
-      if (permission.status !== 'granted') {
-        setPreferenceAwareFeedback('Location permission is required to request pickup.', 'critical');
-        setPickupSubmitting(false);
+    if (!bookForOthers) {
+      if (!selectedDestinationType) {
+        setPreferenceAwareFeedback('Select Fixed or Home destination first.', 'critical');
         return;
       }
 
-      const position = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
-      });
+      if (!canUsePickupDestinationType(selectedDestinationType)) {
+        setPreferenceAwareFeedback('Select the destination that is opposite your current pickup location.', 'critical');
+        return;
+      }
 
-      const pickupLatitude = precisePickup
-        ? position.coords.latitude
-        : Number(position.coords.latitude.toFixed(4));
-      const pickupLongitude = precisePickup
-        ? position.coords.longitude
-        : Number(position.coords.longitude.toFixed(4));
+      if (selectedDestinationType === 'fixed' && !selectedFixedDestinationId) {
+        setPreferenceAwareFeedback('Select a fixed destination first.', 'critical');
+        return;
+      }
+
+      if (selectedDestinationType === 'home' && !hasSavedHomeDestination) {
+        setPreferenceAwareFeedback('Set your Home destination in Settings first.', 'critical');
+        return;
+      }
+    } else {
+      // booking for others: validate guest pickup/dropoff choices
+      if (normalizedPassengerManifest.length === 0) {
+        setPreferenceAwareFeedback('Add at least one guest to the manifest.', 'critical');
+        return;
+      }
+      if (guestPickupType === 'fixed' && !guestPickupFixedId) {
+        setPreferenceAwareFeedback('Select a fixed pickup location for the guest.', 'critical');
+        return;
+      }
+      if (guestPickupType === 'home' && !hasSavedHomeDestination) {
+        setPreferenceAwareFeedback('Booking owner has no saved Home destination.', 'critical');
+        return;
+      }
+      if (guestDropoffType === 'fixed' && !guestDropoffFixedId) {
+        setPreferenceAwareFeedback('Select a fixed drop-off location for the guest.', 'critical');
+        return;
+      }
+      if (guestDropoffType === 'home' && !hasSavedHomeDestination) {
+        setPreferenceAwareFeedback('Booking owner has no saved Home destination.', 'critical');
+        return;
+      }
+    }
+
+    try {
+      // If guest booking uses a fixed pickup, prefer that explicit coordinate and skip requesting GPS.
+      // Compute explicit pickup location from fixed destination if present.
+      let explicitPickupLocation: { latitude: number; longitude: number } | undefined = undefined;
+      if (bookForOthers && guestPickupType === 'fixed' && guestPickupFixedId) {
+        const fixed = fixedDestinations.find((d) => d._id === guestPickupFixedId);
+        if (fixed && fixed.location?.coordinates?.length === 2) {
+          explicitPickupLocation = {
+            latitude: Number(fixed.location.coordinates[1]),
+            longitude: Number(fixed.location.coordinates[0]),
+          };
+        }
+      }
+
+      setPickupSubmitting(true);
+
+      let pickupLatitude: number | undefined;
+      let pickupLongitude: number | undefined;
+
+      if (explicitPickupLocation) {
+        pickupLatitude = explicitPickupLocation.latitude;
+        pickupLongitude = explicitPickupLocation.longitude;
+      } else {
+        const permission = await Location.requestForegroundPermissionsAsync();
+        if (permission.status !== 'granted') {
+          setPreferenceAwareFeedback('Location permission is required to request pickup.', 'critical');
+          setPickupSubmitting(false);
+          return;
+        }
+
+        const position = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced,
+        });
+
+        pickupLatitude = precisePickup
+          ? position.coords.latitude
+          : Number(position.coords.latitude.toFixed(4));
+        pickupLongitude = precisePickup
+          ? position.coords.longitude
+          : Number(position.coords.longitude.toFixed(4));
+      }
+
+      // Detect current phase from live GPS location
+      const currentPickupLocationPoint = { latitude: pickupLatitude, longitude: pickupLongitude };
+      const detectedPhase = detectPhaseFromCoordinates(currentPickupLocationPoint, phaseGeofences);
+      // Build guest-specific pickupLocation override and destination when booking for others
+      let explicitPickupLocationForOptions: { latitude: number; longitude: number } | undefined = undefined;
+      let requestedDestination: any =
+        selectedDestinationType === 'fixed'
+          ? {
+              type: 'fixed',
+              fixedDestinationId: selectedFixedDestinationId,
+            }
+          : {
+              type: 'home',
+              latitude: savedHomeCoords![1],
+              longitude: savedHomeCoords![0],
+              label: user?.homeDestination?.label || 'Home',
+            };
+
+      if (bookForOthers && normalizedPassengerManifest.length > 0) {
+        // guest pickup override: if guestPickupType is fixed, capture coords to send as options
+        if (guestPickupType === 'fixed' && guestPickupFixedId) {
+          const fixed = fixedDestinations.find((d) => d._id === guestPickupFixedId);
+          if (fixed && fixed.location?.coordinates?.length === 2) {
+            explicitPickupLocationForOptions = {
+              latitude: Number(fixed.location.coordinates[1]),
+              longitude: Number(fixed.location.coordinates[0]),
+            };
+          }
+        }
+
+        // guest dropoff override: if guestDropoffType specified, use it as the destination
+        if (guestDropoffType === 'fixed' && guestDropoffFixedId) {
+          requestedDestination = {
+            type: 'fixed',
+            fixedDestinationId: guestDropoffFixedId,
+          };
+        } else if (guestDropoffType === 'home') {
+          // Use booking owner's saved home as the 'home' destination for guests
+          if (hasSavedHomeDestination) {
+            requestedDestination = {
+              type: 'home',
+              latitude: savedHomeCoords![1],
+              longitude: savedHomeCoords![0],
+              label: user?.homeDestination?.label || 'Home',
+            };
+          }
+        }
+      }
 
       const result = await createPickupIntent(
         pickupLatitude,
         pickupLongitude,
-        selectedDestinationType === 'fixed'
+        requestedDestination,
+        fareType,
+        detectedPhase,
+        bookForOthers && normalizedPassengerManifest.length > 0
           ? {
-            type: 'fixed',
-            fixedDestinationId: selectedFixedDestinationId,
-          }
-          : {
-            type: 'home',
-            latitude: savedHomeCoords![1],
-            longitude: savedHomeCoords![0],
-            label: user?.homeDestination?.label || 'Home',
-          },
-        fareType
+              ...(explicitPickupLocationForOptions ? { pickupLocation: explicitPickupLocationForOptions } : {}),
+              passengerManifest: normalizedPassengerManifest,
+            }
+          : undefined
       );
+
+      if (bookForOthers) {
+        resetGuestBookingDraft();
+      }
 
       setPickupIntents((items) => upsertPickupIntent(items, result.request));
 
@@ -1671,6 +2030,49 @@ export default function HomeScreen() {
     setSelectedFixedDestinationId(destinationId);
   }, []);
 
+  const resetGuestBookingDraft = useCallback(() => {
+    setManifestDraft([{ id: 'guest-1', name: '', phone: '' }]);
+    setGuestPickupType(null);
+    setGuestPickupFixedId('');
+    setGuestDropoffType(null);
+    setGuestDropoffFixedId('');
+  }, []);
+
+  const toggleBookForOthers = useCallback(() => {
+    setBookForOthers((current) => {
+      const next = !current;
+      if (next) {
+        // Default guest dropoff to current selected destination type when possible
+        const defaultDropoff = selectedDestinationType || (allowedPickupDestinationTypes[0] ?? 'fixed');
+        const defaultPickup = defaultDropoff === 'fixed' ? 'home' : 'fixed';
+        setGuestDropoffType(defaultDropoff as 'fixed' | 'home');
+        setGuestPickupType(defaultPickup as 'fixed' | 'home');
+      } else {
+        // reset when turning off
+        setGuestDropoffType(null);
+        setGuestPickupType(null);
+        setGuestDropoffFixedId('');
+        setGuestPickupFixedId('');
+      }
+      return next;
+    });
+  }, []);
+
+  const updateManifestEntry = useCallback((id: string, field: 'name' | 'phone', value: string) => {
+    setManifestDraft((current) => current.map((entry) => (entry.id === id ? { ...entry, [field]: value } : entry)));
+  }, []);
+
+  const addManifestEntry = useCallback(() => {
+    setManifestDraft((current) => [...current, { id: `guest-${Date.now()}-${current.length}`, name: '', phone: '' }]);
+  }, []);
+
+  const removeManifestEntry = useCallback((id: string) => {
+    setManifestDraft((current) => {
+      const next = current.filter((entry) => entry.id !== id);
+      return next.length > 0 ? next : [{ id: 'guest-1', name: '', phone: '' }];
+    });
+  }, []);
+
 
 
   return (
@@ -1701,13 +2103,6 @@ export default function HomeScreen() {
         </ThemedText>
       </View>
 
-      <StatusBanner
-        visible={Boolean(feedback)}
-        message={feedback?.message || ''}
-        variant={feedbackVariant}
-        onDismiss={() => setFeedback(null)}
-      />
-
       {user?.role === 'driver' ? (
         <View style={styles.driverLayout}>
           <View style={[styles.mapWrap, styles.driverMapWrap]}>
@@ -1716,6 +2111,7 @@ export default function HomeScreen() {
                 ref={driverMapRef}
                 style={styles.map}
                 initialRegion={driverRegion}
+                onMapReady={() => setMapReady(true)}
                 scrollEnabled={true}
                 zoomEnabled={true}
                 rotateEnabled={false}
@@ -1760,6 +2156,40 @@ export default function HomeScreen() {
                     />
                   );
                 })}
+
+                {/* Fixed Destinations */}
+                {fixedDestinations.map((dest) => {
+                  if (!dest.location?.coordinates) return null;
+                  const [longitude, latitude] = dest.location.coordinates;
+                  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+                  
+                  const color = dest.color || '#94a3b8';
+                  const r = parseInt(color.slice(1, 3), 16);
+                  const g = parseInt(color.slice(3, 5), 16);
+                  const b = parseInt(color.slice(5, 7), 16);
+
+                  return [
+                    <Circle
+                      key={`driver-dest-circle-${dest._id}`}
+                      center={{ latitude, longitude }}
+                      radius={dest.pickupRadiusMeters || 80}
+                      fillColor={`rgba(${r}, ${g}, ${b}, 0.15)`}
+                      strokeColor={color}
+                      strokeWidth={2}
+                    />,
+                    <Marker
+                      key={`driver-dest-pin-${dest._id}`}
+                      coordinate={{ latitude, longitude }}
+                      title={dest.name}
+                      description="Fixed Destination"
+                      pinColor={color}
+                      anchor={{ x: 0.5, y: 1 }}
+                      accessible
+                      accessibilityLabel={`Fixed Destination: ${dest.name}`}
+                    />
+                  ];
+                })}
+
                 {assignedShuttle && toShuttleCoordinate(assignedShuttle) ? (
                   <Marker
                     coordinate={toShuttleCoordinate(assignedShuttle)!}
@@ -1776,10 +2206,8 @@ export default function HomeScreen() {
                 {pickupIntents
                   .filter((item) => item.status === 'pending' && !isExpiredIntent(item))
                   .map((item) => {
-                    const [longitude, latitude] = item.location.coordinates;
-                    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
-
-                    const coordinate = { latitude, longitude };
+                    const coordinate = getPickupIntentCoordinate(item);
+                    if (!coordinate) return null;
 
                     return [
                       <Circle
@@ -1829,12 +2257,18 @@ export default function HomeScreen() {
               <View style={styles.phaseLegend}>
                 <Text style={styles.phaseLegendTitle}>Phases</Text>
                 {phaseGeofences.map((phase) => (
-                  <View key={`driver-legend-${phase._id}`} style={styles.phaseLegendRow}>
+                  <View key={`driver-legend-phase-${phase._id}`} style={styles.phaseLegendRow}>
                     <View style={[styles.phaseLegendDot, { backgroundColor: phase.color || '#6366f1' }]} />
                     <Text style={styles.phaseLegendText}>{phase.name.replace(/_/g, ' ')}</Text>
                   </View>
                 ))}
-              </View>
+                {fixedDestinations.map((dest) => (
+                  <View key={`driver-legend-dest-${dest._id}`} style={styles.phaseLegendRow}>
+                    <View style={[styles.phaseLegendDot, { backgroundColor: dest.color || '#94a3b8' }]} />
+                    <Text style={styles.phaseLegendText}>{dest.name.replace(/_/g, ' ')}</Text>
+                  </View>
+                ))}
+                </View>
             ) : null}
 
             <View style={styles.mapLockBadge}>
@@ -1842,6 +2276,8 @@ export default function HomeScreen() {
               <ThemedText style={styles.mapLockText}>Map Locked to Community</ThemedText>
             </View>
           </View>
+
+          {feedbackBanner}
 
           <ScrollView
             contentContainerStyle={styles.driverInfoScroll}
@@ -2087,6 +2523,39 @@ export default function HomeScreen() {
                   );
                 })}
 
+                {/* Fixed Destinations */}
+                {fixedDestinations.map((dest) => {
+                  if (!dest.location?.coordinates) return null;
+                  const [longitude, latitude] = dest.location.coordinates;
+                  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+                  
+                  const color = dest.color || '#94a3b8';
+                  const r = parseInt(color.slice(1, 3), 16);
+                  const g = parseInt(color.slice(3, 5), 16);
+                  const b = parseInt(color.slice(5, 7), 16);
+
+                  return [
+                    <Circle
+                      key={`passenger-dest-circle-${dest._id}`}
+                      center={{ latitude, longitude }}
+                      radius={dest.pickupRadiusMeters || 80}
+                      fillColor={`rgba(${r}, ${g}, ${b}, 0.15)`}
+                      strokeColor={color}
+                      strokeWidth={2}
+                    />,
+                    <Marker
+                      key={`passenger-dest-pin-${dest._id}`}
+                      coordinate={{ latitude, longitude }}
+                      title={dest.name}
+                      description="Fixed Destination"
+                      pinColor={color}
+                      anchor={{ x: 0.5, y: 1 }}
+                      accessible
+                      accessibilityLabel={`Fixed Destination: ${dest.name}`}
+                    />
+                  ];
+                })}
+
                 {mapShuttles.map((item) => {
                   const fallback = toShuttleCoordinate(item);
                   const coordinate = markerCoordinates[item._id] || fallback;
@@ -2134,10 +2603,8 @@ export default function HomeScreen() {
                 {pickupIntents
                   .filter((item) => item.status === 'pending' && !isExpiredIntent(item) && item.passengerId === user?._id)
                   .map((item) => {
-                    const [longitude, latitude] = item.location.coordinates;
-                    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
-
-                    const coordinate = { latitude, longitude };
+                    const coordinate = getPickupIntentCoordinate(item);
+                    if (!coordinate) return null;
 
                     return [
                       <Circle
@@ -2161,6 +2628,7 @@ export default function HomeScreen() {
                       </Marker>,
                     ];
                   })}
+
               </MapView>
             ) : (
               <MapLoadingPlaceholder
@@ -2172,9 +2640,15 @@ export default function HomeScreen() {
               <View style={styles.phaseLegend}>
                 <Text style={styles.phaseLegendTitle}>Phases</Text>
                 {phaseGeofences.map((phase) => (
-                  <View key={`passenger-legend-${phase._id}`} style={styles.phaseLegendRow}>
+                  <View key={`passenger-legend-phase-${phase._id}`} style={styles.phaseLegendRow}>
                     <View style={[styles.phaseLegendDot, { backgroundColor: phase.color || '#6366f1' }]} />
                     <Text style={styles.phaseLegendText}>{phase.name.replace(/_/g, ' ')}</Text>
+                  </View>
+                ))}
+                {fixedDestinations.map((dest) => (
+                  <View key={`passenger-legend-dest-${dest._id}`} style={styles.phaseLegendRow}>
+                    <View style={[styles.phaseLegendDot, { backgroundColor: dest.color || '#94a3b8' }]} />
+                    <Text style={styles.phaseLegendText}>{dest.name.replace(/_/g, ' ')}</Text>
                   </View>
                 ))}
               </View>
@@ -2185,6 +2659,8 @@ export default function HomeScreen() {
               <ThemedText style={styles.mapLockText}>Map Locked to Community</ThemedText>
             </View>
           </View>
+
+          {feedbackBanner}
 
           <ScrollView
             style={styles.sheetWrap}
@@ -2199,34 +2675,6 @@ export default function HomeScreen() {
                 title="Ride Center"
                 subtitle="Choose where you want to go, then request the next available shuttle."
               />
-
-              <View style={[styles.passengerGuideCard, { borderColor, backgroundColor: bgColor }]}> 
-                <View style={styles.passengerGuideHeader}>
-                  <Ionicons name="help-circle-outline" size={16} color={tint} />
-                  <ThemedText style={[styles.passengerGuideTitle, { color: textColor }]}>How to book</ThemedText>
-                </View>
-                <ThemedText style={[styles.passengerGuideText, { color: mutedColor }]}>Pick a destination type, choose the stop or home location, then send your request to the drivers currently on shift.</ThemedText>
-                <View style={styles.passengerGuideSteps}>
-                  <View style={[styles.passengerGuideStep, { borderColor, backgroundColor: surfaceColor }]}>
-                    <View style={[styles.passengerGuideStepNumber, { backgroundColor: tint }]}>
-                      <ThemedText style={styles.passengerGuideStepNumberText}>1</ThemedText>
-                    </View>
-                    <ThemedText style={[styles.passengerGuideStepText, { color: textColor }]}>Choose Fixed stop or Home pickup</ThemedText>
-                  </View>
-                  <View style={[styles.passengerGuideStep, { borderColor, backgroundColor: surfaceColor }]}>
-                    <View style={[styles.passengerGuideStepNumber, { backgroundColor: successColor }]}>
-                      <ThemedText style={styles.passengerGuideStepNumberText}>2</ThemedText>
-                    </View>
-                    <ThemedText style={[styles.passengerGuideStepText, { color: textColor }]}>Select your stop or saved home location</ThemedText>
-                  </View>
-                  <View style={[styles.passengerGuideStep, { borderColor, backgroundColor: surfaceColor }]}>
-                    <View style={[styles.passengerGuideStepNumber, { backgroundColor: palette.navy }]}>
-                      <ThemedText style={styles.passengerGuideStepNumberText}>3</ThemedText>
-                    </View>
-                    <ThemedText style={[styles.passengerGuideStepText, { color: textColor }]}>Tap Request Shuttle to notify on-shift drivers</ThemedText>
-                  </View>
-                </View>
-              </View>
 
               <View style={[styles.fleetStatCard, { 
                 backgroundColor: colorScheme === 'dark' ? surfaceColor : tint,
@@ -2259,232 +2707,500 @@ export default function HomeScreen() {
                 </View>
               </View>
 
-              <View style={styles.destinationTypeRow}>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Choose fixed stop destination"
-                  accessibilityHint="Use a community stop configured by your admin"
-                  accessibilityState={{ selected: selectedDestinationType === 'fixed' }}
-                  style={({ pressed }) => [
-                    styles.destinationTypeCard,
-                    selectedDestinationType === 'fixed'
-                      ? [styles.destinationTypeCardActive, { borderColor: tint, backgroundColor: tint }]
-                      : [
-                          styles.destinationTypeCardInactive,
-                          {
-                            borderColor: tint,
-                            backgroundColor: colorScheme === 'dark' ? AppPalette.darkSkyBg : AppPalette.sky,
-                          },
-                        ],
-                    pressed && styles.destinationTypeCardPressed,
-                  ]}
-                  onPress={handleSelectFixedDestinationType}
-                >
-                  <View style={styles.destinationTypeCardLead}>
-                    <View
-                      style={[
-                        styles.destinationTypeIconBubble,
-                        {
-                          backgroundColor:
-                            selectedDestinationType === 'fixed'
-                              ? 'rgba(255,255,255,0.22)'
-                              : colorScheme === 'dark'
-                                ? AppPalette.darkOverlaySoft
-                                : palette.white,
-                        },
-                      ]}>
+              {pickupOriginCopy ? (
+                <View style={[styles.dispatchHintCard, { borderColor, backgroundColor: bgColor }]}> 
+                  <Ionicons name="people-outline" size={14} color={tint} />
+                  <ThemedText style={[styles.dispatchHintText, { color: textColor }]}>{pickupOriginCopy}</ThemedText>
+                </View>
+              ) : null}
+
+              {user?.role === 'passenger' ? (
+                <View style={[styles.manifestCard, { borderColor, backgroundColor: bgColor }]}> 
+                  <View style={styles.manifestHeaderRow}>
+                    <View>
+                      <ThemedText style={[styles.manifestTitle, { color: textColor }]}>Book for someone else</ThemedText>
+                      <ThemedText style={[styles.manifestCaption, { color: mutedColor }]}>Optional. Add guest names so the driver can match the ride request.</ThemedText>
+                    </View>
+                    <Pressable
+                      accessibilityRole="switch"
+                      accessibilityState={{ checked: bookForOthers }}
+                      accessibilityLabel="Toggle booking for another passenger"
+                      onPress={toggleBookForOthers}
+                      style={({ pressed }) => [
+                        styles.manifestToggle,
+                        { borderColor: bookForOthers ? tint : borderColor, backgroundColor: bookForOthers ? tint : surfaceColor },
+                        pressed && styles.manifestTogglePressed,
+                      ]}
+                    >
+                      <Text style={[styles.manifestToggleText, { color: bookForOthers ? palette.white : textColor }]}>
+                        {bookForOthers ? 'On' : 'Off'}
+                      </Text>
+                    </Pressable>
+                  </View>
+
+                  {bookForOthers ? (
+                    <View style={styles.manifestList}>
+                      {/* Guest Passenger Details */}
+                      <View style={[styles.manifestSection, { borderColor, backgroundColor: surfaceColor }]}>
+                        <View style={styles.manifestSectionHeader}>
+                          <View style={[styles.manifestIconBadge, { backgroundColor: colorScheme === 'dark' ? AppPalette.darkOverlaySoft : palette.slateBg }]}>
+                            <Ionicons name="people" size={16} color={tint} />
+                          </View>
+                          <View>
+                            <ThemedText style={[styles.manifestRowLabel, { color: textColor }]}>Guest Details</ThemedText>
+                            <ThemedText style={[styles.manifestCaption, { color: mutedColor }]}>Who are you booking for?</ThemedText>
+                          </View>
+                        </View>
+                        
+                        {manifestDraft.map((entry, index) => (
+                          <View key={entry.id} style={[styles.manifestInputGroup, { borderColor: colorScheme === 'dark' ? AppPalette.darkOverlaySoft : AppPalette.slateBorder, backgroundColor: bgColor }]}> 
+                            <View style={styles.manifestRowHeader}>
+                              <ThemedText style={[styles.manifestGuestLabel, { color: tint }]}>Passenger {index + 1}</ThemedText>
+                              {manifestDraft.length > 1 ? (
+                                <Pressable onPress={() => removeManifestEntry(entry.id)} accessibilityRole="button" accessibilityLabel={`Remove guest ${index + 1}`} style={{ padding: 4 }}>
+                                  <Ionicons name="close-circle" size={18} color={dangerColor} />
+                                </Pressable>
+                              ) : null}
+                            </View>
+                            <View style={[styles.manifestInputWrapper, { borderColor, backgroundColor: surfaceColor }]}>
+                              <Ionicons name="person-outline" size={14} color={mutedColor} style={styles.manifestInputIcon} />
+                              <TextInput
+                                value={entry.name}
+                                onChangeText={(value) => updateManifestEntry(entry.id, 'name', value)}
+                                placeholder="Full name"
+                                placeholderTextColor={mutedColor}
+                                style={[styles.manifestInputBare, { color: textColor }]}
+                              />
+                            </View>
+                            <View style={[styles.manifestInputWrapper, { borderColor, backgroundColor: surfaceColor, marginTop: 8 }]}>
+                              <Ionicons name="call-outline" size={14} color={mutedColor} style={styles.manifestInputIcon} />
+                              <TextInput
+                                value={entry.phone}
+                                onChangeText={(value) => updateManifestEntry(entry.id, 'phone', value)}
+                                placeholder="Phone number (optional)"
+                                placeholderTextColor={mutedColor}
+                                keyboardType="phone-pad"
+                                style={[styles.manifestInputBare, { color: textColor }]}
+                              />
+                            </View>
+                          </View>
+                        ))}
+
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel="Add another guest"
+                          onPress={addManifestEntry}
+                          style={({ pressed }) => [
+                            styles.manifestAddButton,
+                            { borderColor: tint, backgroundColor: colorScheme === 'dark' ? AppPalette.darkSkyBg : AppPalette.sky },
+                            pressed && { opacity: 0.7 },
+                          ]}
+                        >
+                          <Ionicons name="add-circle" size={16} color={tint} />
+                          <ThemedText style={[styles.manifestAddText, { color: tint }]}>Add Another Guest</ThemedText>
+                        </Pressable>
+                      </View>
+
+                      {/* Guest Pickup */}
+                      <View style={[styles.manifestSection, { borderColor, backgroundColor: surfaceColor }]}> 
+                        <View style={styles.manifestSectionHeader}>
+                          <View style={[styles.manifestIconBadge, { backgroundColor: colorScheme === 'dark' ? AppPalette.darkOverlaySoft : palette.slateBg }]}>
+                            <Ionicons name="location" size={16} color={tint} />
+                          </View>
+                          <View>
+                            <ThemedText style={[styles.manifestRowLabel, { color: textColor }]}>Pickup Location</ThemedText>
+                            <ThemedText style={[styles.manifestCaption, { color: mutedColor }]}>Where should we pick them up?</ThemedText>
+                          </View>
+                        </View>
+                        
+                        <View style={styles.manifestActionRow}>
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel="Guest pickup fixed"
+                            onPress={() => setGuestPickupType('fixed')}
+                            style={({ pressed }) => [
+                              styles.manifestActionButton,
+                              { 
+                                borderColor: guestPickupType === 'fixed' ? tint : borderColor, 
+                                backgroundColor: guestPickupType === 'fixed' ? tint : bgColor 
+                              },
+                              pressed && styles.manifestTogglePressed,
+                            ]}
+                          >
+                            <Ionicons name="flag" size={16} color={guestPickupType === 'fixed' ? palette.white : tint} />
+                            <ThemedText style={[styles.manifestActionText, { color: guestPickupType === 'fixed' ? palette.white : tint }]}>Fixed Stop</ThemedText>
+                          </Pressable>
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel="Guest pickup home"
+                            onPress={() => setGuestPickupType('home')}
+                            style={({ pressed }) => [
+                              styles.manifestActionButton,
+                              { 
+                                borderColor: guestPickupType === 'home' ? successColor : borderColor, 
+                                backgroundColor: guestPickupType === 'home' ? successColor : bgColor 
+                              },
+                              pressed && styles.manifestTogglePressed,
+                            ]}
+                          >
+                            <Ionicons name="home" size={16} color={guestPickupType === 'home' ? palette.white : successColor} />
+                            <ThemedText style={[styles.manifestActionText, { color: guestPickupType === 'home' ? palette.white : successColor }]}>Home</ThemedText>
+                          </Pressable>
+                        </View>
+
+                        {guestPickupType === 'fixed' ? (
+                          <View style={styles.fixedDestinationList}>
+                            {fixedDestinations.length === 0 ? (
+                              <ThemedText style={[styles.manifestCaption, { color: dangerColor, marginTop: 8 }]}>No fixed destinations configured by admin.</ThemedText>
+                            ) : null}
+                            {fixedDestinations.map((d) => (
+                              <Pressable
+                                key={d._id}
+                                onPress={() => setGuestPickupFixedId(d._id)}
+                                accessibilityRole="button"
+                                style={({ pressed }) => [
+                                  styles.manifestFixedOption,
+                                  { borderColor: guestPickupFixedId === d._id ? tint : borderColor, backgroundColor: guestPickupFixedId === d._id ? colorScheme === 'dark' ? AppPalette.darkSkyBg : AppPalette.sky : bgColor },
+                                  pressed && { opacity: 0.7 },
+                                ]}
+                              >
+                                <Ionicons name={guestPickupFixedId === d._id ? "radio-button-on" : "radio-button-off"} size={16} color={guestPickupFixedId === d._id ? tint : mutedColor} />
+                                <ThemedText style={{ color: guestPickupFixedId === d._id ? tint : textColor, fontFamily: guestPickupFixedId === d._id ? OutfitFonts.bold : OutfitFonts.medium }}>{d.name}</ThemedText>
+                              </Pressable>
+                            ))}
+                          </View>
+                        ) : (
+                          <View style={[styles.manifestHomeNotice, { backgroundColor: colorScheme === 'dark' ? AppPalette.darkMintBg : AppPalette.mint, borderColor: successColor }]}>
+                            <Ionicons name="information-circle" size={16} color={successColor} />
+                            <ThemedText style={[styles.manifestCaption, { color: successColor, flex: 1 }]}>Uses the passenger's home GPS coordinate.</ThemedText>
+                          </View>
+                        )}
+                      </View>
+
+                      {/* Guest Drop-off */}
+                      <View style={[styles.manifestSection, { borderColor, backgroundColor: surfaceColor }]}> 
+                        <View style={styles.manifestSectionHeader}>
+                          <View style={[styles.manifestIconBadge, { backgroundColor: colorScheme === 'dark' ? AppPalette.darkOverlaySoft : palette.slateBg }]}>
+                            <Ionicons name="navigate" size={16} color={tint} />
+                          </View>
+                          <View>
+                            <ThemedText style={[styles.manifestRowLabel, { color: textColor }]}>Drop-off Location</ThemedText>
+                            <ThemedText style={[styles.manifestCaption, { color: mutedColor }]}>Where are they going?</ThemedText>
+                          </View>
+                        </View>
+                        
+                        <View style={styles.manifestActionRow}>
+                          {guestPickupType !== 'fixed' && (
+                            <Pressable
+                              accessibilityRole="button"
+                              accessibilityLabel="Guest dropoff fixed"
+                              onPress={() => setGuestDropoffType('fixed')}
+                              style={({ pressed }) => [
+                                styles.manifestActionButton,
+                                { 
+                                  borderColor: guestDropoffType === 'fixed' ? tint : borderColor, 
+                                  backgroundColor: guestDropoffType === 'fixed' ? tint : bgColor 
+                                },
+                                pressed && styles.manifestTogglePressed,
+                              ]}
+                            >
+                              <Ionicons name="flag" size={16} color={guestDropoffType === 'fixed' ? palette.white : tint} />
+                              <ThemedText style={[styles.manifestActionText, { color: guestDropoffType === 'fixed' ? palette.white : tint }]}>Fixed Stop</ThemedText>
+                            </Pressable>
+                          )}
+                          {guestPickupType !== 'home' && (
+                            <Pressable
+                              accessibilityRole="button"
+                              accessibilityLabel="Guest dropoff home"
+                              onPress={() => setGuestDropoffType('home')}
+                              style={({ pressed }) => [
+                                styles.manifestActionButton,
+                                { 
+                                  borderColor: guestDropoffType === 'home' ? successColor : borderColor, 
+                                  backgroundColor: guestDropoffType === 'home' ? successColor : bgColor 
+                                },
+                                pressed && styles.manifestTogglePressed,
+                              ]}
+                            >
+                              <Ionicons name="home" size={16} color={guestDropoffType === 'home' ? palette.white : successColor} />
+                              <ThemedText style={[styles.manifestActionText, { color: guestDropoffType === 'home' ? palette.white : successColor }]}>Home</ThemedText>
+                            </Pressable>
+                          )}
+                        </View>
+
+                        {guestDropoffType === 'fixed' ? (
+                          <View style={styles.fixedDestinationList}>
+                            {fixedDestinations.length === 0 ? (
+                              <ThemedText style={[styles.manifestCaption, { color: dangerColor, marginTop: 8 }]}>No fixed destinations configured by admin.</ThemedText>
+                            ) : null}
+                            {fixedDestinations.map((d) => (
+                              <Pressable
+                                key={d._id}
+                                onPress={() => setGuestDropoffFixedId(d._id)}
+                                accessibilityRole="button"
+                                style={({ pressed }) => [
+                                  styles.manifestFixedOption,
+                                  { borderColor: guestDropoffFixedId === d._id ? tint : borderColor, backgroundColor: guestDropoffFixedId === d._id ? colorScheme === 'dark' ? AppPalette.darkSkyBg : AppPalette.sky : bgColor },
+                                  pressed && { opacity: 0.7 },
+                                ]}
+                              >
+                                <Ionicons name={guestDropoffFixedId === d._id ? "radio-button-on" : "radio-button-off"} size={16} color={guestDropoffFixedId === d._id ? tint : mutedColor} />
+                                <ThemedText style={{ color: guestDropoffFixedId === d._id ? tint : textColor, fontFamily: guestDropoffFixedId === d._id ? OutfitFonts.bold : OutfitFonts.medium }}>{d.name}</ThemedText>
+                              </Pressable>
+                            ))}
+                          </View>
+                        ) : (
+                          <View style={[styles.manifestHomeNotice, { backgroundColor: colorScheme === 'dark' ? AppPalette.darkMintBg : AppPalette.mint, borderColor: successColor }]}>
+                            <Ionicons name="information-circle" size={16} color={successColor} />
+                            <ThemedText style={[styles.manifestCaption, { color: successColor, flex: 1 }]}>Uses the passenger's home GPS coordinate.</ThemedText>
+                          </View>
+                        )}
+                      </View>
+                    </View>
+                  ) : (
+                    <ThemedText style={[styles.manifestCaption, { color: mutedColor }]}>Keep this off to book only for yourself.</ThemedText>
+                  )}
+                </View>
+              ) : null}
+
+              {!bookForOthers ? (
+                allowedPickupDestinationTypes.length > 0 ? (
+                  <View style={styles.destinationTypeRow}>
+                  {canUsePickupDestinationType('fixed') ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Choose fixed destination"
+                      accessibilityHint="Use a community destination configured by your admin"
+                      accessibilityState={{ selected: selectedDestinationType === 'fixed' }}
+                      style={({ pressed }) => [
+                        styles.destinationTypeCard,
+                        selectedDestinationType === 'fixed'
+                          ? [styles.destinationTypeCardActive, { borderColor: tint, backgroundColor: tint }]
+                          : [
+                              styles.destinationTypeCardInactive,
+                              {
+                                borderColor: tint,
+                                backgroundColor: colorScheme === 'dark' ? AppPalette.darkSkyBg : AppPalette.sky,
+                              },
+                            ],
+                        pressed && styles.destinationTypeCardPressed,
+                      ]}
+                      onPress={handleSelectFixedDestinationType}
+                    >
+                      <View style={styles.destinationTypeCardLead}>
+                        <View
+                          style={[
+                            styles.destinationTypeIconBubble,
+                            {
+                              backgroundColor:
+                                selectedDestinationType === 'fixed'
+                                  ? 'rgba(255,255,255,0.22)'
+                                  : colorScheme === 'dark'
+                                    ? AppPalette.darkOverlaySoft
+                                    : palette.white,
+                            },
+                          ]}>
+                          <Ionicons
+                            name="flag-outline"
+                            size={16}
+                            color={selectedDestinationType === 'fixed' ? palette.white : tint}
+                          />
+                        </View>
+                        <View style={styles.destinationTypeLabelWrap}>
+                          <ThemedText
+                            numberOfLines={1}
+                            style={[
+                              styles.destinationTypeLabel,
+                              { color: selectedDestinationType === 'fixed' ? palette.white : tint },
+                            ]}>
+                            Fixed destination
+                          </ThemedText>
+                          <ThemedText
+                            numberOfLines={1}
+                            style={[
+                              styles.destinationTypeCaption,
+                              { color: selectedDestinationType === 'fixed' ? 'rgba(255,255,255,0.82)' : mutedColor },
+                            ]}>
+                            Community destination
+                          </ThemedText>
+                        </View>
+                      </View>
                       <Ionicons
-                        name="flag-outline"
+                        name={selectedDestinationType === 'fixed' ? 'checkmark-circle' : 'chevron-forward'}
                         size={16}
                         color={selectedDestinationType === 'fixed' ? palette.white : tint}
                       />
-                    </View>
-                    <View style={styles.destinationTypeLabelWrap}>
-                      <ThemedText
-                        numberOfLines={1}
-                        style={[
-                          styles.destinationTypeLabel,
-                          { color: selectedDestinationType === 'fixed' ? palette.white : tint },
-                        ]}>
-                        Fixed stop
-                      </ThemedText>
-                      <ThemedText
-                        numberOfLines={1}
-                        style={[
-                          styles.destinationTypeCaption,
-                          { color: selectedDestinationType === 'fixed' ? 'rgba(255,255,255,0.82)' : mutedColor },
-                        ]}>
-                        Community stop
-                      </ThemedText>
-                    </View>
-                  </View>
-                  <Ionicons
-                    name={selectedDestinationType === 'fixed' ? 'checkmark-circle' : 'chevron-forward'}
-                    size={16}
-                    color={selectedDestinationType === 'fixed' ? palette.white : tint}
-                  />
-                </Pressable>
+                    </Pressable>
+                  ) : null}
 
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Choose home pickup destination"
-                  accessibilityHint="Request pickup to your saved home location"
-                  accessibilityState={{ selected: selectedDestinationType === 'home' }}
-                  style={({ pressed }) => [
-                    styles.destinationTypeCard,
-                    selectedDestinationType === 'home'
-                      ? [styles.destinationTypeCardActive, { borderColor: successColor, backgroundColor: successColor }]
-                      : [
-                          styles.destinationTypeCardInactive,
-                          {
-                            borderColor: successColor,
-                            backgroundColor: colorScheme === 'dark' ? AppPalette.darkMintBg : AppPalette.mint,
-                          },
-                        ],
-                    pressed && styles.destinationTypeCardPressed,
-                  ]}
-                  onPress={handleSelectHomeDestinationType}
-                >
-                  <View style={styles.destinationTypeCardLead}>
-                    <View
-                      style={[
-                        styles.destinationTypeIconBubble,
-                        {
-                          backgroundColor:
-                            selectedDestinationType === 'home'
-                              ? 'rgba(255,255,255,0.22)'
-                              : colorScheme === 'dark'
-                                ? AppPalette.darkOverlaySoft
-                                : palette.white,
-                        },
-                      ]}>
+                  {canUsePickupDestinationType('home') ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Choose home destination"
+                      accessibilityHint="Request pickup to your saved home destination"
+                      accessibilityState={{ selected: selectedDestinationType === 'home' }}
+                      style={({ pressed }) => [
+                        styles.destinationTypeCard,
+                        selectedDestinationType === 'home'
+                          ? [styles.destinationTypeCardActive, { borderColor: successColor, backgroundColor: successColor }]
+                          : [
+                              styles.destinationTypeCardInactive,
+                              {
+                                borderColor: successColor,
+                                backgroundColor: colorScheme === 'dark' ? AppPalette.darkMintBg : AppPalette.mint,
+                              },
+                            ],
+                        pressed && styles.destinationTypeCardPressed,
+                      ]}
+                      onPress={handleSelectHomeDestinationType}
+                    >
+                      <View style={styles.destinationTypeCardLead}>
+                        <View
+                          style={[
+                            styles.destinationTypeIconBubble,
+                            {
+                              backgroundColor:
+                                selectedDestinationType === 'home'
+                                  ? 'rgba(255,255,255,0.22)'
+                                  : colorScheme === 'dark'
+                                    ? AppPalette.darkOverlaySoft
+                                    : palette.white,
+                            },
+                          ]}>
+                          <Ionicons
+                            name="home-outline"
+                            size={16}
+                            color={selectedDestinationType === 'home' ? palette.white : successColor}
+                          />
+                        </View>
+                        <View style={styles.destinationTypeLabelWrap}>
+                          <ThemedText
+                            numberOfLines={1}
+                            style={[
+                              styles.destinationTypeLabel,
+                              { color: selectedDestinationType === 'home' ? palette.white : successColor },
+                            ]}>
+                            Home destination
+                          </ThemedText>
+                          <ThemedText
+                            numberOfLines={1}
+                            style={[
+                              styles.destinationTypeCaption,
+                              { color: selectedDestinationType === 'home' ? 'rgba(255,255,255,0.82)' : mutedColor },
+                            ]}>
+                            Saved GPS destination
+                          </ThemedText>
+                        </View>
+                      </View>
                       <Ionicons
-                        name="home-outline"
+                        name={selectedDestinationType === 'home' ? 'checkmark-circle' : 'chevron-forward'}
                         size={16}
                         color={selectedDestinationType === 'home' ? palette.white : successColor}
                       />
-                    </View>
-                    <View style={styles.destinationTypeLabelWrap}>
-                      <ThemedText
-                        numberOfLines={1}
-                        style={[
-                          styles.destinationTypeLabel,
-                          { color: selectedDestinationType === 'home' ? palette.white : successColor },
-                        ]}>
-                        Home pickup
-                      </ThemedText>
-                      <ThemedText
-                        numberOfLines={1}
-                        style={[
-                          styles.destinationTypeCaption,
-                          { color: selectedDestinationType === 'home' ? 'rgba(255,255,255,0.82)' : mutedColor },
-                        ]}>
-                        Saved GPS location
-                      </ThemedText>
-                    </View>
-                  </View>
-                  <Ionicons
-                    name={selectedDestinationType === 'home' ? 'checkmark-circle' : 'chevron-forward'}
-                    size={16}
-                    color={selectedDestinationType === 'home' ? palette.white : successColor}
-                  />
-                </Pressable>
-              </View>
-
-              <View style={[styles.dispatchHintCard, { borderColor, backgroundColor: bgColor }]}> 
-                <Ionicons name="people-outline" size={14} color={tint} />
-                <ThemedText style={[styles.dispatchHintText, { color: textColor }]}>Your request goes to the next available shuttle driver on shift.</ThemedText>
-              </View>
-
-              {selectedDestinationType === 'fixed' ? (
-                <View style={styles.statusSection}>
-                  <ThemedText style={[styles.metaText, { color: mutedColor }]}>Select destination</ThemedText>
-                  {fixedDestinations.length === 0 ? (
-                    <ThemedText style={[styles.metaText, { color: dangerColor }]}>No fixed destinations configured by admin yet.</ThemedText>
+                    </Pressable>
                   ) : null}
-                  {fixedDestinations.map((item) => (
-                    <FixedDestinationChip
-                      key={item._id}
-                      item={item}
-                      selected={selectedFixedDestinationId === item._id}
-                      borderColor={borderColor}
-                      bgColor={bgColor}
-                      textColor={textColor}
-                      tint={tint}
-                      onSelect={handleSelectFixedDestination}
-                    />
-                  ))}
-                </View>
-              ) : selectedDestinationType === 'home' ? (
-                <ThemedText style={[styles.metaText, { color: mutedColor }]}>Home destination uses your GPS location.</ThemedText>
-              ) : (
-                <View
-                  style={[
-                    styles.destinationPromptCard,
-                    {
-                      borderColor,
-                      backgroundColor: colorScheme === 'dark' ? AppPalette.darkSkyBg : AppPalette.sky,
-                    },
-                  ]}
-                >
-                  <Ionicons name="arrow-up-circle-outline" size={14} color={tint} />
-                  <ThemedText style={[styles.destinationPromptText, { color: textColor }]}>Pick Fixed or Home above to unlock pickup requests.</ThemedText>
-                </View>
+                  </View>
+                ) : (
+                  <View style={[styles.destinationPromptCard, { borderColor, backgroundColor: colorScheme === 'dark' ? AppPalette.darkSkyBg : AppPalette.sky }]}> 
+                    <Ionicons name="location-outline" size={14} color={tint} />
+                    <ThemedText style={[styles.destinationPromptText, { color: textColor }]}>Save your home address or configure fixed destinations to enable pickup requests.</ThemedText>
+                  </View>
+                )
+              ) : null}
+
+              {!bookForOthers && (
+                selectedDestinationType === 'fixed' ? (
+                  <View style={styles.statusSection}>
+                    <ThemedText style={[styles.metaText, { color: mutedColor }]}>Select destination</ThemedText>
+                    {fixedDestinations.length === 0 ? (
+                      <ThemedText style={[styles.metaText, { color: dangerColor }]}>No fixed destinations configured by admin yet.</ThemedText>
+                    ) : null}
+                    {fixedDestinations.map((item) => (
+                      <FixedDestinationChip
+                        key={item._id}
+                        item={item}
+                        selected={selectedFixedDestinationId === item._id}
+                        borderColor={borderColor}
+                        bgColor={bgColor}
+                        textColor={textColor}
+                        tint={tint}
+                        onSelect={handleSelectFixedDestination}
+                      />
+                    ))}
+                  </View>
+                ) : selectedDestinationType === 'home' ? (
+                  <ThemedText style={[styles.metaText, { color: mutedColor }]}>Home destination uses your GPS location.</ThemedText>
+                ) : (
+                  <View
+                    style={[
+                      styles.destinationPromptCard,
+                      {
+                        borderColor,
+                        backgroundColor: colorScheme === 'dark' ? AppPalette.darkSkyBg : AppPalette.sky,
+                      },
+                    ]}
+                  >
+                    <Ionicons name="arrow-up-circle-outline" size={14} color={tint} />
+                    <ThemedText style={[styles.destinationPromptText, { color: textColor }]}>Pick Fixed or Home above to unlock pickup requests.</ThemedText>
+                  </View>
+                )
               )}
 
-              <View
-                style={[
-                  styles.destinationIndicatorCard,
-                  {
-                    borderColor: selectedDestinationAccentColor,
-                    backgroundColor: selectedDestinationCardBackground,
-                  },
-                ]}
-              >
+              {!bookForOthers ? (
                 <View
                   style={[
-                    styles.destinationIndicatorIconBadge,
+                    styles.destinationIndicatorCard,
                     {
                       borderColor: selectedDestinationAccentColor,
-                      backgroundColor: colorScheme === 'dark' ? AppPalette.darkOverlaySoft : palette.white,
+                      backgroundColor: selectedDestinationCardBackground,
                     },
                   ]}
                 >
-                  <Ionicons
-                    name={
-                      selectedDestinationType === 'home'
-                        ? 'home-outline'
-                        : selectedDestinationType === 'fixed'
-                          ? 'flag-outline'
-                          : 'navigate-outline'
-                    }
-                    size={13}
-                    color={selectedDestinationAccentColor}
-                  />
-                </View>
-                <View style={styles.destinationIndicatorCopy}>
-                  <View style={styles.destinationIndicatorHeaderRow}>
-                    <ThemedText style={[styles.destinationIndicatorLabel, { color: selectedDestinationAccentColor }]}>Selected Destination</ThemedText>
-                    <View
-                      style={[
-                        styles.destinationIndicatorTypePill,
-                        {
-                          backgroundColor: colorScheme === 'dark' ? AppPalette.darkOverlaySoft : palette.white,
-                        },
-                      ]}
-                    >
-                      <ThemedText style={[styles.destinationIndicatorTypeText, { color: selectedDestinationAccentColor }]}>
-                        {selectedDestinationType === 'home'
-                          ? 'HOME'
+                  <View
+                    style={[
+                      styles.destinationIndicatorIconBadge,
+                      {
+                        borderColor: selectedDestinationAccentColor,
+                        backgroundColor: colorScheme === 'dark' ? AppPalette.darkOverlaySoft : palette.white,
+                      },
+                    ]}
+                  >
+                    <Ionicons
+                      name={
+                        selectedDestinationType === 'home'
+                          ? 'home-outline'
                           : selectedDestinationType === 'fixed'
-                            ? 'FIXED'
-                            : 'NONE'}
-                      </ThemedText>
-                    </View>
+                            ? 'flag-outline'
+                            : 'navigate-outline'
+                      }
+                      size={13}
+                      color={selectedDestinationAccentColor}
+                    />
                   </View>
-                  <ThemedText numberOfLines={2} style={[styles.destinationIndicatorValue, { color: textColor }]}>{selectedDestinationSummary}</ThemedText>
+                  <View style={styles.destinationIndicatorCopy}>
+                    <View style={styles.destinationIndicatorHeaderRow}>
+                      <ThemedText style={[styles.destinationIndicatorLabel, { color: selectedDestinationAccentColor }]}>Selected Destination</ThemedText>
+                      <View
+                        style={[
+                          styles.destinationIndicatorTypePill,
+                          {
+                            backgroundColor: colorScheme === 'dark' ? AppPalette.darkOverlaySoft : palette.white,
+                          },
+                        ]}
+                      >
+                        <ThemedText style={[styles.destinationIndicatorTypeText, { color: selectedDestinationAccentColor }]}> 
+                          {selectedDestinationType === 'home'
+                            ? 'HOME'
+                            : selectedDestinationType === 'fixed'
+                              ? 'FIXED'
+                              : 'NONE'}
+                        </ThemedText>
+                      </View>
+                    </View>
+                    <ThemedText numberOfLines={2} style={[styles.destinationIndicatorValue, { color: textColor }]}>{selectedDestinationSummary}</ThemedText>
+                  </View>
                 </View>
-              </View>
+              ) : null}
 
 
 
@@ -2617,7 +3333,11 @@ export default function HomeScreen() {
                   { backgroundColor: pickupCtaBg },
                 ]}
                 onPress={handleRequestPickup}
-                disabled={pickupDisabled || !isDestinationReady || (selectedDestinationType === 'fixed' && fixedDestinations.length === 0)}
+                disabled={
+                  pickupDisabled ||
+                  !isDestinationReady ||
+                  (!bookForOthers && selectedDestinationType === 'fixed' && fixedDestinations.length === 0)
+                }
                 accessibilityRole="button"
                 accessibilityLabel="Request shuttle"
               >
@@ -2627,15 +3347,23 @@ export default function HomeScreen() {
                   color={palette.white}
                 />
                 <ThemedText style={styles.passengerPrimaryText}>
-                  {!selectedDestinationType
-                    ? 'Select Destination'
-                    : pickupSubmitting
-                    ? 'Sending Request...'
-                    : activePassengerPickupIntents.length > 0
-                      ? 'Pickup Active'
-                      : noDriversOnDuty
-                        ? 'No Driver On Duty'
-                        : 'Request Shuttle'}
+                  {bookForOthers
+                    ? pickupSubmitting
+                      ? 'Sending Request...'
+                      : activePassengerPickupIntents.length > 0
+                        ? 'Pickup Active'
+                        : noDriversOnDuty
+                          ? 'No Driver On Duty'
+                          : 'Request Shuttle'
+                    : !selectedDestinationType
+                      ? 'Select Destination'
+                      : pickupSubmitting
+                        ? 'Sending Request...'
+                        : activePassengerPickupIntents.length > 0
+                          ? 'Pickup Active'
+                          : noDriversOnDuty
+                            ? 'No Driver On Duty'
+                            : 'Request Shuttle'}
                 </ThemedText>
               </Pressable>
 
@@ -2767,6 +3495,12 @@ export default function HomeScreen() {
                         ? 'You are in the waiting queue. We will dispatch you automatically.'
                         : 'Waiting for a shuttle to be assigned to you...'}
                   </ThemedText>
+
+                  {activePickupManifestSummary ? (
+                    <ThemedText style={[styles.pickupActiveMessage, { color: mutedColor }]}>
+                      Booking for: {activePickupManifestSummary}
+                    </ThemedText>
+                  ) : null}
 
                   {/* ── Cancel button ── */}
                   <Pressable
@@ -2996,6 +3730,7 @@ export default function HomeScreen() {
           </ScrollView>
         </View>
       )}
+      <HowToBookModal visible={showHowToBookModal} onClose={() => setShowHowToBookModal(false)} />
     </SafeAreaView>
   );
 }
@@ -3334,57 +4069,6 @@ const styles = StyleSheet.create({
     padding: DesignTokens.spacing.md,
     borderRadius: DesignTokens.radius.lg,
   },
-  passengerGuideCard: {
-    borderWidth: 1,
-    borderRadius: DesignTokens.radius.lg,
-    padding: DesignTokens.spacing.sm,
-    gap: DesignTokens.spacing.xs,
-  },
-  passengerGuideHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: DesignTokens.spacing.xs,
-  },
-  passengerGuideTitle: {
-    fontFamily: OutfitFonts.extraBold,
-    fontSize: 13,
-  },
-  passengerGuideText: {
-    fontFamily: OutfitFonts.semiBold,
-    fontSize: 12,
-    lineHeight: 16,
-  },
-  passengerGuideSteps: {
-    gap: DesignTokens.spacing.xs,
-  },
-  passengerGuideStep: {
-    borderWidth: 1,
-    borderRadius: DesignTokens.radius.md,
-    paddingHorizontal: DesignTokens.spacing.sm,
-    paddingVertical: DesignTokens.spacing.xs,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: DesignTokens.spacing.sm,
-  },
-  passengerGuideStepNumber: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-  },
-  passengerGuideStepNumberText: {
-    color: palette.white,
-    fontFamily: OutfitFonts.extraBold,
-    fontSize: 12,
-  },
-  passengerGuideStepText: {
-    flex: 1,
-    fontFamily: OutfitFonts.bold,
-    fontSize: 12,
-    lineHeight: 16,
-  },
   fleetStatCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -3538,6 +4222,180 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontFamily: OutfitFonts.semiBold,
     lineHeight: 16,
+  },
+  manifestCard: {
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.md,
+    padding: DesignTokens.spacing.sm,
+    gap: DesignTokens.spacing.sm,
+    marginTop: DesignTokens.spacing.sm,
+  },
+  manifestHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: DesignTokens.spacing.sm,
+  },
+  manifestTitle: {
+    fontFamily: OutfitFonts.bold,
+    fontSize: 14,
+    lineHeight: 18,
+  },
+  manifestCaption: {
+    fontFamily: OutfitFonts.medium,
+    fontSize: 11,
+    lineHeight: 15,
+    marginTop: 2,
+  },
+  manifestToggle: {
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.pill,
+    paddingHorizontal: DesignTokens.spacing.sm,
+    paddingVertical: DesignTokens.spacing.xs,
+  },
+  manifestTogglePressed: {
+    opacity: 0.84,
+  },
+  manifestToggleText: {
+    fontFamily: OutfitFonts.bold,
+    fontSize: 12,
+  },
+  manifestList: {
+    gap: DesignTokens.spacing.xs,
+  },
+  manifestSection: {
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.md,
+    padding: DesignTokens.spacing.sm,
+    gap: DesignTokens.spacing.sm,
+    marginTop: DesignTokens.spacing.xs,
+  },
+  manifestSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: DesignTokens.spacing.sm,
+    marginBottom: DesignTokens.spacing.xs,
+  },
+  manifestIconBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  manifestInputGroup: {
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.md,
+    padding: DesignTokens.spacing.sm,
+  },
+  manifestGuestLabel: {
+    fontFamily: OutfitFonts.bold,
+    fontSize: 12,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  manifestInputWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.sm,
+    paddingHorizontal: DesignTokens.spacing.sm,
+    minHeight: 44,
+  },
+  manifestInputIcon: {
+    marginRight: DesignTokens.spacing.xs,
+  },
+  manifestInputBare: {
+    flex: 1,
+    fontFamily: OutfitFonts.medium,
+    fontSize: 14,
+    paddingVertical: DesignTokens.spacing.xs,
+  },
+  fixedDestinationList: {
+    marginTop: DesignTokens.spacing.xs,
+    gap: 6,
+  },
+  manifestFixedOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: DesignTokens.spacing.sm,
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.md,
+    paddingHorizontal: DesignTokens.spacing.sm,
+    paddingVertical: DesignTokens.spacing.sm,
+  },
+  manifestHomeNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: DesignTokens.spacing.xs,
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.md,
+    paddingHorizontal: DesignTokens.spacing.sm,
+    paddingVertical: DesignTokens.spacing.sm,
+    marginTop: DesignTokens.spacing.xs,
+  },
+  manifestRow: {
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.md,
+    padding: DesignTokens.spacing.sm,
+    gap: DesignTokens.spacing.xs,
+  },
+  manifestRowHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  manifestRowLabel: {
+    fontFamily: OutfitFonts.bold,
+    fontSize: 13,
+  },
+  manifestActionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: DesignTokens.spacing.xs,
+    marginTop: DesignTokens.spacing.xs,
+  },
+  manifestActionButton: {
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.pill,
+    paddingHorizontal: DesignTokens.spacing.sm,
+    paddingVertical: DesignTokens.spacing.xs,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: DesignTokens.spacing.xs,
+  },
+  manifestActionText: {
+    fontFamily: OutfitFonts.bold,
+    fontSize: 12,
+  },
+  manifestInput: {
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.md,
+    paddingHorizontal: DesignTokens.spacing.sm,
+    paddingVertical: DesignTokens.spacing.xs,
+    fontSize: 14,
+    fontFamily: OutfitFonts.medium,
+    minHeight: 42,
+  },
+  manifestAddButton: {
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.md,
+    paddingHorizontal: DesignTokens.spacing.sm,
+    paddingVertical: DesignTokens.spacing.xs,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: DesignTokens.spacing.xs,
+    minHeight: 44,
+  },
+  manifestAddText: {
+    fontFamily: OutfitFonts.bold,
+    fontSize: 13,
+  },
+  manifestSummary: {
+    fontFamily: OutfitFonts.medium,
+    fontSize: 11,
+    lineHeight: 15,
   },
   passengerStatPill: {
     flex: 1,

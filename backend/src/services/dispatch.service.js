@@ -79,6 +79,8 @@ const emitDispatchEvents = (io, { communityId, pickupRequest, shuttle, driverId,
     passengerId: pickupRequest.passengerId,
     fareType: pickupRequest.fareType,
     fareExpected,
+    // Prefer explicit pickupLocation when present
+    pickupLocation: pickupRequest.pickupLocation || null,
     location: pickupRequest.location,
     destinationType: pickupRequest.destinationType,
     destinationLabel: pickupRequest.destinationLabel,
@@ -215,7 +217,12 @@ const findAndDispatch = async ({
     passengerHomePhase !== undefined ? passengerHomePhase : pickupRequest?.passengerHomePhase
   );
 
-  const [passengerLng, passengerLat] = location.coordinates;
+  // Prefer authoritative pickup coordinates when present on pickupRequest
+  const pickupCoords = (pickupRequest && pickupRequest.pickupLocation && Array.isArray(pickupRequest.pickupLocation.coordinates) && pickupRequest.pickupLocation.coordinates.length === 2)
+    ? pickupRequest.pickupLocation.coordinates
+    : (location && Array.isArray(location.coordinates) ? location.coordinates : [0, 0]);
+
+  const [passengerLng, passengerLat] = pickupCoords;
   const shuttles = await loadOnDutyShuttles(communityId);
 
   if (shuttles.length === 0) {

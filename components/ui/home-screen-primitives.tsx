@@ -10,7 +10,9 @@ export type FixedDestinationOption = {
   _id: string;
   name: string;
   location: { type: 'Point'; coordinates: [number, number] };
+  pickupRadiusMeters?: number;
   isActive?: boolean;
+  color?: string;
 };
 
 type FixedDestinationChipProps = {

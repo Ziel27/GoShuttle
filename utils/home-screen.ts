@@ -1,3 +1,4 @@
+import type { PhaseGeofence } from '@/services/community';
 import { toLatLngPoint } from '@/services/map-types';
 import type { AutomationDiagnostics, Shuttle } from '@/services/shuttle';
 import type { PickupIntent } from '@/services/trip';
@@ -8,6 +9,10 @@ export type PickupIntentEventPayload = {
   _id?: string;
   passengerId?: string;
   location?: {
+    type?: 'Point';
+    coordinates?: [number, number];
+  };
+  pickupLocation?: {
     type?: 'Point';
     coordinates?: [number, number];
   };
@@ -58,8 +63,9 @@ export const toMaxZoomOutRegionFromBoundary = (coordinates: LatLng[]): Region | 
   const minLng = Math.min(...lngs);
   const maxLng = Math.max(...lngs);
 
-  const latitudeDelta = Math.max((maxLat - minLat) * 1.05, 0.005);
-  const longitudeDelta = Math.max((maxLng - minLng) * 1.05, 0.005);
+  // Must be >= toRegionFromBoundary's 1.4x multiplier so the initial view isn't snapped inward
+  const latitudeDelta = Math.max((maxLat - minLat) * 1.5, 0.005);
+  const longitudeDelta = Math.max((maxLng - minLng) * 1.5, 0.005);
 
   return {
     latitude: (minLat + maxLat) / 2,
@@ -109,6 +115,7 @@ export const describeUnboardingReason = (
 export const toPickupIntent = (payload: PickupIntentEventPayload): PickupIntent | null => {
   const id = payload._id || payload.requestId;
   const coordinates = payload.location?.coordinates;
+  const explicitPickupCoordinates = payload.pickupLocation?.coordinates;
 
   if (!coordinates || coordinates.length !== 2) {
     return null;
@@ -129,6 +136,12 @@ export const toPickupIntent = (payload: PickupIntentEventPayload): PickupIntent 
       type: 'Point',
       coordinates: [point.longitude, point.latitude],
     },
+    pickupLocation: explicitPickupCoordinates?.length === 2
+      ? {
+        type: 'Point',
+        coordinates: explicitPickupCoordinates,
+      }
+      : null,
     destinationType: payload.destinationType || 'fixed',
     destinationLabel: payload.destinationLabel || 'Destination',
     destinationLocation: payload.destinationLocation?.coordinates?.length === 2
@@ -140,9 +153,19 @@ export const toPickupIntent = (payload: PickupIntentEventPayload): PickupIntent 
         type: 'Point',
         coordinates: [point.longitude, point.latitude],
       },
+    passengerHomePhase: null,
+    fareType: 'standard',
     status: payload.status || 'pending',
     expiresAt: payload.expiresAt || new Date(Date.now() + 10 * 60 * 1000).toISOString(),
   };
+};
+
+export const getPickupIntentCoordinate = (intent: PickupIntent): LatLng | null => {
+  const coordinates = intent.pickupLocation?.coordinates?.length === 2
+    ? intent.pickupLocation.coordinates
+    : intent.location?.coordinates;
+
+  return toLatLngPoint(coordinates || []);
 };
 
 export const isExpiredIntent = (intent: PickupIntent) =>
@@ -167,6 +190,136 @@ export const getDistanceMeters = (from: LatLng, to: LatLng) => {
     Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return earthRadius * c;
+};
+
+const pointInRing = (latitude: number, longitude: number, ring: [number, number][]) => {
+  let inside = false;
+
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    const intersects = yi > latitude !== yj > latitude && longitude < ((xj - xi) * (latitude - yi)) / (yj - yi) + xi;
+    if (intersects) inside = !inside;
+  }
+
+  return inside;
+};
+
+export const detectPhaseFromCoordinates = (
+  coordinate: LatLng | null | undefined,
+  phaseGeofences: PhaseGeofence[]
+) => {
+  if (!coordinate) return null;
+
+  for (const phase of phaseGeofences) {
+    if (phase.isActive === false) continue;
+
+    const ring = phase.boundaries?.coordinates?.[0] || [];
+    if (ring.length < 4) continue;
+
+    if (pointInRing(coordinate.latitude, coordinate.longitude, ring)) {
+      return phase.name;
+    }
+  }
+
+  return null;
+};
+
+type PickupLocationLike = {
+  _id: string;
+  name?: string;
+  location: {
+    type: 'Point';
+    coordinates: [number, number];
+  };
+  pickupRadiusMeters?: number;
+};
+
+export type PickupOriginContext = {
+  type: 'home' | 'fixed' | 'unknown';
+  label: string;
+  matchedDestinationId: string | null;
+  matchedDestinationLabel: string | null;
+};
+
+const toPickupPoint = (coordinates?: [number, number] | null): LatLng | null => {
+  if (!coordinates || coordinates.length !== 2) return null;
+
+  const [longitude, latitude] = coordinates;
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+
+  return { latitude, longitude };
+};
+
+export const detectPickupOrigin = ({
+  currentLocation,
+  homeDestination,
+  fixedDestinations,
+  detectionRadiusMeters = 80,
+}: {
+  currentLocation: LatLng | null | undefined;
+  homeDestination?: {
+    label?: string | null;
+    location?: {
+      coordinates?: [number, number] | null;
+    };
+  } | null;
+  fixedDestinations?: PickupLocationLike[];
+  detectionRadiusMeters?: number;
+}): PickupOriginContext => {
+  if (!currentLocation) {
+    return {
+      type: 'unknown',
+      label: 'Current pickup location not detected yet.',
+      matchedDestinationId: null,
+      matchedDestinationLabel: null,
+    };
+  }
+
+  const homePoint = toPickupPoint(homeDestination?.location?.coordinates ?? null);
+  if (homePoint) {
+    const homeDistance = getDistanceMeters(currentLocation, homePoint);
+    if (homeDistance <= detectionRadiusMeters) {
+      return {
+        type: 'home',
+        label: homeDestination?.label?.trim() || 'Home address',
+        matchedDestinationId: null,
+        matchedDestinationLabel: homeDestination?.label?.trim() || 'Home address',
+      };
+    }
+  }
+
+  let nearestFixed: PickupOriginContext | null = null;
+  let nearestFixedDistance = Number.POSITIVE_INFINITY;
+
+  for (const item of fixedDestinations || []) {
+    const fixedPoint = toPickupPoint(item.location?.coordinates ?? null);
+    if (!fixedPoint) continue;
+
+    const distance = getDistanceMeters(currentLocation, fixedPoint);
+    const itemRadius = Number(item.pickupRadiusMeters);
+    const effectiveRadius = Number.isFinite(itemRadius) && itemRadius > 0 ? itemRadius : detectionRadiusMeters;
+    if (distance > effectiveRadius || distance >= nearestFixedDistance) continue;
+
+    nearestFixedDistance = distance;
+    nearestFixed = {
+      type: 'fixed',
+      label: item.name?.trim() || 'Fixed stop',
+      matchedDestinationId: item._id,
+      matchedDestinationLabel: item.name?.trim() || 'Fixed stop',
+    };
+  }
+
+  if (nearestFixed) {
+    return nearestFixed;
+  }
+
+  return {
+    type: 'unknown',
+    label: 'Current pickup location not matched to Home or a fixed stop yet.',
+    matchedDestinationId: null,
+    matchedDestinationLabel: null,
+  };
 };
 
 export const toCommunityIdString = (communityId: unknown): string | null => {

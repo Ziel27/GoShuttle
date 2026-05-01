@@ -9,7 +9,7 @@ import { ThemedInput } from '@/components/ui/themed-input';
 import { ROUTES } from '@/constants/routes';
 import { DesignTokens, OutfitFonts } from '@/constants/theme';
 import { useThemeColor } from '@/hooks/use-theme-color';
-import { getPhaseGeofences, listCommunities, type PhaseGeofence } from '@/services/community';
+import { listCommunities } from '@/services/community';
 import { useAuthStore } from '@/store/auth';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -27,13 +27,10 @@ export default function RegisterScreen() {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [phone, setPhone] = useState('');
-  const [homePhase, setHomePhase] = useState<string | undefined>(undefined);
   const [communityId, setCommunityId] = useState<string | undefined>(undefined);
   const [communityName, setCommunityName] = useState<string>('Select community');
   const [showCommunityDropdown, setShowCommunityDropdown] = useState(false);
   const [communities, setCommunities] = useState<Array<{ _id: string; name: string }>>([]);
-  const [phaseGeofences, setPhaseGeofences] = useState<PhaseGeofence[]>([]);
-  const [showPhaseDropdown, setShowPhaseDropdown] = useState(false);
   const [clientError, setClientError] = useState('');
   const tint = useThemeColor({}, 'tint');
   const danger = useThemeColor({}, 'danger');
@@ -60,22 +57,6 @@ export default function RegisterScreen() {
     };
     loadCommunities();
   }, []);
-
-  useEffect(() => {
-    const loadPhaseGeofences = async () => {
-      if (!communityId) {
-        setPhaseGeofences([]);
-        return;
-      }
-      try {
-        const phases = await getPhaseGeofences(communityId);
-        setPhaseGeofences(phases);
-      } catch (e) {
-        console.error('Failed to load phase geofences:', e);
-      }
-    };
-    loadPhaseGeofences();
-  }, [communityId]);
 
   useEffect(() => {
     clearError();
@@ -113,21 +94,12 @@ export default function RegisterScreen() {
         password,
         phone: phone.trim(),
         communityId,
-        homePhase: homePhase || undefined,
       });
       router.replace(ROUTES.tabs);
     } catch {
       // Error is handled by the auth store state.
     }
   };
-
-  const handlePhaseSelect = (phaseName: string) => {
-    setHomePhase(phaseName);
-    setShowPhaseDropdown(false);
-  };
-
-  const selectedPhaseLabel = phaseGeofences.find(p => p.name === homePhase)?.name || 
-    (homePhase ? homePhase.replace(/_/g, ' ') : 'Select phase (optional)');
 
   return (
     <AuthShell
@@ -201,7 +173,6 @@ export default function RegisterScreen() {
                   onPress={() => {
                     setCommunityId(community._id);
                     setCommunityName(community.name);
-                    setHomePhase(undefined);
                     setShowCommunityDropdown(false);
                   }}
                 >
@@ -214,56 +185,12 @@ export default function RegisterScreen() {
           )}
         </View>
 
-        {/* Phase Selection Dropdown */}
-        {phaseGeofences.length > 0 && (
-          <View style={styles.phaseSection}>
-            <ThemedText type="caption" style={{ color: mutedColor, marginBottom: 4 }}>
-              Your Phase (optional)
-            </ThemedText>
-            <Pressable
-              style={[styles.phaseButton, { borderColor: border, backgroundColor: surfaceMuted }]}
-              onPress={() => setShowPhaseDropdown(!showPhaseDropdown)}
-              accessibilityRole="button"
-              accessibilityLabel="Select phase"
-            >
-              <ThemedText style={{ color: homePhase ? tint : mutedColor, flex: 1 }}>
-                {selectedPhaseLabel}
-              </ThemedText>
-              <Ionicons 
-                name={showPhaseDropdown ? 'chevron-up' : 'chevron-down'} 
-                size={16} 
-                color={mutedColor} 
-              />
-            </Pressable>
 
-            {showPhaseDropdown && (
-              <View style={[styles.phaseDropdown, { borderColor: border, backgroundColor: surface }]}>
-                <Pressable
-                  style={[styles.phaseOption, { backgroundColor: !homePhase ? surfaceMuted : surface }]}
-                  onPress={() => handlePhaseSelect('')}
-                >
-                  <ThemedText style={{ color: !homePhase ? tint : mutedColor }}>
-                    No phase selected
-                  </ThemedText>
-                </Pressable>
-                {phaseGeofences.map((phase) => (
-                  <Pressable
-                    key={phase._id}
-                    style={[styles.phaseOption, { backgroundColor: homePhase === phase.name ? surfaceMuted : surface }]}
-                    onPress={() => handlePhaseSelect(phase.name)}
-                  >
-                    <View style={styles.phaseOptionRow}>
-                      <View style={[styles.phaseColorDot, { backgroundColor: phase.color }]} />
-                      <ThemedText style={{ color: homePhase === phase.name ? tint : mutedColor }}>
-                        {phase.name.replace(/_/g, ' ')}
-                      </ThemedText>
-                    </View>
-                  </Pressable>
-                ))}
-              </View>
-            )}
-          </View>
-        )}
+        <View style={styles.phaseSection}>
+          <ThemedText type="caption" style={{ color: mutedColor, marginBottom: 4 }}>
+            Your phase will be detected automatically from your saved home GPS location.
+          </ThemedText>
+        </View>
 
         {clientError ? <ThemedText style={[styles.error, { color: danger }]}>{clientError}</ThemedText> : null}
         {!clientError && error ? <ThemedText style={[styles.error, { color: danger }]}>{error}</ThemedText> : null}

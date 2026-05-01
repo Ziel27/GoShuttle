@@ -29,7 +29,6 @@ type RegisterPayload = {
   password: string;
   communityId?: string;
   phone?: string;
-  homePhase?: string;
 };
 
 type AuthState = {

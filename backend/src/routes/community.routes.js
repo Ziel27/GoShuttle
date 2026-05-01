@@ -46,6 +46,24 @@ const normalizePhaseName = (value) =>
     .toLowerCase()
     .replace(/\s+/g, '_');
 
+const DEFAULT_FIXED_DESTINATION_PICKUP_RADIUS_METERS = 80;
+
+const parsePickupRadiusMeters = (value) => {
+  if (value === undefined || value === null || value === '') {
+    return { valid: true, radius: DEFAULT_FIXED_DESTINATION_PICKUP_RADIUS_METERS };
+  }
+
+  const radius = Number(value);
+  if (!Number.isFinite(radius) || radius < 1 || radius > 10000) {
+    return {
+      valid: false,
+      message: 'pickupRadiusMeters must be a number between 1 and 10000.',
+    };
+  }
+
+  return { valid: true, radius: Math.round(radius) };
+};
+
 const pointInRing = (lat, lng, ring) => {
   let inside = false;
   for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
@@ -250,7 +268,7 @@ router.get('/:id/fixed-destinations', authenticate, async (req, res) => {
 router.post('/:id/fixed-destinations', authenticate, authorize('admin'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, latitude, longitude, order = 0 } = req.body;
+    const { name, latitude, longitude, pickupRadiusMeters, order = 0 } = req.body;
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ error: 'Invalid community id.' });
     }
@@ -265,6 +283,11 @@ router.post('/:id/fixed-destinations', authenticate, authorize('admin'), async (
     const coords = validatePoint(latitude, longitude);
     if (!coords.valid) {
       return res.status(400).json({ error: coords.message });
+    }
+
+    const radius = parsePickupRadiusMeters(pickupRadiusMeters);
+    if (!radius.valid) {
+      return res.status(400).json({ error: radius.message });
     }
 
     const community = await Community.findById(id);
@@ -282,6 +305,7 @@ router.post('/:id/fixed-destinations', authenticate, authorize('admin'), async (
     const destination = {
       name: String(name).trim(),
       location: { type: 'Point', coordinates: [coords.lng, coords.lat] },
+      pickupRadiusMeters: radius.radius,
       order: Number(order) || 0,
       isActive: true,
     };
@@ -325,6 +349,13 @@ router.patch('/:id/fixed-destinations/:destinationId', authenticate, authorize('
     if (req.body.name !== undefined) destination.name = String(req.body.name).trim();
     if (req.body.order !== undefined) destination.order = Number(req.body.order) || 0;
     if (req.body.isActive !== undefined) destination.isActive = Boolean(req.body.isActive);
+    if (req.body.pickupRadiusMeters !== undefined) {
+      const radius = parsePickupRadiusMeters(req.body.pickupRadiusMeters);
+      if (!radius.valid) {
+        return res.status(400).json({ error: radius.message });
+      }
+      destination.pickupRadiusMeters = radius.radius;
+    }
     if (req.body.latitude !== undefined || req.body.longitude !== undefined) {
       const lat = req.body.latitude ?? destination.location.coordinates[1];
       const lng = req.body.longitude ?? destination.location.coordinates[0];

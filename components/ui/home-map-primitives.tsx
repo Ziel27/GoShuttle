@@ -8,6 +8,7 @@ import { StyleSheet, View } from 'react-native';
 
 type MapIndicatorProps = {
   iconName: keyof typeof Ionicons.glyphMap;
+  size?: 'sm' | 'md' | 'lg';
 };
 
 type MapLoadingPlaceholderProps = {
@@ -18,11 +19,20 @@ type MapLoadingPlaceholderProps = {
 /**
  * Compact map pin indicator used for shuttle, pickup, and destination markers.
  */
-export const MapIndicator = memo(function MapIndicator({ iconName }: MapIndicatorProps) {
+export const MapIndicator = memo(function MapIndicator({ iconName, size = 'md' }: MapIndicatorProps) {
+  const bubbleSize = size === 'lg' ? 28 : size === 'sm' ? 16 : 18;
+  const wrapperSize = size === 'lg' ? 34 : size === 'sm' ? 20 : 22;
+  const iconSize = size === 'lg' ? 14 : size === 'sm' ? 9 : 10;
+
   return (
-    <View style={styles.mapIndicatorWrapper}>
-      <View style={styles.mapIndicatorBubble}>
-        <Ionicons name={iconName} size={10} color={AppPalette.navy} />
+    <View style={[styles.mapIndicatorWrapper, { width: wrapperSize, height: wrapperSize }]}>
+      <View
+        style={[
+          styles.mapIndicatorBubble,
+          { width: bubbleSize, height: bubbleSize, borderRadius: bubbleSize / 2 },
+        ]}
+      >
+        <Ionicons name={iconName} size={iconSize} color={AppPalette.navy} />
       </View>
     </View>
   );

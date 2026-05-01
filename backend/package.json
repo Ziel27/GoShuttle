@@ -13,6 +13,7 @@
     "reset:drivers": "node scripts/reset-drivers.js",
     "reconcile:capacity": "node scripts/reconcile-capacity.js",
     "migrate:trip-client-sync-index": "node scripts/migrate-trip-client-sync-index.js"
+    ,"migrate:backfill-ride-links": "node scripts/backfill-ride-request-links.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

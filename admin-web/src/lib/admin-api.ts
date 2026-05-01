@@ -1,15 +1,15 @@
 import { apiClient } from '@/lib/api-client';
 import type {
-  AnalyticsResponse,
-  Announcement,
-  AnnouncementLevel,
-  Community,
-  DriverAnalyticsResponse,
-  DriverPerformanceResponse,
-  Remittance,
-  RemittanceSummaryResponse,
-  Shuttle,
-  User,
+    AnalyticsResponse,
+    Announcement,
+    AnnouncementLevel,
+    Community,
+    DriverAnalyticsResponse,
+    DriverPerformanceResponse,
+    Remittance,
+    RemittanceSummaryResponse,
+    Shuttle,
+    User,
 } from '@/types/domain';
 
 
@@ -123,7 +123,7 @@ export const fetchFixedDestinations = async (communityId: string) => {
 
 export const createFixedDestination = async (
   communityId: string,
-  payload: { name: string; latitude: number; longitude: number; order?: number }
+  payload: { name: string; latitude: number; longitude: number; pickupRadiusMeters?: number; color?: string; order?: number }
 ) => {
   const response = await apiClient.post(`/communities/${communityId}/fixed-destinations`, payload);
   return response.data?.destination as NonNullable<Community['fixedDestinations']>[number];
@@ -132,7 +132,15 @@ export const createFixedDestination = async (
 export const updateFixedDestination = async (
   communityId: string,
   destinationId: string,
-  payload: { name?: string; latitude?: number; longitude?: number; order?: number; isActive?: boolean }
+  payload: {
+    name?: string;
+    latitude?: number;
+    longitude?: number;
+    pickupRadiusMeters?: number;
+    color?: string;
+    order?: number;
+    isActive?: boolean;
+  }
 ) => {
   const response = await apiClient.patch(`/communities/${communityId}/fixed-destinations/${destinationId}`, payload);
   return response.data?.destination as NonNullable<Community['fixedDestinations']>[number];

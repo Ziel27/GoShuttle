@@ -1,5 +1,7 @@
 const Community = require('../models/Community');
 
+const EARTH_RADIUS_METERS = 6_371_000;
+
 /**
  * Ray-casting point-in-polygon test.
  * Returns true when (lat, lng) falls inside the given polygon ring.
@@ -24,6 +26,40 @@ function pointInPolygon(lat, lng, ring) {
   }
 
   return inside;
+}
+
+function toRadians(value) {
+  return (value * Math.PI) / 180;
+}
+
+function distanceMeters(from, to) {
+  if (!from || !to) return Number.POSITIVE_INFINITY;
+
+  const fromLat = Number(from.latitude);
+  const fromLng = Number(from.longitude);
+  const toLat = Number(to.latitude);
+  const toLng = Number(to.longitude);
+
+  if (
+    !Number.isFinite(fromLat) ||
+    !Number.isFinite(fromLng) ||
+    !Number.isFinite(toLat) ||
+    !Number.isFinite(toLng)
+  ) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const dLat = toRadians(toLat - fromLat);
+  const dLng = toRadians(toLng - fromLng);
+  const lat1 = toRadians(fromLat);
+  const lat2 = toRadians(toLat);
+
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+  return EARTH_RADIUS_METERS * c;
 }
 
 /**
@@ -51,4 +87,4 @@ async function isLocationInBoundary({ communityId, latitude, longitude }) {
   return pointInPolygon(latitude, longitude, ring);
 }
 
-module.exports = { isLocationInBoundary, pointInPolygon };
+module.exports = { distanceMeters, isLocationInBoundary, pointInPolygon };

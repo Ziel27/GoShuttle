@@ -3,6 +3,7 @@ import { PremiumButton } from '@/components/ui/premium-button';
 import { AppPalette } from '@/constants/app-ui';
 import { ROUTES } from '@/constants/routes';
 import { DesignTokens, OutfitFonts } from '@/constants/theme';
+import { HowToBookModal } from '@/components/HowToBookModal';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { getCommunityById, getPhaseGeofences, type PhaseGeofence } from '@/services/community';
 import {
@@ -114,9 +115,7 @@ export default function SettingsTabScreen() {
   const [passengerLogoutLoading, setPassengerLogoutLoading] = useState(false);
   const [phaseGeofences, setPhaseGeofences] = useState<PhaseGeofence[]>([]);
   const [opsBypassMode, setOpsBypassMode] = useState(false);
-  const [showPhaseDropdown, setShowPhaseDropdown] = useState(false);
-  const [updatingPhase, setUpdatingPhase] = useState(false);
-
+  const [showHowToBookModal, setShowHowToBookModal] = useState(false);
 
   useEffect(() => {
     if (!user?.communityId) return;
@@ -145,23 +144,7 @@ export default function SettingsTabScreen() {
     loadPhaseGeofences();
   }, [user?.communityId]);
 
-  const handleUpdateHomePhase = useCallback(async (phase: string | null) => {
-    if (updatingPhase) return;
-    setUpdatingPhase(true);
-    try {
-      const updatedUser = await updateHomePhase(phase);
-      updateUserField('homePhase', updatedUser.homePhase);
-      setSettingsFeedback(phase ? `Phase updated to ${phase.replace(/_/g, ' ')}` : 'Phase removed.');
-    } catch (error) {
-      setSettingsFeedback(error instanceof Error ? error.message : 'Failed to update phase.');
-    } finally {
-      setUpdatingPhase(false);
-      setShowPhaseDropdown(false);
-    }
-  }, [updatingPhase, updateUserField]);
 
-  const currentPhaseLabel = phaseGeofences.find(p => p.name === user?.homePhase)?.name || 
-    (user?.homePhase ? user.homePhase.replace(/_/g, ' ') : 'Not set');
 
   useEffect(() => {
     if (!isPassenger) return;
@@ -667,68 +650,27 @@ export default function SettingsTabScreen() {
               </ThemedText>
 
               {/* Phase Selection */}
-              {phaseGeofences.length > 0 && (
+              {phaseGeofences.length > 0 && user?.homePhase && (
                 <View style={styles.phaseSection}>
                   <ThemedText type="caption" style={{ color: mutedColor, marginBottom: 4 }}>
                     Home Phase
                   </ThemedText>
-                  <Pressable
-                    style={[styles.phaseButton, { borderColor, backgroundColor: surface }]}
-                    onPress={() => setShowPhaseDropdown(!showPhaseDropdown)}
-                    disabled={updatingPhase}
-                    accessibilityRole="button"
-                    accessibilityLabel="Select home phase"
-                  >
+                  <View style={[styles.phaseButton, { borderColor, backgroundColor: surface, paddingVertical: 12 }]}>
                     <View style={styles.phaseButtonRow}>
                       {(() => {
-                        if (!user?.homePhase) return null;
                         const phase = phaseGeofences.find(p => p.name === user.homePhase);
                         if (phase) {
                           return <View style={[styles.phaseColorDot, { backgroundColor: phase.color }]} />;
                         }
                         return null;
                       })()}
-                      <ThemedText style={{ color: user?.homePhase ? tint : mutedColor, flex: 1 }}>
-                        {currentPhaseLabel}
+                      <ThemedText style={{ color: tint, flex: 1 }}>
+                        {user.homePhase.replace(/_/g, ' ')}
                       </ThemedText>
                     </View>
-                    <Ionicons 
-                      name={showPhaseDropdown ? 'chevron-up' : 'chevron-down'} 
-                      size={16} 
-                      color={mutedColor} 
-                    />
-                  </Pressable>
-
-                  {showPhaseDropdown && (
-                    <View style={[styles.phaseDropdown, { borderColor, backgroundColor: surface }]}>
-                      <Pressable
-                        style={[styles.phaseOption, { backgroundColor: !user?.homePhase ? surfaceMuted : surface }]}
-                        onPress={() => handleUpdateHomePhase(null)}
-                        disabled={updatingPhase}
-                      >
-                        <ThemedText style={{ color: !user?.homePhase ? tint : mutedColor }}>
-                          Not set
-                        </ThemedText>
-                      </Pressable>
-                      {phaseGeofences.map((phase) => (
-                        <Pressable
-                          key={phase._id}
-                          style={[styles.phaseOption, { backgroundColor: user?.homePhase === phase.name ? surfaceMuted : surface }]}
-                          onPress={() => handleUpdateHomePhase(phase.name)}
-                          disabled={updatingPhase}
-                        >
-                          <View style={styles.phaseOptionRow}>
-                            <View style={[styles.phaseColorDot, { backgroundColor: phase.color }]} />
-                            <ThemedText style={{ color: user?.homePhase === phase.name ? tint : mutedColor }}>
-                              {phase.name.replace(/_/g, ' ')}
-                            </ThemedText>
-                          </View>
-                        </Pressable>
-                      ))}
-                    </View>
-                  )}
+                  </View>
                   <ThemedText type="caption" style={{ color: mutedColor }}>
-                    {updatingPhase ? 'Updating phase...' : 'Select your home phase to match with shuttle routes.'}
+                    Your phase is automatically determined by your home's GPS location.
                   </ThemedText>
                 </View>
               )}
@@ -756,6 +698,34 @@ export default function SettingsTabScreen() {
           </View>
           <ThemedText type="caption" style={{ color: mutedColor }}>Theme preference is saved and applied app-wide.</ThemedText>
         </View>
+
+        {isPassenger && (
+          <>
+            <ThemedText type="overline" style={[styles.sectionLabel, { color: mutedColor }]}>HELP & SUPPORT</ThemedText>
+            <View style={[styles.sectionBlock, { borderColor, backgroundColor: surfaceMuted }]}>
+              <ThemedText type="subtitle" style={{ color: textColor }}>Guides</ThemedText>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.controlRow,
+                  { borderColor },
+                  pressed && { opacity: 0.7 }
+                ]}
+                onPress={() => setShowHowToBookModal(true)}
+              >
+                <View style={styles.controlCopy}>
+                  <View style={styles.controlTitleRow}>
+                    <Ionicons name="book-outline" size={16} color={tint} />
+                    <ThemedText type="defaultSemiBold" style={{ color: textColor }}>How to Request a Shuttle</ThemedText>
+                  </View>
+                  <ThemedText type="caption" style={{ color: mutedColor }}>
+                    View the step-by-step guide for booking your rides.
+                  </ThemedText>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={mutedColor} />
+              </Pressable>
+            </View>
+          </>
+        )}
 
         <Modal
           visible={unresolvedRequests.length > 0}
@@ -885,6 +855,12 @@ export default function SettingsTabScreen() {
             </View>
           </View>
         </Modal>
+
+        <HowToBookModal
+          visible={showHowToBookModal}
+          onClose={() => setShowHowToBookModal(false)}
+          showDontShowAgain={false}
+        />
 
         {settingsFeedback ? <ThemedText style={[styles.note, { color: mutedColor }]}>{settingsFeedback}</ThemedText> : null}
         <ThemedText type="caption" style={[styles.versionInfo, { color: mutedColor }]}>GoShuttle v1.0.0</ThemedText>
