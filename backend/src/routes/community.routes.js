@@ -268,7 +268,7 @@ router.get('/:id/fixed-destinations', authenticate, async (req, res) => {
 router.post('/:id/fixed-destinations', authenticate, authorize('admin'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, latitude, longitude, pickupRadiusMeters, order = 0 } = req.body;
+    const { name, latitude, longitude, pickupRadiusMeters, color, order = 0 } = req.body;
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ error: 'Invalid community id.' });
     }
@@ -306,6 +306,7 @@ router.post('/:id/fixed-destinations', authenticate, authorize('admin'), async (
       name: String(name).trim(),
       location: { type: 'Point', coordinates: [coords.lng, coords.lat] },
       pickupRadiusMeters: radius.radius,
+      color: color ? String(color) : undefined,
       order: Number(order) || 0,
       isActive: true,
     };
@@ -347,6 +348,7 @@ router.patch('/:id/fixed-destinations/:destinationId', authenticate, authorize('
     }
 
     if (req.body.name !== undefined) destination.name = String(req.body.name).trim();
+    if (req.body.color !== undefined) destination.color = String(req.body.color);
     if (req.body.order !== undefined) destination.order = Number(req.body.order) || 0;
     if (req.body.isActive !== undefined) destination.isActive = Boolean(req.body.isActive);
     if (req.body.pickupRadiusMeters !== undefined) {
