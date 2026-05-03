@@ -8,6 +8,7 @@ type User = {
   firstName: string;
   lastName: string;
   email: string;
+  phone?: string;
   role: 'admin' | 'driver' | 'passenger';
   communityId: string;
   status?: 'active' | 'offline' | 'driving';

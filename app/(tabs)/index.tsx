@@ -59,7 +59,7 @@ import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { type ComponentRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppState, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { AppState, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, Switch } from 'react-native';
 import MapView, { Callout, Circle, LatLng, Marker, Polygon, Region } from 'react-native-maps';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -204,6 +204,7 @@ export default function HomeScreen() {
 
   // ── Dispatch state (passenger-only) ───────────────────────────────────────
   const [fareType, setFareType] = useState<'standard' | 'priority'>('standard');
+  const [passengerCount, setPassengerCount] = useState(1);
   const [dispatchedShuttle, setDispatchedShuttle] = useState<AssignedShuttle | null>(null);
   const [queueNotice, setQueueNotice] = useState<{
     position: number | null;
@@ -323,10 +324,10 @@ export default function HomeScreen() {
     }
 
     if (!selectedFixedDestination) {
-      return 'Fixed stop - no destination selected';
+      return 'Fixed destination - no destination selected';
     }
 
-    return `Fixed stop - ${selectedFixedDestination.name}`;
+    return `Fixed destination - ${selectedFixedDestination.name}`;
   }, [hasSavedHomeDestination, selectedDestinationType, selectedFixedDestination, user?.homeDestination?.label]);
 
   const activePickupDestinationSummary = useMemo(() => {
@@ -386,6 +387,15 @@ export default function HomeScreen() {
         .filter((entry) => entry.name.length > 0 || entry.phone.length > 0),
     [manifestDraft]
   );
+
+  // The total number of seats being reserved in the current booking flow
+  const farePassengerCount = useMemo(() => {
+    if (bookForOthers) {
+      // For guest bookings, count filled manifest entries (min 1 so UI always shows something)
+      return Math.max(1, normalizedPassengerManifest.length);
+    }
+    return passengerCount;
+  }, [bookForOthers, normalizedPassengerManifest.length, passengerCount]);
 
   // When booking for others, ensure the guest pickup/dropoff types are opposite
   useEffect(() => {
@@ -903,6 +913,7 @@ export default function HomeScreen() {
     socket.on('trip:pickup-intent', onPickupIntent);
     socket.on('trip:pickup-claimed', onPickupClaimed);
     socket.on('trip:passenger-auto-unboarded', onPassengerAutoUnboarded);
+    socket.on('trip:passenger-unboarded', onPassengerAutoUnboarded);
     socket.on('pickup-intent:cancelled', onPickupIntentCancelled);
     socket.on('trip:pickup-intent-cancelled', onPickupIntentCancelled);
     socket.on('socket:error', onSocketError);
@@ -918,6 +929,7 @@ export default function HomeScreen() {
       socket.off('trip:pickup-intent', onPickupIntent);
       socket.off('trip:pickup-claimed', onPickupClaimed);
       socket.off('trip:passenger-auto-unboarded', onPassengerAutoUnboarded);
+      socket.off('trip:passenger-unboarded', onPassengerAutoUnboarded);
       socket.off('pickup-intent:cancelled', onPickupIntentCancelled);
       socket.off('trip:pickup-intent-cancelled', onPickupIntentCancelled);
       socket.off('socket:error', onSocketError);
@@ -1918,6 +1930,18 @@ export default function HomeScreen() {
         }
       }
 
+      // Build manifest for self-booking with companions
+      let selfBookingOptions: { passengerManifest?: { name?: string; phone?: string }[] } | undefined = undefined;
+      if (!bookForOthers && passengerCount > 1 && user) {
+        const ownerName = `${user.firstName} ${user.lastName}`.trim();
+        const ownerPhone = user.phone || undefined;
+        const manifest: { name: string; phone?: string }[] = [
+          { name: ownerName, phone: ownerPhone },
+          ...Array.from({ length: passengerCount - 1 }, (_, i) => ({ name: `Companion ${i + 1}` })),
+        ];
+        selfBookingOptions = { passengerManifest: manifest };
+      }
+
       const result = await createPickupIntent(
         pickupLatitude,
         pickupLongitude,
@@ -1929,12 +1953,13 @@ export default function HomeScreen() {
               ...(explicitPickupLocationForOptions ? { pickupLocation: explicitPickupLocationForOptions } : {}),
               passengerManifest: normalizedPassengerManifest,
             }
-          : undefined
+          : selfBookingOptions
       );
 
       if (bookForOthers) {
         resetGuestBookingDraft();
       }
+      setPassengerCount(1);
 
       setPickupIntents((items) => upsertPickupIntent(items, result.request));
 
@@ -2209,6 +2234,8 @@ export default function HomeScreen() {
                     const coordinate = getPickupIntentCoordinate(item);
                     if (!coordinate) return null;
 
+                    const hasManifest = item.passengerManifest && item.passengerManifest.length > 0;
+
                     return [
                       <Circle
                         key={`pickup-circle-${item._id}`}
@@ -2221,13 +2248,37 @@ export default function HomeScreen() {
                       <Marker
                         key={`pickup-pin-${item._id}`}
                         coordinate={coordinate}
-                        title="Pickup Request"
-                        description="Passenger waiting"
                         anchor={{ x: 0.5, y: 0.5 }}
                         accessible
                         accessibilityLabel="Pending pickup request marker"
                       >
                         <MapIndicator iconName="person" />
+                        <Callout tooltip>
+                          <View style={[styles.calloutContainer, { backgroundColor: bgColor, borderColor }]}>
+                            <ThemedText type="defaultSemiBold" style={{ color: textColor, fontSize: 14 }}>
+                              Pickup Request
+                            </ThemedText>
+                            <View style={[styles.calloutSeparator, { backgroundColor: borderColor }]} />
+                            {hasManifest ? (
+                              item.passengerManifest!.map((guest, idx) => (
+                                <View key={`guest-${idx}`} style={{ marginBottom: idx < item.passengerManifest!.length - 1 ? 4 : 0 }}>
+                                  <ThemedText type="caption" style={{ color: textColor, fontSize: 12, fontWeight: '500' }}>
+                                    {guest.name || `Guest ${idx + 1}`}
+                                  </ThemedText>
+                                  {guest.phone ? (
+                                    <ThemedText type="caption" style={{ color: mutedColor, fontSize: 12 }}>
+                                      {guest.phone}
+                                    </ThemedText>
+                                  ) : null}
+                                </View>
+                              ))
+                            ) : (
+                              <ThemedText type="caption" style={{ color: mutedColor, fontSize: 12 }}>
+                                Passenger waiting
+                              </ThemedText>
+                            )}
+                          </View>
+                        </Callout>
                       </Marker>,
                     ];
                   })}
@@ -2253,22 +2304,31 @@ export default function HomeScreen() {
                 hint="Fetching geofence boundary"
               />
             )}
-            {phaseGeofences.length > 0 ? (
-              <View style={styles.phaseLegend}>
-                <Text style={styles.phaseLegendTitle}>Phases</Text>
-                {phaseGeofences.map((phase) => (
-                  <View key={`driver-legend-phase-${phase._id}`} style={styles.phaseLegendRow}>
-                    <View style={[styles.phaseLegendDot, { backgroundColor: phase.color || '#6366f1' }]} />
-                    <Text style={styles.phaseLegendText}>{phase.name.replace(/_/g, ' ')}</Text>
-                  </View>
-                ))}
-                {fixedDestinations.map((dest) => (
-                  <View key={`driver-legend-dest-${dest._id}`} style={styles.phaseLegendRow}>
-                    <View style={[styles.phaseLegendDot, { backgroundColor: dest.color || '#94a3b8' }]} />
-                    <Text style={styles.phaseLegendText}>{dest.name.replace(/_/g, ' ')}</Text>
-                  </View>
-                ))}
-                </View>
+            {phaseGeofences.length > 0 || fixedDestinations.length > 0 ? (
+              <View style={[styles.phaseLegend, { backgroundColor: surfaceColor, borderColor }]}>
+                {phaseGeofences.length > 0 && (
+                  <>
+                    <Text style={[styles.phaseLegendTitle, { color: textColor }]}>Phases</Text>
+                    {phaseGeofences.map((phase) => (
+                      <View key={`driver-legend-phase-${phase._id}`} style={styles.phaseLegendRow}>
+                        <View style={[styles.phaseLegendDot, { backgroundColor: phase.color || '#6366f1' }]} />
+                        <Text style={[styles.phaseLegendText, { color: textColor }]}>{phase.name.replace(/_/g, ' ')}</Text>
+                      </View>
+                    ))}
+                  </>
+                )}
+                {fixedDestinations.length > 0 && (
+                  <>
+                    <Text style={[styles.phaseLegendTitle, { color: textColor, marginTop: phaseGeofences.length > 0 ? 4 : 0 }]}>Fixed Locations</Text>
+                    {fixedDestinations.map((dest) => (
+                      <View key={`driver-legend-dest-${dest._id}`} style={styles.phaseLegendRow}>
+                        <View style={[styles.phaseLegendDot, { backgroundColor: dest.color || '#94a3b8' }]} />
+                        <Text style={[styles.phaseLegendText, { color: textColor }]}>{dest.name.replace(/_/g, ' ')}</Text>
+                      </View>
+                    ))}
+                  </>
+                )}
+              </View>
             ) : null}
 
             <View style={styles.mapLockBadge}>
@@ -2606,6 +2666,8 @@ export default function HomeScreen() {
                     const coordinate = getPickupIntentCoordinate(item);
                     if (!coordinate) return null;
 
+                    const hasManifest = item.passengerManifest && item.passengerManifest.length > 0;
+
                     return [
                       <Circle
                         key={`pickup-circle-${item._id}`}
@@ -2618,13 +2680,37 @@ export default function HomeScreen() {
                       <Marker
                         key={`pickup-pin-${item._id}`}
                         coordinate={coordinate}
-                        title="Pickup Request"
-                        description="Passenger waiting"
                         anchor={{ x: 0.5, y: 0.5 }}
                         accessible
                         accessibilityLabel="Your pickup request marker"
                       >
                         <MapIndicator iconName="person" />
+                        <Callout tooltip>
+                          <View style={[styles.calloutContainer, { backgroundColor: bgColor, borderColor }]}>
+                            <ThemedText type="defaultSemiBold" style={{ color: textColor, fontSize: 14 }}>
+                              Pickup Request
+                            </ThemedText>
+                            <View style={[styles.calloutSeparator, { backgroundColor: borderColor }]} />
+                            {hasManifest ? (
+                              item.passengerManifest!.map((guest, idx) => (
+                                <View key={`guest-${idx}`} style={{ marginBottom: idx < item.passengerManifest!.length - 1 ? 4 : 0 }}>
+                                  <ThemedText type="caption" style={{ color: textColor, fontSize: 12, fontWeight: '500' }}>
+                                    {guest.name || `Guest ${idx + 1}`}
+                                  </ThemedText>
+                                  {guest.phone ? (
+                                    <ThemedText type="caption" style={{ color: mutedColor, fontSize: 12 }}>
+                                      {guest.phone}
+                                    </ThemedText>
+                                  ) : null}
+                                </View>
+                              ))
+                            ) : (
+                              <ThemedText type="caption" style={{ color: mutedColor, fontSize: 12 }}>
+                                Passenger waiting
+                              </ThemedText>
+                            )}
+                          </View>
+                        </Callout>
                       </Marker>,
                     ];
                   })}
@@ -2636,21 +2722,30 @@ export default function HomeScreen() {
                 hint="Fetching geofence boundary"
               />
             )}
-            {phaseGeofences.length > 0 ? (
-              <View style={styles.phaseLegend}>
-                <Text style={styles.phaseLegendTitle}>Phases</Text>
-                {phaseGeofences.map((phase) => (
-                  <View key={`passenger-legend-phase-${phase._id}`} style={styles.phaseLegendRow}>
-                    <View style={[styles.phaseLegendDot, { backgroundColor: phase.color || '#6366f1' }]} />
-                    <Text style={styles.phaseLegendText}>{phase.name.replace(/_/g, ' ')}</Text>
-                  </View>
-                ))}
-                {fixedDestinations.map((dest) => (
-                  <View key={`passenger-legend-dest-${dest._id}`} style={styles.phaseLegendRow}>
-                    <View style={[styles.phaseLegendDot, { backgroundColor: dest.color || '#94a3b8' }]} />
-                    <Text style={styles.phaseLegendText}>{dest.name.replace(/_/g, ' ')}</Text>
-                  </View>
-                ))}
+            {phaseGeofences.length > 0 || fixedDestinations.length > 0 ? (
+              <View style={[styles.phaseLegend, { backgroundColor: surfaceColor, borderColor }]}>
+                {phaseGeofences.length > 0 && (
+                  <>
+                    <Text style={[styles.phaseLegendTitle, { color: textColor }]}>Phases</Text>
+                    {phaseGeofences.map((phase) => (
+                      <View key={`passenger-legend-phase-${phase._id}`} style={styles.phaseLegendRow}>
+                        <View style={[styles.phaseLegendDot, { backgroundColor: phase.color || '#6366f1' }]} />
+                        <Text style={[styles.phaseLegendText, { color: textColor }]}>{phase.name.replace(/_/g, ' ')}</Text>
+                      </View>
+                    ))}
+                  </>
+                )}
+                {fixedDestinations.length > 0 && (
+                  <>
+                    <Text style={[styles.phaseLegendTitle, { color: textColor, marginTop: phaseGeofences.length > 0 ? 4 : 0 }]}>Fixed Locations</Text>
+                    {fixedDestinations.map((dest) => (
+                      <View key={`passenger-legend-dest-${dest._id}`} style={styles.phaseLegendRow}>
+                        <View style={[styles.phaseLegendDot, { backgroundColor: dest.color || '#94a3b8' }]} />
+                        <Text style={[styles.phaseLegendText, { color: textColor }]}>{dest.name.replace(/_/g, ' ')}</Text>
+                      </View>
+                    ))}
+                  </>
+                )}
               </View>
             ) : null}
 
@@ -2716,27 +2811,24 @@ export default function HomeScreen() {
 
               {user?.role === 'passenger' ? (
                 <View style={[styles.manifestCard, { borderColor, backgroundColor: bgColor }]}> 
-                  <View style={styles.manifestHeaderRow}>
-                    <View>
+                  <Pressable 
+                    style={styles.manifestHeaderRow}
+                    onPress={toggleBookForOthers}
+                    accessibilityRole="switch"
+                    accessibilityState={{ checked: bookForOthers }}
+                    accessibilityLabel="Toggle booking for another passenger"
+                  >
+                    <View style={{ flex: 1, paddingRight: 12 }}>
                       <ThemedText style={[styles.manifestTitle, { color: textColor }]}>Book for someone else</ThemedText>
                       <ThemedText style={[styles.manifestCaption, { color: mutedColor }]}>Optional. Add guest names so the driver can match the ride request.</ThemedText>
                     </View>
-                    <Pressable
-                      accessibilityRole="switch"
-                      accessibilityState={{ checked: bookForOthers }}
-                      accessibilityLabel="Toggle booking for another passenger"
-                      onPress={toggleBookForOthers}
-                      style={({ pressed }) => [
-                        styles.manifestToggle,
-                        { borderColor: bookForOthers ? tint : borderColor, backgroundColor: bookForOthers ? tint : surfaceColor },
-                        pressed && styles.manifestTogglePressed,
-                      ]}
-                    >
-                      <Text style={[styles.manifestToggleText, { color: bookForOthers ? palette.white : textColor }]}>
-                        {bookForOthers ? 'On' : 'Off'}
-                      </Text>
-                    </Pressable>
-                  </View>
+                    <Switch
+                      value={bookForOthers}
+                      onValueChange={toggleBookForOthers}
+                      trackColor={{ false: borderColor, true: tint }}
+                      thumbColor={Platform.OS === 'android' ? (bookForOthers ? palette.white : '#f4f3f4') : undefined}
+                    />
+                  </Pressable>
 
                   {bookForOthers ? (
                     <View style={styles.manifestList}>
@@ -2828,7 +2920,7 @@ export default function HomeScreen() {
                             ]}
                           >
                             <Ionicons name="flag" size={16} color={guestPickupType === 'fixed' ? palette.white : tint} />
-                            <ThemedText style={[styles.manifestActionText, { color: guestPickupType === 'fixed' ? palette.white : tint }]}>Fixed Stop</ThemedText>
+                            <ThemedText style={[styles.manifestActionText, { color: guestPickupType === 'fixed' ? palette.white : tint }]}>Fixed Destination</ThemedText>
                           </Pressable>
                           <Pressable
                             accessibilityRole="button"
@@ -2905,7 +2997,7 @@ export default function HomeScreen() {
                               ]}
                             >
                               <Ionicons name="flag" size={16} color={guestDropoffType === 'fixed' ? palette.white : tint} />
-                              <ThemedText style={[styles.manifestActionText, { color: guestDropoffType === 'fixed' ? palette.white : tint }]}>Fixed Stop</ThemedText>
+                              <ThemedText style={[styles.manifestActionText, { color: guestDropoffType === 'fixed' ? palette.white : tint }]}>Fixed Destination</ThemedText>
                             </Pressable>
                           )}
                           {guestPickupType !== 'home' && (
@@ -3202,7 +3294,56 @@ export default function HomeScreen() {
                 </View>
               ) : null}
 
-
+              {/* ── Passenger Count Stepper ─────────────────────────────────── */}
+              {!bookForOthers && activePassengerPickupIntents.length === 0 && (
+                <View style={[
+                  styles.passengerCountCard,
+                  { borderColor, backgroundColor: bgColor },
+                ]}>
+                  <View style={styles.passengerCountLeft}>
+                    <Ionicons name="people-outline" size={18} color={tint} />
+                    <View style={{ flex: 1 }}>
+                      <ThemedText style={[styles.manifestRowLabel, { color: textColor }]}>
+                        Number of Passengers
+                      </ThemedText>
+                      <ThemedText style={[styles.manifestCaption, { color: mutedColor }]}>
+                        {passengerCount === 1 ? 'Just me' : `${passengerCount} seats will be reserved`}
+                      </ThemedText>
+                    </View>
+                  </View>
+                  <View style={styles.passengerCountStepper}>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Decrease passenger count"
+                      disabled={passengerCount <= 1}
+                      onPress={() => setPassengerCount((c) => Math.max(1, c - 1))}
+                      style={({ pressed }) => [
+                        styles.passengerCountBtn,
+                        { borderColor: passengerCount <= 1 ? borderColor : tint, backgroundColor: bgColor },
+                        pressed && { opacity: 0.7 },
+                      ]}
+                    >
+                      <Ionicons name="remove" size={16} color={passengerCount <= 1 ? mutedColor : tint} />
+                    </Pressable>
+                    <ThemedText style={[styles.passengerCountValue, { color: textColor }]}>
+                      {passengerCount}
+                    </ThemedText>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Increase passenger count"
+                      disabled={passengerCount >= 10}
+                      onPress={() => setPassengerCount((c) => Math.min(10, c + 1))}
+                      style={({ pressed }) => [
+                        styles.passengerCountBtn,
+                        { borderColor: passengerCount >= 10 ? borderColor : tint, backgroundColor: bgColor },
+                        pressed && { opacity: 0.7 },
+                      ]}
+                    >
+                      <Ionicons name="add" size={16} color={passengerCount >= 10 ? mutedColor : tint} />
+                    </Pressable>
+                  </View>
+                </View>
+              )}
 
               {/* ── Fare Type Selector ─────────────────────────────────────── */}
               {activePassengerPickupIntents.length === 0 && (
@@ -3249,8 +3390,17 @@ export default function HomeScreen() {
                         { color: fareType === 'standard' ? tint : textColor },
                       ]}
                     >
-                      {communityFares ? `₱${communityFares.base.toFixed(2)}` : '—'}
+                      {communityFares
+                        ? farePassengerCount > 1
+                          ? `₱${(communityFares.base * farePassengerCount).toFixed(2)}`
+                          : `₱${communityFares.base.toFixed(2)}`
+                        : '—'}
                     </ThemedText>
+                    {farePassengerCount > 1 && communityFares ? (
+                      <ThemedText style={[styles.fareTypeSkipText, { color: mutedColor }]}>
+                        ₱{communityFares.base.toFixed(2)} × {farePassengerCount}
+                      </ThemedText>
+                    ) : null}
                   </Pressable>
 
                   {/* Priority pill */}
@@ -3295,9 +3445,16 @@ export default function HomeScreen() {
                       ]}
                     >
                       {communityFares
-                        ? `₱${(communityFares.base * communityFares.priorityMultiplier).toFixed(2)}`
+                        ? farePassengerCount > 1
+                          ? `₱${(communityFares.base * communityFares.priorityMultiplier * farePassengerCount).toFixed(2)}`
+                          : `₱${(communityFares.base * communityFares.priorityMultiplier).toFixed(2)}`
                         : '—'}
                     </ThemedText>
+                    {farePassengerCount > 1 && communityFares ? (
+                      <ThemedText style={[styles.fareTypeSkipText, { color: '#d97706' }]}>
+                        ₱{(communityFares.base * communityFares.priorityMultiplier).toFixed(2)} × {farePassengerCount}
+                      </ThemedText>
+                    ) : null}
                     {/* Skip queue badge */}
                     <View
                       style={[
@@ -4624,6 +4781,43 @@ const styles = StyleSheet.create({
     backgroundColor: palette.white,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+
+  // ── Passenger count stepper ────────────────────────────────────────────────
+  passengerCountCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.md,
+    paddingHorizontal: DesignTokens.spacing.md,
+    paddingVertical: DesignTokens.spacing.sm,
+    gap: DesignTokens.spacing.sm,
+  },
+  passengerCountLeft: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: DesignTokens.spacing.sm,
+  },
+  passengerCountStepper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: DesignTokens.spacing.sm,
+  },
+  passengerCountBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  passengerCountValue: {
+    fontFamily: OutfitFonts.bold,
+    fontSize: 18,
+    minWidth: 24,
+    textAlign: 'center',
   },
 
   // ── Fare type selector ─────────────────────────────────────────────────────

@@ -161,7 +161,7 @@ const detectPickupOrigin = ({ homeDestination, fixedDestinations, latitude, long
 
   return {
     type: 'unknown',
-    label: 'Current pickup location not matched to Home or a fixed stop yet.',
+    label: 'Current pickup location not matched to Home or a fixed destination yet.',
   };
 };
 
@@ -526,6 +526,25 @@ const passengerBoard = async (req, res) => {
         },
         { session }
       );
+    } else {
+      // Manual board with no matching pickup intents — create anonymous PassengerRide records for audit.
+      const boardedAt = new Date();
+      const anonymousRides = Array.from({ length: boardedCount }, () => ({
+        communityId: shuttle.communityId,
+        passengerId: null,
+        shuttleId: shuttle._id,
+        driverId: req.user._id,
+        tripId: activeTrip._id,
+        fareAtBoarding: activeTrip.fareAtTime,
+        destinationType: 'fixed',
+        destinationLabel: 'Unknown',
+        requestedAt: boardedAt,
+        boardedAt,
+        status: 'boarded',
+      }));
+      if (anonymousRides.length > 0) {
+        await PassengerRide.insertMany(anonymousRides, { session });
+      }
     }
 
     // Update shuttle within transaction
@@ -646,6 +665,22 @@ const endShift = async (req, res) => {
     activeTrip.shiftEnd = new Date();
     activeTrip.revenueCollected = activeTrip.passengersBoarded * activeTrip.fareAtTime;
     await activeTrip.save();
+
+    // Notify passengers still on board so their app UI reflects the shift ending
+    const boardedRides = await PassengerRide.find({
+      tripId: activeTrip._id,
+      status: 'boarded',
+    }).select('_id passengerId').lean();
+
+    if (boardedRides.length > 0) {
+      const endShiftIo = req.app.get('io');
+      const rideIds = boardedRides.map((r) => String(r._id));
+      for (const ride of boardedRides) {
+        if (ride.passengerId) {
+          endShiftIo.to(`user:${String(ride.passengerId)}`).emit('trip:passenger-auto-unboarded', { rideIds });
+        }
+      }
+    }
 
     // Mark any remaining boarded ride requests as completed for this trip
     await RideRequest.updateMany(
@@ -845,7 +880,8 @@ const createPickupIntent = async (req, res) => {
       destinationType = destinationPayload.type;
 
       if (destinationPayload.type === 'fixed') {
-        if (pickupOrigin.type !== 'home') {
+        // Skip origin enforcement when an explicit pickupLocation is provided (booking-for-others)
+        if (!explicitPickupPoint && pickupOrigin.type !== 'home') {
           return res.status(403).json({
             error: 'Fixed destinations are only available when you are at your home pickup location.',
           });
@@ -860,7 +896,8 @@ const createPickupIntent = async (req, res) => {
         destinationLabel = selectedFixed.name;
         destinationLocation = selectedFixed.location;
       } else {
-        if (pickupOrigin.type !== 'fixed') {
+        // Skip origin enforcement when an explicit pickupLocation is provided (booking-for-others)
+        if (!explicitPickupPoint && pickupOrigin.type !== 'fixed') {
           return res.status(403).json({
             error: 'Home destinations are only available when you are at a fixed destination.',
           });
@@ -883,33 +920,26 @@ const createPickupIntent = async (req, res) => {
       : community.baseFare;
 
     // PERSISTENCE: Create permanent ride request(s) BEFORE ephemeral pickup intent.
-    // Support passengerManifest for delegated/group bookings. For backward compatibility,
-    // if no manifest is provided create the single legacy RideRequest.
-    const rideRequestsToCreate = [];
-    if (Array.isArray(passengerManifest) && passengerManifest.length > 0) {
-      for (const entry of passengerManifest) {
-        const rr = {
-          communityId: req.user.communityId,
-          passengerId: entry.passengerId && mongoose.Types.ObjectId.isValid(String(entry.passengerId)) ? entry.passengerId : null,
-          passengerName: entry.name || null,
-          passengerPhone: entry.phone || null,
-          bookingOwner: req.user._id,
-          pickupLocation: explicitPickupPoint || { type: 'Point', coordinates: [coords.lng, coords.lat] },
-          passengerHomePhase: passsengerPhaseForDispatch,
-          destination: {
-            type: destinationType,
-            label: destinationLabel,
-            location: destinationLocation,
-          },
-          fareExpected,
-          status: 'pending',
-        };
-        rideRequestsToCreate.push(rr);
-      }
-    } else {
-      rideRequestsToCreate.push({
-        communityId: req.user.communityId,
+    // Support passengerManifest for delegated/group bookings. If no manifest is provided,
+    // we default it to the primary passenger, making sure their name and optional phone
+    // are visible to the driver.
+
+    let finalPassengerManifest = passengerManifest;
+    if (!Array.isArray(finalPassengerManifest) || finalPassengerManifest.length === 0) {
+      finalPassengerManifest = [{
         passengerId: req.user._id,
+        name: `${req.user.firstName} ${req.user.lastName}`.trim(),
+        phone: req.user.phone || null,
+      }];
+    }
+
+    const rideRequestsToCreate = [];
+    for (const entry of finalPassengerManifest) {
+      const rr = {
+        communityId: req.user.communityId,
+        passengerId: entry.passengerId && mongoose.Types.ObjectId.isValid(String(entry.passengerId)) ? entry.passengerId : null,
+        passengerName: entry.name || null,
+        passengerPhone: entry.phone || null,
         bookingOwner: req.user._id,
         pickupLocation: explicitPickupPoint || { type: 'Point', coordinates: [coords.lng, coords.lat] },
         passengerHomePhase: passsengerPhaseForDispatch,
@@ -920,7 +950,8 @@ const createPickupIntent = async (req, res) => {
         },
         fareExpected,
         status: 'pending',
-      });
+      };
+      rideRequestsToCreate.push(rr);
     }
 
     const createdRideRequests = await RideRequest.create(rideRequestsToCreate);
@@ -929,11 +960,11 @@ const createPickupIntent = async (req, res) => {
       communityId: req.user.communityId,
       passengerId: req.user._id,
       bookingOwner: req.user._id,
-      passengerManifest: Array.isArray(passengerManifest) && passengerManifest.length > 0 ? passengerManifest.map((p) => ({
+      passengerManifest: finalPassengerManifest.map((p) => ({
         passengerId: p.passengerId && mongoose.Types.ObjectId.isValid(String(p.passengerId)) ? p.passengerId : null,
         name: p.name || null,
         phone: p.phone || null,
-      })) : undefined,
+      })),
       location: explicitPickupPoint || {
         type: 'Point',
         coordinates: [coords.lng, coords.lat],
@@ -1231,7 +1262,7 @@ const listPickupIntents = async (req, res) => {
     }
 
     const requests = await PickupRequest.find(query)
-      .select('communityId passengerId location pickupLocation destinationType destinationLabel destinationLocation passengerHomePhase status expiresAt createdAt')
+      .select('communityId passengerId location pickupLocation destinationType destinationLabel destinationLocation passengerHomePhase status expiresAt createdAt passengerManifest')
       .sort({ createdAt: -1 })
       .limit(100);
 
@@ -2896,7 +2927,36 @@ const resolveRideRequest = async (req, res) => {
       await shuttle.save({ session });
     }
 
+    // Release the pendingPickupCount slot if the linked PickupRequest was dispatched
+    if (rideRequest.pickupRequestId) {
+      const linkedPickup = await PickupRequest.findById(rideRequest.pickupRequestId)
+        .select('status assignedShuttleId')
+        .session(session);
+      if (linkedPickup?.status === 'dispatched' && linkedPickup.assignedShuttleId) {
+        await Shuttle.updateOne(
+          { _id: linkedPickup.assignedShuttleId, pendingPickupCount: { $gt: 0 } },
+          { $inc: { pendingPickupCount: -1 } }
+        ).session(session);
+      }
+    }
+
     if (session) await session.commitTransaction();
+
+    // Emit socket events so passengers and community UI stay in sync
+    const lateIo = req.app.get('io');
+    lateIo.to(`community:${String(req.user.communityId)}`).emit('trip:pickup-claimed', {
+      requestId: rideRequest.pickupRequestId || null,
+      passengerId: rideRequest.passengerId || null,
+      shuttleId: shuttle._id,
+      tripId: activeTrip._id,
+    });
+    if (rideRequest.passengerId) {
+      lateIo.to(`user:${String(rideRequest.passengerId)}`).emit('notification', {
+        title: 'Boarded',
+        body: 'Your ride has been recorded by the driver.',
+        type: 'late_manual_boarded',
+      });
+    }
 
     return res.status(200).json({
       message: 'Ride request resolved as late manual boarding.',
@@ -2922,7 +2982,7 @@ const getMyDispatch = async (req, res) => {
     const request = await PickupRequest.findOne({
       passengerId: req.user._id,
       communityId: req.user.communityId,
-      status: { $in: ['dispatched', 'queued'] },
+      status: { $in: ['pending', 'dispatched', 'queued'] },
       expiresAt: { $gt: new Date() },
     })
       .sort({ createdAt: -1 })

@@ -444,16 +444,9 @@ const retryWaitingQueue = async (communityId, io, maxRetries = 3) => {
       status: 'queued',
       expiresAt: { $gt: now },
     })
-      .sort({ fareType: -1, createdAt: 1 }) // 'standard'<'priority' alphabetically — but we want priority first
+      .sort({ fareType: 1, createdAt: 1 }) // 'priority' < 'standard' alphabetically — ascending puts priority first
       .limit(maxRetries)
       .lean();
-
-    // Sort so priority comes before standard (mongoose sort: -1 on string puts 's' after 'p' — use explicit sort)
-    queuedRequests.sort((a, b) => {
-      if (a.fareType === 'priority' && b.fareType !== 'priority') return -1;
-      if (b.fareType === 'priority' && a.fareType !== 'priority') return 1;
-      return new Date(a.createdAt) - new Date(b.createdAt);
-    });
 
     for (const req of queuedRequests) {
       const fareExpected =

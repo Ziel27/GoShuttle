@@ -51,13 +51,13 @@ export function HowToBookModal({ visible, onClose, showDontShowAgain = true }: H
 
           <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
             <View style={[styles.stepCard, { borderColor, backgroundColor: surfaceColor }]}>
-              <View style={[styles.stepNumber, { backgroundColor: tint }]}>
+              <View style={[styles.stepNumber, { backgroundColor: successColor }]}>
                 <ThemedText style={styles.stepNumberText}>1</ThemedText>
               </View>
               <View style={styles.stepCopy}>
                 <ThemedText style={[styles.stepTitle, { color: textColor }]}>Choose Your Destination</ThemedText>
                 <ThemedText style={[styles.stepDesc, { color: mutedColor }]}>
-                  Select a <ThemedText style={{fontFamily: OutfitFonts.bold}}>Fixed stop</ThemedText> configured by your community or choose your saved <ThemedText style={{fontFamily: OutfitFonts.bold}}>Home</ThemedText> location.
+                  Select a <ThemedText style={{fontFamily: OutfitFonts.bold}}>Fixed destination</ThemedText> configured by your community or choose your saved <ThemedText style={{fontFamily: OutfitFonts.bold}}>Home</ThemedText> location.
                 </ThemedText>
               </View>
             </View>
@@ -75,7 +75,7 @@ export function HowToBookModal({ visible, onClose, showDontShowAgain = true }: H
             </View>
 
             <View style={[styles.stepCard, { borderColor, backgroundColor: surfaceColor }]}>
-              <View style={[styles.stepNumber, { backgroundColor: palette.navy }]}>
+              <View style={[styles.stepNumber, { backgroundColor: successColor }]}>
                 <ThemedText style={styles.stepNumberText}>3</ThemedText>
               </View>
               <View style={styles.stepCopy}>
@@ -87,7 +87,7 @@ export function HowToBookModal({ visible, onClose, showDontShowAgain = true }: H
             </View>
             
             <View style={[styles.stepCard, { borderColor, backgroundColor: surfaceColor }]}>
-              <View style={[styles.stepNumber, { backgroundColor: AppPalette.slateBorder }]}>
+              <View style={[styles.stepNumber, { backgroundColor: successColor }]}>
                 <Ionicons name="people" size={14} color={palette.white} />
               </View>
               <View style={styles.stepCopy}>
