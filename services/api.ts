@@ -32,15 +32,23 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     const data = error?.response?.data || {};
+    const status = error?.response?.status;
     const message =
       data.error ||
       data.message ||
       error?.message ||
       'Request failed';
 
+    // Automatically log out if the token is invalid/expired
+    if (status === 401) {
+      // Use dynamic import or require to avoid circular dependencies
+      const authStore = require('@/store/auth').useAuthStore;
+      authStore.getState().logout();
+    }
+
     const enhancedError = new Error(message);
     (enhancedError as any).responseData = data;
-    (enhancedError as any).status = error?.response?.status;
+    (enhancedError as any).status = status;
     return Promise.reject(enhancedError);
   }
 );
