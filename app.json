@@ -18,12 +18,7 @@
         "monochromeImage": "./assets/images/logo.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.goshuttle",
-      "config": {
-        "googleMaps": {
-          "apiKey": "AIzaSyD97Fy8UPu13lxQnhs3CeRdiy2r150LraM"
-        }
-      }
+      "package": "com.goshuttle"
     },
     "web": {
       "output": "static",
