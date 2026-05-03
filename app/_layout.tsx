@@ -20,7 +20,7 @@ import { usePreferencesStore } from '@/store/preferences';
 const logoSource = require('../assets/images/logo.png');
 
 export const unstable_settings = {
-  anchor: '(tabs)',
+  initialRouteName: 'index',
 };
 
 export default function RootLayout() {
@@ -29,8 +29,6 @@ export default function RootLayout() {
   const hydrated = useAuthStore((state) => state.hydrated);
   const hydratePreferences = usePreferencesStore((state) => state.hydrate);
   const preferencesHydrated = usePreferencesStore((state) => state.hydrated);
-  const token = useAuthStore((state) => state.token);
-  const hasSeenWelcome = useAuthStore((state) => state.hasSeenWelcome);
 
   const [fontsLoaded] = useFonts({
     Outfit_400Regular,
@@ -63,15 +61,12 @@ export default function RootLayout() {
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
       <Stack>
-        {token ? (
-          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        ) : !hasSeenWelcome ? (
-          <Stack.Screen name="welcome" options={{ headerShown: false }} />
-        ) : (
-          <Stack.Screen name="(auth)" options={{ headerShown: false }} />
-        )}
+        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        <Stack.Screen name="welcome" options={{ headerShown: false }} />
+        <Stack.Screen name="(auth)" options={{ headerShown: false }} />
         <Stack.Screen name="change-password" options={{ headerShown: false }} />
         <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
+        <Stack.Screen name="index" options={{ headerShown: false }} />
       </Stack>
       <StatusBar style="auto" />
     </ThemeProvider>

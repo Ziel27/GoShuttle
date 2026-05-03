@@ -18,7 +18,12 @@
         "monochromeImage": "./assets/images/logo.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.goshuttle"
+      "package": "com.goshuttle",
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyD97Fy8UPu13lxQnhs3CeRdiy2r150LraM"
+        }
+      }
     },
     "web": {
       "output": "static",
@@ -47,7 +52,7 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "8e398d45-0e92-4a4e-beaf-0cbbe5a499e2"
+        "projectId": "195c2214-02c8-4da7-9141-c362a6ca63fc"
       }
     }
   }
