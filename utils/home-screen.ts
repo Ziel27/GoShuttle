@@ -304,9 +304,9 @@ export const detectPickupOrigin = ({
     nearestFixedDistance = distance;
     nearestFixed = {
       type: 'fixed',
-      label: item.name?.trim() || 'Fixed stop',
+      label: item.name?.trim() || 'Fixed destination',
       matchedDestinationId: item._id,
-      matchedDestinationLabel: item.name?.trim() || 'Fixed stop',
+      matchedDestinationLabel: item.name?.trim() || 'Fixed destination',
     };
   }
 
@@ -316,7 +316,7 @@ export const detectPickupOrigin = ({
 
   return {
     type: 'unknown',
-    label: 'Current pickup location not matched to Home or a fixed stop yet.',
+    label: 'Current pickup location not matched to Home or a fixed destination yet.',
     matchedDestinationId: null,
     matchedDestinationLabel: null,
   };
