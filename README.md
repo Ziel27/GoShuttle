@@ -1,4 +1,33 @@
-# Welcome to your Expo app 👋
+# GoShuttle
+
+GoShuttle is a community shuttle platform with a React Native app, Node.js backend, and Cloudflare-based public delivery.
+
+## Public API Setup
+
+The mobile app does not talk to the backend through the Expo tunnel. The API must be published separately and reachable at `https://api.goshuttle.app/api`.
+
+If you deploy with Docker, run the backend stack first:
+
+```bash
+docker compose -f docker-compose.yml up -d
+```
+
+Then run the API Cloudflare tunnel stack so `api.goshuttle.app` reaches the backend service on port 5000:
+
+```bash
+docker compose -f docker-compose.backend-cloudflare.yml up -d
+```
+
+In the Cloudflare tunnel settings, map the public hostname `api.goshuttle.app` to `http://backend:5000`.
+The tunnel container only creates the secure path; the hostname-to-origin rule still has to point at the backend service.
+
+The Expo tunnel stack is separate and only serves the mobile dev server:
+
+```bash
+docker compose -f docker-compose.expo-cloudflare.yml up -d
+```
+
+## Expo App
 
 This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
 

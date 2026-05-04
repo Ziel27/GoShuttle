@@ -1,0 +1,16 @@
+version: '3.9'
+
+services:
+  cloudflared-api:
+    image: cloudflare/cloudflared:latest
+    container_name: goshuttle-api-cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_API_TUNNEL_TOKEN}
+    environment:
+      - CLOUDFLARE_API_TUNNEL_TOKEN=${CLOUDFLARE_API_TUNNEL_TOKEN}
+    networks:
+      - proxy
+
+networks:
+  proxy:
+    external: true
