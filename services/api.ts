@@ -1,19 +1,12 @@
 import axios from 'axios';
 
 const rawApiBaseUrl = process.env.EXPO_PUBLIC_API_URL?.trim();
-if (!rawApiBaseUrl && process.env.NODE_ENV === 'production') {
+
+const API_BASE_URL = rawApiBaseUrl || (() => {
   throw new Error(
-    '[api] EXPO_PUBLIC_API_URL must be set in production. Add it to your .env file or EAS environment variables.'
+    '[api] EXPO_PUBLIC_API_URL is required. Set it in your environment, Expo config, or EAS profile so the app can reach the public API.'
   );
-}
-
-const API_BASE_URL = rawApiBaseUrl || 'http://192.168.100.226:5000/api';
-
-if (!rawApiBaseUrl) {
-  console.warn(
-    '[api] EXPO_PUBLIC_API_URL is missing. Falling back to http://192.168.100.226:5000/api for development.'
-  );
-}
+})();
 
 export const api = axios.create({
   baseURL: API_BASE_URL,

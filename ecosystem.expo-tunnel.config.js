@@ -12,8 +12,8 @@ module.exports = {
       restart_delay: 5000,
       env: {
         EXPO_NO_TELEMETRY: '1',
-        EXPO_PUBLIC_API_URL: process.env.EXPO_PUBLIC_API_URL,
-        EXPO_PUBLIC_SOCKET_URL: process.env.EXPO_PUBLIC_SOCKET_URL
+        EXPO_PUBLIC_API_URL: process.env.EXPO_PUBLIC_API_URL || 'https://api.goshuttle.app/api',
+        EXPO_PUBLIC_SOCKET_URL: process.env.EXPO_PUBLIC_SOCKET_URL || 'https://api.goshuttle.app'
       },
     },
   ],

@@ -1,3 +1,4 @@
+import { HowToBookModal } from '@/components/HowToBookModal';
 import { ThemedText } from '@/components/themed-text';
 import { MapIndicator, MapLoadingPlaceholder } from '@/components/ui/home-map-primitives';
 import {
@@ -7,7 +8,6 @@ import {
 import { PremiumButton } from '@/components/ui/premium-button';
 import { SectionHeader } from '@/components/ui/section-header';
 import { StatusBanner } from '@/components/ui/status-banner';
-import { HowToBookModal } from '@/components/HowToBookModal';
 import { AppPalette, getCapacityColor } from '@/constants/app-ui';
 import { DesignTokens, OutfitFonts, SemanticColors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
@@ -55,11 +55,11 @@ import {
   upsertPickupIntent,
 } from '@/utils/home-screen';
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { type ComponentRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppState, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, Switch } from 'react-native';
+import { AppState, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import MapView, { Callout, Circle, LatLng, Marker, Polygon, Region } from 'react-native-maps';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -1258,7 +1258,7 @@ export default function HomeScreen() {
         if (!active) return;
         setPhaseGeofences(phases);
       } catch (error) {
-        console.error('Failed to load phase geofences:', error);
+        console.warn('Failed to load phase geofences:', error);
       }
     };
 

@@ -14,8 +14,8 @@ module.exports = {
       env: {
         EXPO_NO_TELEMETRY: '1',
         EXPO_PACKAGER_PROXY_URL: 'https://shuttle.goshuttle.app',
-        EXPO_PUBLIC_API_URL: process.env.EXPO_PUBLIC_API_URL,
-        EXPO_PUBLIC_SOCKET_URL: process.env.EXPO_PUBLIC_SOCKET_URL
+        EXPO_PUBLIC_API_URL: process.env.EXPO_PUBLIC_API_URL || 'https://api.goshuttle.app/api',
+        EXPO_PUBLIC_SOCKET_URL: process.env.EXPO_PUBLIC_SOCKET_URL || 'https://api.goshuttle.app'
       },
     },
   ],
