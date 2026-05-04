@@ -10,6 +10,8 @@ services:
     environment:
       - EXPO_NO_TELEMETRY=1
       - EXPO_DEVTOOLS_LISTEN_ADDRESS=0.0.0.0
+      - EXPO_PUBLIC_API_URL=${EXPO_PUBLIC_API_URL}
+      - EXPO_PUBLIC_SOCKET_URL=${EXPO_PUBLIC_SOCKET_URL}
       # Optional but recommended to reduce ngrok tunnel failures/rate limits.
       # Set this in Portainer environment variables if you have one.
       - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
