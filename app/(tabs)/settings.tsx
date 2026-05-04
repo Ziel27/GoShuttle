@@ -1,9 +1,9 @@
+import { HowToBookModal } from '@/components/HowToBookModal';
 import { ThemedText } from '@/components/themed-text';
 import { PremiumButton } from '@/components/ui/premium-button';
 import { AppPalette } from '@/constants/app-ui';
 import { ROUTES } from '@/constants/routes';
 import { DesignTokens, OutfitFonts } from '@/constants/theme';
-import { HowToBookModal } from '@/components/HowToBookModal';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { getCommunityById, getPhaseGeofences, type PhaseGeofence } from '@/services/community';
 import {
@@ -12,9 +12,9 @@ import {
     savePushToken,
 } from '@/services/notifications';
 import { listShuttles } from '@/services/shuttle';
-import { endShift, resolveRideRequest, startShift, stopShift, cancelMyPickupIntents, getMyDispatch } from '@/services/trip';
+import { cancelMyPickupIntents, endShift, resolveRideRequest, startShift, stopShift } from '@/services/trip';
 
-import { setHomeDestinationFromGps, updateHomePhase } from '@/services/user';
+import { setHomeDestinationFromGps } from '@/services/user';
 import { useAuthStore } from '@/store/auth';
 import { usePreferencesStore } from '@/store/preferences';
 import { Ionicons } from '@expo/vector-icons';
@@ -138,7 +138,7 @@ export default function SettingsTabScreen() {
         const phases = await getPhaseGeofences(user.communityId);
         setPhaseGeofences(phases);
       } catch (error) {
-        console.error('Failed to load phase geofences:', error);
+        console.warn('Failed to load phase geofences:', error);
       }
     };
     loadPhaseGeofences();
