@@ -53,8 +53,12 @@ services:
     image: caddy:2-alpine
     container_name: goshuttle-caddy
     restart: unless-stopped
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    # NOTE: Caddyfile is embedded inline via Docker configs (no bind-mount needed).
+    # This makes the stack fully self-contained and deployable from Portainer's
+    # web editor without requiring a Git repository clone.
+    configs:
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
     depends_on:
       - admin-web
       - backend
@@ -66,3 +70,17 @@ services:
 networks:
   proxy:
     external: true
+
+# The Caddyfile is embedded here so this compose file is fully self-contained.
+# Portainer's web editor does not copy files alongside the compose YAML,
+# so a bind-mount (./Caddyfile) would fail. This approach works everywhere.
+configs:
+  caddyfile:
+    content: |
+      admin.goshuttle.app {
+          reverse_proxy admin-web:3001
+      }
+
+      api.goshuttle.app {
+          reverse_proxy backend:5000
+      }
