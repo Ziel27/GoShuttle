@@ -51,14 +51,16 @@ services:
       - proxy
 
   # Simple reverse proxy used by the Cloudflare tunnel to route hostnames.
-  # Caddyfile is bind-mounted from the Git repo — Portainer clones the full
-  # repo so ./Caddyfile is always present alongside this compose file.
+  # We generate the Caddyfile at runtime to support Portainer's Web Editor,
+  # avoiding bind-mount errors and avoiding missing file issues.
   caddy:
     image: caddy:2-alpine
     container_name: goshuttle-caddy
     restart: unless-stopped
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    command: >
+      sh -c 'echo "http://admin.goshuttle.app { reverse_proxy admin-web:3001 }" > /etc/caddy/Caddyfile &&
+             echo "http://api.goshuttle.app { reverse_proxy backend:5000 }" >> /etc/caddy/Caddyfile &&
+             caddy run --config /etc/caddy/Caddyfile --adapter caddyfile'
     depends_on:
       - admin-web
       - backend
