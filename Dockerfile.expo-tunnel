@@ -14,4 +14,7 @@ COPY . .
 
 EXPOSE 8081
 
+# Default: ngrok tunnel mode (bare-metal / standalone use).
+# docker-compose.expo-cloudflare.yml overrides this with ecosystem.expo-lan.config.js
+# which runs --offline and relies on a Cloudflare tunnel instead of ngrok.
 CMD ["pm2-runtime", "ecosystem.expo-tunnel.config.js"]
