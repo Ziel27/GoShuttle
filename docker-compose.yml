@@ -48,6 +48,21 @@ services:
     networks:
       - proxy
 
+  # Simple reverse proxy used by the Cloudflare tunnel to route hostnames
+  caddy:
+    image: caddy:2-alpine
+    container_name: goshuttle-caddy
+    restart: unless-stopped
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - admin-web
+      - backend
+    ports:
+      - "80:80"
+    networks:
+      - proxy
+
 networks:
   proxy:
     external: true

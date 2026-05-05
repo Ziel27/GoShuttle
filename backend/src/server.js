@@ -107,13 +107,14 @@ const configuredOrigins = process.env.CORS_ORIGIN
 
 const hasWildcardOrigin = configuredOrigins.includes('*');
 const defaultDevOrigins = ['http://localhost:5173', 'http://127.0.0.1:5173'];
+const defaultProdOrigins = ['https://admin.goshuttle.app', 'https://api.goshuttle.app'];
 
 const allowlistOrigins = configuredOrigins.length
   ? configuredOrigins.filter((origin) => origin !== '*')
-  : (isProduction ? [] : defaultDevOrigins);
+  : (isProduction ? defaultProdOrigins : defaultDevOrigins);
 
-if (isProduction && (hasWildcardOrigin || allowlistOrigins.length === 0)) {
-  throw new Error('CORS_ORIGIN must be configured in production.');
+if (isProduction && hasWildcardOrigin) {
+  throw new Error('CORS_ORIGIN cannot include a wildcard origin in production.');
 }
 
 const isLocalDevOrigin = (origin) => /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
@@ -317,13 +318,27 @@ app.use((err, _req, res, _next) => {
 
 // ─── Start Server ────────────────────────────────────────────────
 const PORT = process.env.PORT || 5000;
+const DB_RETRY_DELAY_MS = parsePositiveInt(process.env.DB_RETRY_DELAY_MS, 5000);
+
+const connectDBWithRetry = async () => {
+  try {
+    await connectDB();
+  } catch (error) {
+    console.error(`↻ Retrying MongoDB connection in ${DB_RETRY_DELAY_MS}ms`);
+    setTimeout(() => {
+      connectDBWithRetry().catch((retryError) => {
+        console.error('Unexpected MongoDB retry failure:', retryError);
+      });
+    }, DB_RETRY_DELAY_MS);
+  }
+};
 
 const startServer = async () => {
-  await connectDB();
-
   server.listen(PORT, () => {
     console.log(`🚀 GoShuttle API running on port ${PORT} [${process.env.NODE_ENV}]`);
   });
+
+  await connectDBWithRetry();
 };
 
 if (require.main === module) {
