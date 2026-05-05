@@ -50,30 +50,7 @@ services:
     networks:
       - proxy
 
-  # Simple reverse proxy used by the Cloudflare tunnel to route hostnames.
-  # We generate the Caddyfile at runtime to support Portainer's Web Editor,
-  # avoiding bind-mount errors and avoiding missing file issues.
-  caddy:
-    image: caddy:2-alpine
-    container_name: goshuttle-caddy
-    restart: unless-stopped
-    command: |
-      sh -c 'cat <<EOF > /etc/caddy/Caddyfile
-      http://admin.goshuttle.app {
-          reverse_proxy admin-web:3001
-      }
-      http://api.goshuttle.app {
-          reverse_proxy backend:5000
-      }
-      EOF
-      caddy run --config /etc/caddy/Caddyfile --adapter caddyfile'
-    depends_on:
-      - admin-web
-      - backend
-    ports:
-      - "80:80"
-    networks:
-      - proxy
+
 
 networks:
   proxy:

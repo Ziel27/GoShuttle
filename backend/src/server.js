@@ -157,6 +157,14 @@ io.use(async (socket, next) => {
   try {
     let token = socket.handshake.auth?.token || socket.handshake.headers.authorization;
 
+    // If token not found in auth or headers, attempt to extract from HttpOnly cookie
+    if (!token && socket.handshake.headers.cookie) {
+      const match = socket.handshake.headers.cookie.match(/(?:^|;\s*)auth_token=([^;]*)/);
+      if (match) {
+        token = match[1];
+      }
+    }
+
     if (typeof token === 'string' && token.startsWith('Bearer ')) {
       token = token.slice(7);
     }
