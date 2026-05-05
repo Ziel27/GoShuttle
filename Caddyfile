@@ -1,0 +1,7 @@
+admin.goshuttle.app {
+    reverse_proxy admin-web:3001
+}
+
+api.goshuttle.app {
+    reverse_proxy backend:5000
+}

@@ -19,7 +19,7 @@ const connectDB = async () => {
     console.log(`   Pool size: ${minPoolSize}-${maxPoolSize} connections`);
   } catch (error) {
     console.error(`❌ MongoDB connection error: ${error.message}`);
-    process.exit(1);
+    throw error;
   }
 };
 

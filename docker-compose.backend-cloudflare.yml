@@ -5,7 +5,9 @@ services:
     image: cloudflare/cloudflared:latest
     container_name: goshuttle-api-cloudflared
     restart: unless-stopped
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_API_TUNNEL_TOKEN}
+    command: >
+      sh -c 'test -n "$CLOUDFLARE_API_TUNNEL_TOKEN" || { echo "CLOUDFLARE_API_TUNNEL_TOKEN is required"; exit 1; }
+      exec cloudflared tunnel --no-autoupdate run --token "$CLOUDFLARE_API_TUNNEL_TOKEN"'
     environment:
       - CLOUDFLARE_API_TUNNEL_TOKEN=${CLOUDFLARE_API_TUNNEL_TOKEN}
     networks:
