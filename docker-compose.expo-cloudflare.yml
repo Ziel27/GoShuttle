@@ -23,9 +23,7 @@ services:
     image: cloudflare/cloudflared:latest
     container_name: goshuttle-expo-cloudflared
     restart: unless-stopped
-    command: >
-      sh -c 'test -n "$CLOUDFLARE_TUNNEL_TOKEN" || { echo "CLOUDFLARE_TUNNEL_TOKEN is required"; exit 1; }
-      exec cloudflared tunnel --no-autoupdate run --token "$CLOUDFLARE_TUNNEL_TOKEN"'
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
     environment:
       - CLOUDFLARE_TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
     depends_on:
