@@ -1,7 +1,9 @@
-admin.goshuttle.app {
+# http:// prefix disables Caddy's automatic TLS (Let's Encrypt).
+# SSL is terminated by Cloudflare Tunnel — Caddy only proxies HTTP internally.
+http://admin.goshuttle.app {
     reverse_proxy admin-web:3001
 }
 
-api.goshuttle.app {
+http://api.goshuttle.app {
     reverse_proxy backend:5000
 }
