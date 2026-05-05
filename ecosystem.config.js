@@ -1,3 +1,5 @@
+// NOTE: This file is for bare-metal / non-Docker deployments ONLY.
+// For Docker, the backend port and env vars are set in docker-compose.yml (PORT=5000).
 module.exports = {
   apps: [
     {

@@ -36,8 +36,10 @@ RUN npm install -g serve
 COPY --from=admin-web-builder /app/admin-web/dist ./dist
 
 # Health check
+# Health check: hit the root path — 'serve' has no /health route, it would return
+# 404 there which makes wget exit non-zero and the container permanently unhealthy.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD wget --quiet --tries=1 --spider http://localhost:3001/health || exit 1
+  CMD wget --quiet --tries=1 --spider http://localhost:3001/ || exit 1
 
 # Expose port
 EXPOSE 3001
