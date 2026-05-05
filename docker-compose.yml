@@ -6,6 +6,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
+    container_name: goshuttle-backend
     restart: unless-stopped
     environment:
       NODE_ENV: ${NODE_ENV:-production}
@@ -36,9 +37,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.admin-web
-      args: # Add this section!
+      args:
         - VITE_ADMIN_API_URL=https://api.goshuttle.app/api
         - VITE_ADMIN_SOCKET_URL=https://api.goshuttle.app
+    container_name: goshuttle-admin-web
     restart: unless-stopped
     environment:
       - VITE_ADMIN_API_URL=https://api.goshuttle.app/api
@@ -77,10 +79,13 @@ networks:
 configs:
   caddyfile:
     content: |
-      admin.goshuttle.app {
+      # http:// prefix disables Caddy's automatic TLS (Let's Encrypt).
+      # SSL is already terminated by Cloudflare Tunnel — Caddy only needs
+      # to proxy plain HTTP internally between containers.
+      http://admin.goshuttle.app {
           reverse_proxy admin-web:3001
       }
 
-      api.goshuttle.app {
+      http://api.goshuttle.app {
           reverse_proxy backend:5000
       }
