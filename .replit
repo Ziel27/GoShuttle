@@ -1,0 +1,16 @@
+modules = ["nodejs-20", "web", "python-3.12"]
+[agent]
+expertMode = true
+stack = "BEST_EFFORT_FALLBACK"
+
+[nix]
+channel = "stable-25_05"
+
+[userenv]
+
+[userenv.shared]
+PORT = "3001"
+NODE_ENV = "development"
+VITE_ADMIN_API_URL = "http://localhost:3001/api"
+VITE_ADMIN_SOCKET_URL = "http://localhost:3001"
+CORS_ORIGIN = "*"
