@@ -2881,7 +2881,7 @@ export default function HomeScreen() {
                           </View>
                         ))}
 
-                        {manifestDraft.length < 5 && (
+                        {manifestDraft.length < 5 ? (
                           <Pressable
                             accessibilityRole="button"
                             accessibilityLabel="Add another guest"
@@ -2895,6 +2895,10 @@ export default function HomeScreen() {
                             <Ionicons name="add-circle" size={16} color={tint} />
                             <ThemedText style={[styles.manifestAddText, { color: tint }]}>Add Another Guest</ThemedText>
                           </Pressable>
+                        ) : (
+                          <ThemedText style={[styles.manifestCaption, { color: mutedColor, textAlign: 'center', marginTop: 8 }]}>
+                            Max 5 passengers (shuttle capacity reached)
+                          </ThemedText>
                         )}
                       </View>
 
@@ -3301,53 +3305,60 @@ export default function HomeScreen() {
 
               {/* ── Passenger Count Stepper ─────────────────────────────────── */}
               {!bookForOthers && activePassengerPickupIntents.length === 0 && (
-                <View style={[
-                  styles.passengerCountCard,
-                  { borderColor, backgroundColor: bgColor },
-                ]}>
-                  <View style={styles.passengerCountLeft}>
-                    <Ionicons name="people-outline" size={18} color={tint} />
-                    <View style={{ flex: 1 }}>
-                      <ThemedText style={[styles.manifestRowLabel, { color: textColor }]}>
-                        Number of Passengers
+                <>
+                  <View style={[
+                    styles.passengerCountCard,
+                    { borderColor, backgroundColor: bgColor },
+                  ]}>
+                    <View style={styles.passengerCountLeft}>
+                      <Ionicons name="people-outline" size={18} color={tint} />
+                      <View style={{ flex: 1 }}>
+                        <ThemedText style={[styles.manifestRowLabel, { color: textColor }]}>
+                          Number of Passengers
+                        </ThemedText>
+                        <ThemedText style={[styles.manifestCaption, { color: mutedColor }]}>
+                          {passengerCount === 1 ? 'Just me' : `${passengerCount} seats will be reserved`}
+                        </ThemedText>
+                      </View>
+                    </View>
+                    <View style={styles.passengerCountStepper}>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="Decrease passenger count"
+                        disabled={passengerCount <= 1}
+                        onPress={() => setPassengerCount((c) => Math.max(1, c - 1))}
+                        style={({ pressed }) => [
+                          styles.passengerCountBtn,
+                          { borderColor: passengerCount <= 1 ? borderColor : tint, backgroundColor: bgColor },
+                          pressed && { opacity: 0.7 },
+                        ]}
+                      >
+                        <Ionicons name="remove" size={16} color={passengerCount <= 1 ? mutedColor : tint} />
+                      </Pressable>
+                      <ThemedText style={[styles.passengerCountValue, { color: textColor }]}>
+                        {passengerCount}
                       </ThemedText>
-                      <ThemedText style={[styles.manifestCaption, { color: mutedColor }]}>
-                        {passengerCount === 1 ? 'Just me' : `${passengerCount} seats will be reserved`}
-                      </ThemedText>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="Increase passenger count"
+                        disabled={passengerCount >= 5}
+                        onPress={() => setPassengerCount((c) => Math.min(5, c + 1))}
+                        style={({ pressed }) => [
+                          styles.passengerCountBtn,
+                          { borderColor: passengerCount >= 5 ? borderColor : tint, backgroundColor: bgColor },
+                          pressed && { opacity: 0.7 },
+                        ]}
+                      >
+                        <Ionicons name="add" size={16} color={passengerCount >= 5 ? mutedColor : tint} />
+                      </Pressable>
                     </View>
                   </View>
-                  <View style={styles.passengerCountStepper}>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel="Decrease passenger count"
-                      disabled={passengerCount <= 1}
-                      onPress={() => setPassengerCount((c) => Math.max(1, c - 1))}
-                      style={({ pressed }) => [
-                        styles.passengerCountBtn,
-                        { borderColor: passengerCount <= 1 ? borderColor : tint, backgroundColor: bgColor },
-                        pressed && { opacity: 0.7 },
-                      ]}
-                    >
-                      <Ionicons name="remove" size={16} color={passengerCount <= 1 ? mutedColor : tint} />
-                    </Pressable>
-                    <ThemedText style={[styles.passengerCountValue, { color: textColor }]}>
-                      {passengerCount}
+                  {passengerCount >= 5 && (
+                    <ThemedText style={[styles.manifestCaption, { color: mutedColor, textAlign: 'center', marginTop: 6 }]}>
+                      Max 5 passengers (shuttle capacity reached)
                     </ThemedText>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel="Increase passenger count"
-                      disabled={passengerCount >= 5}
-                      onPress={() => setPassengerCount((c) => Math.min(5, c + 1))}
-                      style={({ pressed }) => [
-                        styles.passengerCountBtn,
-                        { borderColor: passengerCount >= 5 ? borderColor : tint, backgroundColor: bgColor },
-                        pressed && { opacity: 0.7 },
-                      ]}
-                    >
-                      <Ionicons name="add" size={16} color={passengerCount >= 5 ? mutedColor : tint} />
-                    </Pressable>
-                  </View>
-                </View>
+                  )}
+                </>
               )}
 
               {/* ── Fare Type Selector ─────────────────────────────────────── */}
