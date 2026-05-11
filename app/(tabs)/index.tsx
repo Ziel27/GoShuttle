@@ -165,6 +165,7 @@ export default function HomeScreen() {
   const [pickupOriginContext, setPickupOriginContext] = useState<PickupOriginContext | null>(null);
   const [bookForOthers, setBookForOthers] = useState(false);
   const [rideNote, setRideNote] = useState('');
+  const [pickupSearchQuery, setPickupSearchQuery] = useState('');
   const [manifestDraft, setManifestDraft] = useState<ManifestDraftEntry[]>([
     { id: 'guest-1', name: '' },
   ]);
@@ -453,6 +454,17 @@ export default function HomeScreen() {
     () => pickupIntents.filter((item) => item.status === 'pending' && !isExpiredIntent(item)),
     [pickupIntents]
   );
+
+  const filteredPickupIntents = useMemo(() => {
+    const q = pickupSearchQuery.trim().toLowerCase();
+    if (!q) return activeCommunityPickupIntents;
+    return activeCommunityPickupIntents.filter((item) => {
+      const names = (item.passengerManifest || []).map((g) => (g.name || '').toLowerCase()).join(' ');
+      const dest = item.destinationLabel.toLowerCase();
+      const note = (item.note || '').toLowerCase();
+      return names.includes(q) || dest.includes(q) || note.includes(q);
+    });
+  }, [activeCommunityPickupIntents, pickupSearchQuery]);
 
   const autoBoardDiagnostic = useMemo<AutomationDiagnostic>(() => {
     if (!isDriverOnShift) {
@@ -2392,6 +2404,82 @@ export default function HomeScreen() {
                       <ThemedText style={[styles.metaText, { color: mutedColor }]}>Pickup Requests</ThemedText>
                       <ThemedText style={[styles.valueSmallText, { color: textColor }]}>{activeCommunityPickupIntents.length} active</ThemedText>
                     </View>
+                    {activeCommunityPickupIntents.length > 0 && (
+                      <>
+                        <View style={[styles.pickupSearchBar, { borderColor, backgroundColor: surfaceColor }]}>
+                          <Ionicons name="search-outline" size={14} color={mutedColor} style={{ marginRight: 6 }} />
+                          <TextInput
+                            value={pickupSearchQuery}
+                            onChangeText={setPickupSearchQuery}
+                            placeholder="Search by name, destination, or note…"
+                            placeholderTextColor={mutedColor}
+                            style={[styles.pickupSearchInput, { color: textColor }]}
+                            clearButtonMode="while-editing"
+                            returnKeyType="search"
+                            accessibilityLabel="Search pickup requests"
+                          />
+                          {pickupSearchQuery.length > 0 && (
+                            <Pressable onPress={() => setPickupSearchQuery('')} hitSlop={8}>
+                              <Ionicons name="close-circle" size={14} color={mutedColor} />
+                            </Pressable>
+                          )}
+                        </View>
+                        {filteredPickupIntents.length === 0 ? (
+                          <ThemedText style={[styles.metaText, { color: mutedColor, marginTop: 6 }]}>No results for "{pickupSearchQuery}"</ThemedText>
+                        ) : (
+                          filteredPickupIntents.map((item, idx) => {
+                            const guestNames = (item.passengerManifest || [])
+                              .map((g) => g.name || 'Guest')
+                              .join(', ');
+                            const displayName = guestNames || 'Passenger';
+                            const isPriority = item.fareType === 'priority';
+                            return (
+                              <View
+                                key={item._id}
+                                style={[
+                                  styles.pickupQueueCard,
+                                  {
+                                    borderColor: isPriority ? '#f59e0b' : borderColor,
+                                    backgroundColor: isPriority
+                                      ? colorScheme === 'dark' ? '#3b2a10' : '#fffbeb'
+                                      : colorScheme === 'dark' ? AppPalette.darkOverlaySoft : bgColor,
+                                  },
+                                  idx > 0 && { marginTop: 8 },
+                                ]}
+                              >
+                                <View style={styles.pickupQueueCardHeader}>
+                                  <View style={{ flex: 1 }}>
+                                    <ThemedText style={[styles.pickupQueueName, { color: textColor }]} numberOfLines={1}>
+                                      {displayName}
+                                    </ThemedText>
+                                    <View style={styles.pickupQueueDestRow}>
+                                      <Ionicons name="location-outline" size={12} color={mutedColor} />
+                                      <ThemedText style={[styles.pickupQueueDest, { color: mutedColor }]} numberOfLines={1}>
+                                        {item.destinationLabel}
+                                      </ThemedText>
+                                    </View>
+                                  </View>
+                                  <View style={[styles.pickupQueueBadge, { backgroundColor: isPriority ? '#f59e0b' : tint }]}>
+                                    <Ionicons name={isPriority ? 'flash' : 'car-outline'} size={10} color={palette.white} />
+                                    <ThemedText style={styles.pickupQueueBadgeText}>
+                                      {isPriority ? 'Priority' : 'Standard'}
+                                    </ThemedText>
+                                  </View>
+                                </View>
+                                {item.note ? (
+                                  <View style={[styles.pickupQueueNote, { borderTopColor: borderColor }]}>
+                                    <Ionicons name="chatbubble-ellipses-outline" size={11} color={tint} style={{ marginRight: 4 }} />
+                                    <ThemedText style={[styles.pickupQueueNoteText, { color: textColor }]} numberOfLines={3}>
+                                      {item.note}
+                                    </ThemedText>
+                                  </View>
+                                ) : null}
+                              </View>
+                            );
+                          })
+                        )}
+                      </>
+                    )}
                     <View style={styles.rowBetween}>
                       <ThemedText style={[styles.metaText, { color: mutedColor }]}>Shift Status</ThemedText>
                       <ThemedText style={[styles.valueSmallText, { color: isDriverOnShift ? successColor : dangerColor }]}>
@@ -4326,6 +4414,73 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
+  },
+  pickupSearchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.sm,
+    paddingHorizontal: DesignTokens.spacing.xs,
+    paddingVertical: 6,
+    marginTop: 8,
+  },
+  pickupSearchInput: {
+    flex: 1,
+    fontFamily: OutfitFonts.regular,
+    fontSize: 13,
+    paddingVertical: 0,
+  },
+  pickupQueueCard: {
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.md,
+    paddingHorizontal: DesignTokens.spacing.sm,
+    paddingVertical: DesignTokens.spacing.xs,
+    marginTop: 6,
+  },
+  pickupQueueCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: DesignTokens.spacing.xs,
+  },
+  pickupQueueName: {
+    fontFamily: OutfitFonts.semiBold,
+    fontSize: 13,
+  },
+  pickupQueueDestRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    marginTop: 2,
+  },
+  pickupQueueDest: {
+    fontFamily: OutfitFonts.regular,
+    fontSize: 12,
+    flex: 1,
+  },
+  pickupQueueBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    borderRadius: 99,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+  },
+  pickupQueueBadgeText: {
+    fontFamily: OutfitFonts.semiBold,
+    fontSize: 10,
+    color: '#fff',
+  },
+  pickupQueueNote: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginTop: 6,
+    paddingTop: 6,
+    borderTopWidth: 1,
+  },
+  pickupQueueNoteText: {
+    fontFamily: OutfitFonts.regular,
+    fontSize: 12,
+    flex: 1,
   },
   noteInputCard: {
     borderWidth: 1,
