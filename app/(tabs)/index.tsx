@@ -3331,15 +3331,15 @@ export default function HomeScreen() {
                     <Pressable
                       accessibilityRole="button"
                       accessibilityLabel="Increase passenger count"
-                      disabled={passengerCount >= 10}
-                      onPress={() => setPassengerCount((c) => Math.min(10, c + 1))}
+                      disabled={passengerCount >= 5}
+                      onPress={() => setPassengerCount((c) => Math.min(5, c + 1))}
                       style={({ pressed }) => [
                         styles.passengerCountBtn,
-                        { borderColor: passengerCount >= 10 ? borderColor : tint, backgroundColor: bgColor },
+                        { borderColor: passengerCount >= 5 ? borderColor : tint, backgroundColor: bgColor },
                         pressed && { opacity: 0.7 },
                       ]}
                     >
-                      <Ionicons name="add" size={16} color={passengerCount >= 10 ? mutedColor : tint} />
+                      <Ionicons name="add" size={16} color={passengerCount >= 5 ? mutedColor : tint} />
                     </Pressable>
                   </View>
                 </View>

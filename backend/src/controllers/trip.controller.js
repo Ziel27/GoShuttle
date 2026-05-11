@@ -924,6 +924,8 @@ const createPickupIntent = async (req, res) => {
     // we default it to the primary passenger, making sure their name and optional phone
     // are visible to the driver.
 
+    const MAX_PASSENGERS_PER_BOOKING = 5;
+
     let finalPassengerManifest = passengerManifest;
     if (!Array.isArray(finalPassengerManifest) || finalPassengerManifest.length === 0) {
       finalPassengerManifest = [{
@@ -931,6 +933,12 @@ const createPickupIntent = async (req, res) => {
         name: `${req.user.firstName} ${req.user.lastName}`.trim(),
         phone: req.user.phone || null,
       }];
+    }
+
+    if (finalPassengerManifest.length > MAX_PASSENGERS_PER_BOOKING) {
+      return res.status(400).json({
+        error: `A single booking cannot exceed ${MAX_PASSENGERS_PER_BOOKING} passengers (shuttle maximum capacity).`,
+      });
     }
 
     const rideRequestsToCreate = [];
