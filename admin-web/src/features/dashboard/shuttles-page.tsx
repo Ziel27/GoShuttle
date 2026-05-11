@@ -246,8 +246,8 @@ export const ShuttlesPage = () => {
       return;
     }
 
-    if (!Number.isInteger(capacity) || capacity < 1 || capacity > 50) {
-      setError('Max capacity must be an integer between 1 and 50.');
+    if (!Number.isInteger(capacity) || capacity < 1 || capacity > 5) {
+      setError('Max capacity must be an integer between 1 and 5.');
       return;
     }
 
@@ -376,7 +376,7 @@ export const ShuttlesPage = () => {
                   id="maxCapacity"
                   type="number"
                   min="1"
-                  max="50"
+                  max="5"
                   value={newMaxCapacity}
                   onChange={(e) => setNewMaxCapacity(e.target.value)}
                   className="mt-1 h-8"

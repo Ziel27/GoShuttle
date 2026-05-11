@@ -553,8 +553,8 @@ const createShuttle = async (req, res) => {
     }
 
     const parsedCapacity = Number(maxCapacity);
-    if (!Number.isInteger(parsedCapacity) || parsedCapacity < 1 || parsedCapacity > 50) {
-      return res.status(400).json({ error: 'maxCapacity must be an integer between 1 and 50.' });
+    if (!Number.isInteger(parsedCapacity) || parsedCapacity < 1 || parsedCapacity > 5) {
+      return res.status(400).json({ error: 'maxCapacity must be an integer between 1 and 5.' });
     }
 
     const scopedCommunityId = resolveCommunityScopeId(req, communityId, { allowAll: false });
