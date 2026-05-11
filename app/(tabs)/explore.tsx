@@ -8,6 +8,7 @@ import { getCapacityColor } from '@/constants/app-ui';
 import { DesignTokens, OutfitFonts, SemanticColors } from '@/constants/theme';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { listShuttles, Shuttle } from '@/services/shuttle';
+import { formatShuttleLabel } from '@/utils/format';
 import { connectCommunitySocket } from '@/services/socket';
 import {
     DriverCompletedTrip,
@@ -108,7 +109,7 @@ const FleetShuttleCard = memo(function FleetShuttleCard({
         <View style={styles.shuttleTitleWrap}>
           <Ionicons name="bus" size={16} color={tint} />
           <ThemedText type="subtitle" style={{ color: textColor }}>
-            {item.plateNumber} {item.label ? `- ${item.label}` : ''}
+            {item.plateNumber}{item.label ? ` · Electric ${item.label}` : ''}
           </ThemedText>
         </View>
         <ThemedText type="overline" style={{ color: mutedColor }}>

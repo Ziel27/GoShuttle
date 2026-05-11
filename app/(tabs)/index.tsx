@@ -1,4 +1,5 @@
 import { HowToBookModal } from '@/components/HowToBookModal';
+import { formatPhaseLabel, formatShuttleLabel } from '@/utils/format';
 import { ThemedText } from '@/components/themed-text';
 import { MapIndicator, MapLoadingPlaceholder } from '@/components/ui/home-map-primitives';
 import {
@@ -2315,7 +2316,7 @@ export default function HomeScreen() {
                     {phaseGeofences.map((phase) => (
                       <View key={`driver-legend-phase-${phase._id}`} style={styles.phaseLegendRow}>
                         <View style={[styles.phaseLegendDot, { backgroundColor: phase.color || '#6366f1' }]} />
-                        <Text style={[styles.phaseLegendText, { color: textColor }]}>{phase.name.replace(/_/g, ' ')}</Text>
+                        <Text style={[styles.phaseLegendText, { color: textColor }]}>{formatPhaseLabel(phase.name)}</Text>
                       </View>
                     ))}
                   </>
@@ -2641,7 +2642,7 @@ export default function HomeScreen() {
                       <Callout tooltip>
                         <View style={[styles.calloutContainer, { backgroundColor: bgColor, borderColor }]}>
                           <ThemedText type="defaultSemiBold" style={{ color: textColor, fontSize: 14 }}>
-                            {item.label || item.plateNumber}
+                            {formatShuttleLabel(item.label, item.plateNumber)}
                           </ThemedText>
                           <View style={[styles.calloutSeparator, { backgroundColor: borderColor }]} />
                           <ThemedText type="caption" style={{ color: mutedColor, fontSize: 12 }}>
@@ -2733,7 +2734,7 @@ export default function HomeScreen() {
                     {phaseGeofences.map((phase) => (
                       <View key={`passenger-legend-phase-${phase._id}`} style={styles.phaseLegendRow}>
                         <View style={[styles.phaseLegendDot, { backgroundColor: phase.color || '#6366f1' }]} />
-                        <Text style={[styles.phaseLegendText, { color: textColor }]}>{phase.name.replace(/_/g, ' ')}</Text>
+                        <Text style={[styles.phaseLegendText, { color: textColor }]}>{formatPhaseLabel(phase.name)}</Text>
                       </View>
                     ))}
                   </>
@@ -3767,8 +3768,8 @@ export default function HomeScreen() {
                         style={[styles.dispatchAssignedDetailText, { color: colorScheme === 'dark' ? '#6ee7b7' : '#047857' }]}
                       >
                         {dispatchedShuttle.plateNumber
-                          ? `${dispatchedShuttle.plateNumber}${dispatchedShuttle.label ? ` · ${dispatchedShuttle.label}` : ''}`
-                          : dispatchedShuttle.label || 'Shuttle'}
+                          ? `${dispatchedShuttle.plateNumber}${dispatchedShuttle.label ? ` · Electric ${dispatchedShuttle.label}` : ''}`
+                          : formatShuttleLabel(dispatchedShuttle.label, undefined)}
                       </ThemedText>
                     </View>
                     <View style={styles.dispatchAssignedDetailRow}>
