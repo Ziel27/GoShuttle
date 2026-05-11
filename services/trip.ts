@@ -37,6 +37,7 @@ export type PickupIntent = {
     name?: string | null;
     phone?: string | null;
   }>;
+  note?: string | null;
 };
 
 export type AssignedShuttle = {
@@ -199,7 +200,8 @@ export const createPickupIntent = async (
   booking?: {
     pickupLocation?: PickupLocationInput;
     passengerManifest?: PassengerManifestEntry[];
-  }
+  },
+  note?: string | null
 ): Promise<{
   request: PickupIntent;
   rideRequestId: string;
@@ -218,6 +220,7 @@ export const createPickupIntent = async (
     detectedPhase,
     ...(booking?.pickupLocation ? { pickupLocation: booking.pickupLocation } : {}),
     ...(booking?.passengerManifest?.length ? { passengerManifest: booking.passengerManifest } : {}),
+    ...(note ? { note } : {}),
   });
 
   return {

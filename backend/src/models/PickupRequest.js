@@ -92,6 +92,12 @@ const pickupRequestSchema = new mongoose.Schema(
       default: 'standard',
       index: true,
     },
+    note: {
+      type: String,
+      trim: true,
+      maxlength: [300, 'Note cannot exceed 300 characters.'],
+      default: null,
+    },
 
     assignedShuttleId: {
       type: mongoose.Schema.Types.ObjectId,

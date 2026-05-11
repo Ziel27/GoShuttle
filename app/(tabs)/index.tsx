@@ -165,6 +165,7 @@ export default function HomeScreen() {
   const [fixedDestinations, setFixedDestinations] = useState<FixedDestinationOption[]>([]);
   const [pickupOriginContext, setPickupOriginContext] = useState<PickupOriginContext | null>(null);
   const [bookForOthers, setBookForOthers] = useState(false);
+  const [rideNote, setRideNote] = useState('');
   const [manifestDraft, setManifestDraft] = useState<ManifestDraftEntry[]>([
     { id: 'guest-1', name: '', phone: '' },
   ]);
@@ -1953,13 +1954,15 @@ export default function HomeScreen() {
               ...(explicitPickupLocationForOptions ? { pickupLocation: explicitPickupLocationForOptions } : {}),
               passengerManifest: normalizedPassengerManifest,
             }
-          : selfBookingOptions
+          : selfBookingOptions,
+        rideNote.trim() || null
       );
 
       if (bookForOthers) {
         resetGuestBookingDraft();
       }
       setPassengerCount(1);
+      setRideNote('');
 
       setPickupIntents((items) => upsertPickupIntent(items, result.request));
 
@@ -2280,6 +2283,16 @@ export default function HomeScreen() {
                                 Passenger waiting
                               </ThemedText>
                             )}
+                            {item.note ? (
+                              <View style={{ marginTop: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: borderColor }}>
+                                <ThemedText type="caption" style={{ color: tint, fontSize: 11, fontWeight: '600', marginBottom: 2 }}>
+                                  Note
+                                </ThemedText>
+                                <ThemedText type="caption" style={{ color: textColor, fontSize: 12 }}>
+                                  {item.note}
+                                </ThemedText>
+                              </View>
+                            ) : null}
                           </View>
                         </Callout>
                       </Marker>,
@@ -2712,6 +2725,16 @@ export default function HomeScreen() {
                                 Passenger waiting
                               </ThemedText>
                             )}
+                            {item.note ? (
+                              <View style={{ marginTop: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: borderColor }}>
+                                <ThemedText type="caption" style={{ color: tint, fontSize: 11, fontWeight: '600', marginBottom: 2 }}>
+                                  Note
+                                </ThemedText>
+                                <ThemedText type="caption" style={{ color: textColor, fontSize: 12 }}>
+                                  {item.note}
+                                </ThemedText>
+                              </View>
+                            ) : null}
                           </View>
                         </Callout>
                       </Marker>,
@@ -3498,6 +3521,27 @@ export default function HomeScreen() {
               )}
 
 
+
+              {activePassengerPickupIntents.length === 0 && (
+                <View style={[styles.noteInputCard, { borderColor, backgroundColor: bgColor }]}>
+                  <View style={styles.noteInputRow}>
+                    <Ionicons name="chatbubble-ellipses-outline" size={16} color={mutedColor} style={{ marginRight: 8 }} />
+                    <TextInput
+                      value={rideNote}
+                      onChangeText={(v) => setRideNote(v.slice(0, 300))}
+                      placeholder="Note to driver (optional)"
+                      placeholderTextColor={mutedColor}
+                      multiline
+                      numberOfLines={2}
+                      style={[styles.noteInputBare, { color: textColor }]}
+                      accessibilityLabel="Note to driver"
+                    />
+                  </View>
+                  {rideNote.length > 0 && (
+                    <ThemedText style={[styles.noteCharCount, { color: mutedColor }]}>{rideNote.length}/300</ThemedText>
+                  )}
+                </View>
+              )}
 
               <Pressable
                 style={[
@@ -4302,6 +4346,30 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
+  },
+  noteInputCard: {
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.md,
+    paddingHorizontal: DesignTokens.spacing.sm,
+    paddingTop: DesignTokens.spacing.sm,
+    paddingBottom: 6,
+    marginTop: DesignTokens.spacing.xs,
+  },
+  noteInputRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  noteInputBare: {
+    flex: 1,
+    fontFamily: OutfitFonts.regular,
+    fontSize: 14,
+    minHeight: 44,
+    textAlignVertical: 'top',
+  },
+  noteCharCount: {
+    fontSize: 11,
+    textAlign: 'right',
+    marginTop: 2,
   },
   passengerPrimaryButton: {
     marginTop: DesignTokens.spacing.xs,

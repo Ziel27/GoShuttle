@@ -99,6 +99,12 @@ const rideRequestSchema = new mongoose.Schema(
       required: [true, 'Expected fare is required'],
       min: [0, 'Fare cannot be negative'],
     },
+    note: {
+      type: String,
+      trim: true,
+      maxlength: [300, 'Note cannot exceed 300 characters.'],
+      default: null,
+    },
     status: {
       type: String,
       enum: {

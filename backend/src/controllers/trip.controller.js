@@ -822,6 +822,9 @@ const createPickupIntent = async (req, res) => {
   try {
     const { latitude, longitude, destination, detectedPhase, pickupLocation, passengerManifest } = req.body;
     const fareType = ['priority', 'standard'].includes(req.body.fareType) ? req.body.fareType : 'standard';
+    const note = req.body.note && typeof req.body.note === 'string'
+      ? req.body.note.trim().slice(0, 300) || null
+      : null;
 
 
     const coords = validateCoordinates(latitude, longitude);
@@ -957,6 +960,7 @@ const createPickupIntent = async (req, res) => {
           location: destinationLocation,
         },
         fareExpected,
+        note,
         status: 'pending',
       };
       rideRequestsToCreate.push(rr);
@@ -983,6 +987,7 @@ const createPickupIntent = async (req, res) => {
       destinationLocation,
       passengerHomePhase: passsengerPhaseForDispatch,
       fareType,
+      note,
       status: 'pending',
       expiresAt,
     });
@@ -1036,6 +1041,7 @@ const createPickupIntent = async (req, res) => {
       expiresAt: pickupRequest.expiresAt,
       status: pickupRequest.status,
       passengerManifest: Array.isArray(pickupRequest.passengerManifest) ? pickupRequest.passengerManifest : [],
+      note: pickupRequest.note || null,
       assignedShuttleId: dispatchResult.dispatched ? dispatchResult.shuttle?._id : null,
     });
 
@@ -1270,7 +1276,7 @@ const listPickupIntents = async (req, res) => {
     }
 
     const requests = await PickupRequest.find(query)
-      .select('communityId passengerId location pickupLocation destinationType destinationLabel destinationLocation passengerHomePhase status expiresAt createdAt passengerManifest')
+      .select('communityId passengerId location pickupLocation destinationType destinationLabel destinationLocation passengerHomePhase status expiresAt createdAt passengerManifest note')
       .sort({ createdAt: -1 })
       .limit(100);
 
