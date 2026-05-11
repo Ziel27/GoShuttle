@@ -99,6 +99,20 @@ const pickupRequestSchema = new mongoose.Schema(
       default: null,
     },
 
+    trackingToken: {
+      type: String,
+      unique: true,
+      sparse: true,
+      index: true,
+      default: null,
+    },
+
+    trackingMode: {
+      type: String,
+      enum: ['driver', 'passenger'],
+      default: 'passenger',
+    },
+
     assignedShuttleId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Shuttle',

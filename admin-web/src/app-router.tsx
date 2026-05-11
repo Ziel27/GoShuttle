@@ -6,6 +6,7 @@ import { ProtectedRoute } from '@/features/auth/protected-route';
 import { DashboardLayout } from '@/features/dashboard/dashboard-layout';
 
 const LoginPage = lazy(() => import('@/features/auth/login-page').then((mod) => ({ default: mod.LoginPage })));
+const TrackPage = lazy(() => import('@/features/tracking/TrackPage').then((mod) => ({ default: mod.TrackPage })));
 const AnalyticsPage = lazy(() => import('@/features/dashboard/analytics-page').then((mod) => ({ default: mod.AnalyticsPage })));
 const AnnouncementsPage = lazy(() => import('@/features/dashboard/announcements-page').then((mod) => ({ default: mod.AnnouncementsPage })));
 const CommunitiesPage = lazy(() => import('@/features/dashboard/communities-page').then((mod) => ({ default: mod.CommunitiesPage })));
@@ -26,6 +27,7 @@ export const AppRouter = () => {
   return (
     <Suspense fallback={<RouteFallback />}>
       <Routes>
+        <Route path="/track/:token" element={<TrackPage />} />
         <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage />} />
         <Route
           path="/"

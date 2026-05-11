@@ -59,7 +59,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
 import { type ComponentRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppState, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { AppState, Platform, Pressable, ScrollView, Share, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import MapView, { Callout, Circle, LatLng, Marker, Polygon, Region } from 'react-native-maps';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -3787,6 +3787,42 @@ export default function HomeScreen() {
                     </ThemedText>
                   ) : null}
 
+                  {/* ── Share Tracking Link ── */}
+                  {activePassengerPickupIntents[0]?.trackingToken ? (
+                    <Pressable
+                      style={[
+                        styles.shareTrackingBtn,
+                        {
+                          borderColor: colorScheme === 'dark' ? tint : '#2563eb',
+                          backgroundColor: colorScheme === 'dark' ? 'rgba(37,99,235,0.12)' : '#eff6ff',
+                        },
+                      ]}
+                      onPress={async () => {
+                        const intent = activePassengerPickupIntents[0];
+                        if (!intent?.trackingToken) return;
+                        const trackingUrl = intent.trackingUrl;
+                        const isBookForOthers = Array.isArray(intent.passengerManifest) && intent.passengerManifest.length > 0;
+                        const message = isBookForOthers
+                          ? `Track the shuttle on its way to pick up ${activePickupManifestSummary || 'your passengers'}`
+                          : 'Track my shuttle pickup location';
+                        try {
+                          if (trackingUrl) {
+                            await Share.share({ message: `${message}: ${trackingUrl}`, url: trackingUrl });
+                          } else {
+                            await Share.share({ message: `${message} — Tracking ID: ${intent.trackingToken}` });
+                          }
+                        } catch {}
+                      }}
+                      accessibilityRole="button"
+                      accessibilityLabel="Share tracking link"
+                    >
+                      <Ionicons name="share-outline" size={14} color={colorScheme === 'dark' ? tint : '#2563eb'} />
+                      <ThemedText style={[styles.shareTrackingText, { color: colorScheme === 'dark' ? tint : '#2563eb' }]}>
+                        Share Tracking Link
+                      </ThemedText>
+                    </Pressable>
+                  ) : null}
+
                   {/* ── Cancel button ── */}
                   <Pressable
                     style={[
@@ -4481,6 +4517,20 @@ const styles = StyleSheet.create({
     fontFamily: OutfitFonts.regular,
     fontSize: 12,
     flex: 1,
+  },
+  shareTrackingBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.sm,
+    paddingVertical: 8,
+    marginTop: 10,
+  },
+  shareTrackingText: {
+    fontFamily: OutfitFonts.semiBold,
+    fontSize: 13,
   },
   noteInputCard: {
     borderWidth: 1,

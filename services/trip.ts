@@ -38,6 +38,8 @@ export type PickupIntent = {
     phone?: string | null;
   }>;
   note?: string | null;
+  trackingToken?: string | null;
+  trackingUrl?: string | null;
 };
 
 export type AssignedShuttle = {
