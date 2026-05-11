@@ -2088,7 +2088,10 @@ export default function HomeScreen() {
   }, []);
 
   const addManifestEntry = useCallback(() => {
-    setManifestDraft((current) => [...current, { id: `guest-${Date.now()}-${current.length}`, name: '', phone: '' }]);
+    setManifestDraft((current) => {
+      if (current.length >= 5) return current;
+      return [...current, { id: `guest-${Date.now()}-${current.length}`, name: '', phone: '' }];
+    });
   }, []);
 
   const removeManifestEntry = useCallback((id: string) => {
@@ -2878,19 +2881,21 @@ export default function HomeScreen() {
                           </View>
                         ))}
 
-                        <Pressable
-                          accessibilityRole="button"
-                          accessibilityLabel="Add another guest"
-                          onPress={addManifestEntry}
-                          style={({ pressed }) => [
-                            styles.manifestAddButton,
-                            { borderColor: tint, backgroundColor: colorScheme === 'dark' ? AppPalette.darkSkyBg : AppPalette.sky },
-                            pressed && { opacity: 0.7 },
-                          ]}
-                        >
-                          <Ionicons name="add-circle" size={16} color={tint} />
-                          <ThemedText style={[styles.manifestAddText, { color: tint }]}>Add Another Guest</ThemedText>
-                        </Pressable>
+                        {manifestDraft.length < 5 && (
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel="Add another guest"
+                            onPress={addManifestEntry}
+                            style={({ pressed }) => [
+                              styles.manifestAddButton,
+                              { borderColor: tint, backgroundColor: colorScheme === 'dark' ? AppPalette.darkSkyBg : AppPalette.sky },
+                              pressed && { opacity: 0.7 },
+                            ]}
+                          >
+                            <Ionicons name="add-circle" size={16} color={tint} />
+                            <ThemedText style={[styles.manifestAddText, { color: tint }]}>Add Another Guest</ThemedText>
+                          </Pressable>
+                        )}
                       </View>
 
                       {/* Guest Pickup */}
