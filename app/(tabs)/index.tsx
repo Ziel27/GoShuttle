@@ -79,7 +79,6 @@ const MANUAL_AUTOMATION_COOLDOWN_MS = 15_000;
 type ManifestDraftEntry = {
   id: string;
   name: string;
-  phone: string;
 };
 
 const palette = {
@@ -167,7 +166,7 @@ export default function HomeScreen() {
   const [bookForOthers, setBookForOthers] = useState(false);
   const [rideNote, setRideNote] = useState('');
   const [manifestDraft, setManifestDraft] = useState<ManifestDraftEntry[]>([
-    { id: 'guest-1', name: '', phone: '' },
+    { id: 'guest-1', name: '' },
   ]);
   const [guestPickupType, setGuestPickupType] = useState<'fixed' | 'home' | null>(null);
   const [guestPickupFixedId, setGuestPickupFixedId] = useState<string>('');
@@ -359,33 +358,25 @@ export default function HomeScreen() {
     if (manifest.length === 0) return null;
 
     return manifest
-      .map((entry) => [entry.name || 'Guest', entry.phone ? `(${entry.phone})` : null].filter(Boolean).join(' '))
+      .map((entry) => entry.name || 'Guest')
       .join(', ');
   }, [activePassengerPickupIntents]);
 
   const manifestSummary = useMemo(() => {
     const filledEntries = manifestDraft
-      .map((entry) => ({
-        name: entry.name.trim(),
-        phone: entry.phone.trim(),
-      }))
-      .filter((entry) => entry.name.length > 0 || entry.phone.length > 0);
+      .map((entry) => entry.name.trim())
+      .filter((name) => name.length > 0);
 
     if (filledEntries.length === 0) return null;
 
-    return filledEntries
-      .map((entry) => [entry.name || 'Guest', entry.phone ? `(${entry.phone})` : null].filter(Boolean).join(' '))
-      .join(', ');
+    return filledEntries.map((name) => name || 'Guest').join(', ');
   }, [manifestDraft]);
 
   const normalizedPassengerManifest = useMemo(
     () =>
       manifestDraft
-        .map((entry) => ({
-          name: entry.name.trim(),
-          phone: entry.phone.trim(),
-        }))
-        .filter((entry) => entry.name.length > 0 || entry.phone.length > 0),
+        .map((entry) => ({ name: entry.name.trim() }))
+        .filter((entry) => entry.name.length > 0),
     [manifestDraft]
   );
 
@@ -2059,7 +2050,7 @@ export default function HomeScreen() {
   }, []);
 
   const resetGuestBookingDraft = useCallback(() => {
-    setManifestDraft([{ id: 'guest-1', name: '', phone: '' }]);
+    setManifestDraft([{ id: 'guest-1', name: '' }]);
     setGuestPickupType(null);
     setGuestPickupFixedId('');
     setGuestDropoffType(null);
@@ -2086,21 +2077,21 @@ export default function HomeScreen() {
     });
   }, []);
 
-  const updateManifestEntry = useCallback((id: string, field: 'name' | 'phone', value: string) => {
+  const updateManifestEntry = useCallback((id: string, field: 'name', value: string) => {
     setManifestDraft((current) => current.map((entry) => (entry.id === id ? { ...entry, [field]: value } : entry)));
   }, []);
 
   const addManifestEntry = useCallback(() => {
     setManifestDraft((current) => {
       if (current.length >= 5) return current;
-      return [...current, { id: `guest-${Date.now()}-${current.length}`, name: '', phone: '' }];
+      return [...current, { id: `guest-${Date.now()}-${current.length}`, name: '' }];
     });
   }, []);
 
   const removeManifestEntry = useCallback((id: string) => {
     setManifestDraft((current) => {
       const next = current.filter((entry) => entry.id !== id);
-      return next.length > 0 ? next : [{ id: 'guest-1', name: '', phone: '' }];
+      return next.length > 0 ? next : [{ id: 'guest-1', name: '' }];
     });
   }, []);
 
@@ -2887,17 +2878,6 @@ export default function HomeScreen() {
                                 onChangeText={(value) => updateManifestEntry(entry.id, 'name', value)}
                                 placeholder="Full name"
                                 placeholderTextColor={mutedColor}
-                                style={[styles.manifestInputBare, { color: textColor }]}
-                              />
-                            </View>
-                            <View style={[styles.manifestInputWrapper, { borderColor, backgroundColor: surfaceColor, marginTop: 8 }]}>
-                              <Ionicons name="call-outline" size={14} color={mutedColor} style={styles.manifestInputIcon} />
-                              <TextInput
-                                value={entry.phone}
-                                onChangeText={(value) => updateManifestEntry(entry.id, 'phone', value)}
-                                placeholder="Phone number (optional)"
-                                placeholderTextColor={mutedColor}
-                                keyboardType="phone-pad"
                                 style={[styles.manifestInputBare, { color: textColor }]}
                               />
                             </View>
