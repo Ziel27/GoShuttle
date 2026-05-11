@@ -47,7 +47,7 @@ const shuttleSchema = new mongoose.Schema(
       type: Number,
       required: [true, 'Maximum capacity is required'],
       min: [1, 'Capacity must be at least 1'],
-      max: [50, 'Capacity cannot exceed 50'],
+      max: [5, 'Capacity cannot exceed 5'],
     },
 
     currentCapacity: {
