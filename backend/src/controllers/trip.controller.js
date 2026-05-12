@@ -2653,6 +2653,39 @@ const passengerUnboard = async (req, res) => {
       );
     });
 
+    // Expire PickupRequests for passengers just dropped off so tracking links go dead immediately.
+    setImmediate(async () => {
+      try {
+        const expireTime = new Date();
+        const pickupIdsToExpire = new Set();
+
+        if (linkedRideRequestIds.length > 0) {
+          const rideReqs = await RideRequest.find(
+            { _id: { $in: linkedRideRequestIds }, pickupRequestId: { $ne: null } }
+          ).select('pickupRequestId').lean();
+          rideReqs.forEach((r) => { if (r.pickupRequestId) pickupIdsToExpire.add(String(r.pickupRequestId)); });
+        }
+
+        if (passengerIds.length > 0) {
+          const prs = await PickupRequest.find({
+            passengerId: { $in: passengerIds },
+            communityId: shuttle.communityId,
+            status: { $in: ['pending', 'claimed', 'dispatched', 'queued'] },
+          }).select('_id').lean();
+          prs.forEach((r) => pickupIdsToExpire.add(String(r._id)));
+        }
+
+        if (pickupIdsToExpire.size > 0) {
+          await PickupRequest.updateMany(
+            { _id: { $in: [...pickupIdsToExpire] } },
+            { $set: { expiresAt: expireTime, status: 'expired' } }
+          );
+        }
+      } catch (err) {
+        console.error('[passengerUnboard] expire PickupRequests error:', err);
+      }
+    });
+
     return res.status(200).json({
       message: `${effectiveUnboardCount} passenger(s) unboarded successfully.`,
       trip: activeTrip,
@@ -3138,6 +3171,14 @@ const getTrackingInfo = async (req, res) => {
 
     if (!pickupRequest) {
       return res.status(404).json({ error: 'Tracking link not found or has expired.' });
+    }
+
+    if (
+      pickupRequest.status === 'expired' ||
+      pickupRequest.status === 'cancelled' ||
+      new Date(pickupRequest.expiresAt) <= new Date()
+    ) {
+      return res.status(410).json({ completed: true, error: 'This ride has been completed.' });
     }
 
     const passengerNames = (pickupRequest.passengerManifest || [])
