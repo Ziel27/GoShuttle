@@ -13,6 +13,7 @@ const jwt = require('jsonwebtoken');
 const path = require('path');
 const connectDB = require('./config/db');
 const User = require('./models/User');
+const PickupRequest = require('./models/PickupRequest');
 const { registerSocketHandlers } = require('./services/socket-handlers');
 const { startRemittanceEnforcementJob } = require('./services/remittance-enforcement');
 const { startIdVerificationExpirationJob } = require('./services/id-verification-expiration');
@@ -156,6 +157,25 @@ const io = new Server(server, {
 
 io.use(async (socket, next) => {
   try {
+    // ── Public tracking connections (no JWT required) ──────────────────────
+    // The tracking page sends { auth: { trackingToken: '...' } } instead of a JWT.
+    const rawTrackingToken = socket.handshake.auth?.trackingToken;
+    if (rawTrackingToken && typeof rawTrackingToken === 'string' && rawTrackingToken.length >= 10) {
+      const request = await PickupRequest.findOne({
+        trackingToken: rawTrackingToken,
+        status: { $in: ['pending', 'claimed', 'dispatched', 'queued', 'bumped'] },
+      }).select('_id trackingToken').lean();
+
+      if (!request) {
+        return next(new Error('Invalid or expired tracking token.'));
+      }
+
+      socket.data.trackingToken = rawTrackingToken;
+      socket.data.user = null;
+      return next();
+    }
+
+    // ── Authenticated connections (JWT required) ───────────────────────────
     let token = socket.handshake.auth?.token || socket.handshake.headers.authorization;
 
     // If token not found in auth or headers, attempt to extract from HttpOnly cookie

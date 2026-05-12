@@ -1,6 +1,37 @@
 const Shuttle = require('../models/Shuttle');
+const PickupRequest = require('../models/PickupRequest');
 const { isLocationInBoundary } = require('./geofence');
 const { retryWaitingQueue } = require('./dispatch.service');
+
+/**
+ * Finds all active pickup requests assigned to shuttleId and pushes a
+ * real-time location update to their dedicated public tracking rooms.
+ * Called after every shuttle location write (REST + socket paths).
+ */
+const emitToTrackingRooms = async (io, shuttleId, location, updatedAt) => {
+  try {
+    if (!location || !Array.isArray(location.coordinates) || location.coordinates.length < 2) return;
+    const [lng, lat] = location.coordinates;
+
+    const activeRequests = await PickupRequest.find({
+      assignedShuttleId: shuttleId,
+      status: { $in: ['dispatched', 'claimed'] },
+      trackingToken: { $exists: true, $ne: null },
+    }).select('trackingToken').lean();
+
+    for (const req of activeRequests) {
+      if (req.trackingToken) {
+        io.to(`tracking:${req.trackingToken}`).emit('tracking:location-updated', {
+          latitude: lat,
+          longitude: lng,
+          updatedAt: updatedAt || new Date().toISOString(),
+        });
+      }
+    }
+  } catch (err) {
+    console.error('[emitToTrackingRooms] error:', err);
+  }
+};
 
 
 const isDriverOrAdmin = (role) => role === 'driver' || role === 'admin';
@@ -112,6 +143,10 @@ const registerSocketHandlers = (io) => {
           maxCapacity: shuttle.maxCapacity,
           updatedAt: shuttle.lastLocationUpdate,
         });
+
+        // Push real-time location to any public tracking pages watching this shuttle
+        emitToTrackingRooms(io, shuttle._id, shuttle.location, shuttle.lastLocationUpdate);
+
       } catch (error) {
         console.error('Socket driver-location error:', error);
         socket.emit('socket:error', { error: 'Failed to process driver-location event.' });
@@ -199,10 +234,19 @@ const registerSocketHandlers = (io) => {
       }
     });
 
+    // ── Public tracking room (no auth — only tracking-only sockets allowed) ──
+    socket.on('join-tracking', ({ trackingToken }) => {
+      if (!socket.data.trackingToken || socket.data.trackingToken !== trackingToken) {
+        socket.emit('socket:error', { error: 'Unauthorized.' });
+        return;
+      }
+      socket.join(`tracking:${trackingToken}`);
+    });
+
     socket.on('disconnect', () => {
       // no-op for now; clients are expected to auto-reconnect and rejoin via join-community.
     });
   });
 };
 
-module.exports = { registerSocketHandlers };
+module.exports = { registerSocketHandlers, emitToTrackingRooms };

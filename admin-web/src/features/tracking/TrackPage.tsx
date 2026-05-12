@@ -2,8 +2,9 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
+import { io, type Socket } from 'socket.io-client';
 
-import { API_BASE_URL } from '@/lib/config';
+import { API_BASE_URL, SOCKET_BASE_URL } from '@/lib/config';
 
 type TrackingData = {
   mode: 'driver' | 'passenger';
@@ -207,6 +208,7 @@ export const TrackPage = () => {
   const [isFollowing, setIsFollowing] = useState(true);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const socketRef = useRef<Socket | null>(null);
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
   const primaryMarkerRef = useRef<L.Marker | null>(null);
@@ -397,8 +399,61 @@ export const TrackPage = () => {
 
   useEffect(() => {
     fetchData();
-    pollRef.current = setInterval(fetchData, 5000);
+    // Polling is a fallback for status/ETA changes; location updates come via socket
+    pollRef.current = setInterval(fetchData, 30000);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, [token]);
+
+  // ── Socket.io real-time location updates ─────────────────────────────────
+  useEffect(() => {
+    if (!token) return;
+
+    const socketInstance = io(SOCKET_BASE_URL, {
+      auth: { trackingToken: token },
+      transports: ['polling', 'websocket'],
+      upgrade: true,
+      reconnection: true,
+      reconnectionAttempts: 10,
+      withCredentials: true,
+    });
+
+    socketInstance.on('connect', () => {
+      socketInstance.emit('join-tracking', { trackingToken: token });
+    });
+
+    socketInstance.on('tracking:location-updated', (payload: {
+      latitude: number;
+      longitude: number;
+      updatedAt: string;
+    }) => {
+      const { latitude, longitude } = payload;
+      const latlng: L.LatLngExpression = [latitude, longitude];
+
+      // Move the primary marker without a full data refetch
+      if (primaryMarkerRef.current) {
+        primaryMarkerRef.current.setLatLng(latlng);
+      }
+
+      // Reset the "last updated" timer
+      setLastUpdated(new Date());
+      setSecondsAgo(0);
+
+      // Pan the map if the user isn't interacting
+      if (mapRef.current && !userInteracting.current) {
+        mapRef.current.panTo(latlng, { animate: true, duration: 0.5 });
+      }
+    });
+
+    // If the backend closes the ride, stop tracking
+    socketInstance.on('connect_error', () => {
+      // Silent — polling fallback will catch status changes
+    });
+
+    socketRef.current = socketInstance;
+    return () => {
+      socketInstance.disconnect();
+      socketRef.current = null;
+    };
   }, [token]);
 
   useEffect(() => {

@@ -11,7 +11,8 @@ const { isLocationInBoundary } = require('../services/geofence');
 const { completeRideRequestsForPassengers } = require('../services/ride-request-lifecycle');
 const { getManualAutomationCooldownRemainingMs } = require('../services/automation-cooldown');
 const { normalizePhase, buildPhaseAwareRequestQuery, isShuttlePhaseCompatible } = require('../utils/phase');
-const { retryWaitingQueue } = require('../services/dispatch.service');
+const { retryWaitingQueue, } = require('../services/dispatch.service');
+const { emitToTrackingRooms } = require('../services/socket-handlers');
 
 const AUTO_PICKUP_RADIUS_METERS = 140;
 const AUTO_UNBOARD_RADIUS_METERS = 20;
@@ -777,6 +778,11 @@ const updateShuttleLocation = async (req, res) => {
         maxCapacity: shuttle.maxCapacity,
         updatedAt: shuttle.lastLocationUpdate,
       });
+
+      // Push real-time location to any public tracking pages watching this shuttle
+      if (shouldBroadcastPreciseLocation) {
+        emitToTrackingRooms(io, shuttle._id, shuttle.location, shuttle.lastLocationUpdate);
+      }
 
       if (autoBoardingResult.autoBoardedCount > 0) {
         io.to(communityRoom).emit('trip:passenger-boarded', {
