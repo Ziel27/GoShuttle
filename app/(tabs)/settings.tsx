@@ -13,6 +13,7 @@ import {
 } from '@/services/notifications';
 import { listShuttles } from '@/services/shuttle';
 import { cancelMyPickupIntents, endShift, resolveRideRequest, startShift, stopShift } from '@/services/trip';
+import { submitSupportMessage } from '@/services/support';
 
 import { setHomeDestinationFromGps } from '@/services/user';
 import { useAuthStore } from '@/store/auth';
@@ -116,6 +117,12 @@ export default function SettingsTabScreen() {
   const [phaseGeofences, setPhaseGeofences] = useState<PhaseGeofence[]>([]);
   const [opsBypassMode, setOpsBypassMode] = useState(false);
   const [showHowToBookModal, setShowHowToBookModal] = useState(false);
+  const [supportModalVisible, setSupportModalVisible] = useState(false);
+  const [supportSubject, setSupportSubject] = useState('');
+  const [supportMessage, setSupportMessage] = useState('');
+  const [supportLoading, setSupportLoading] = useState(false);
+  const [supportSuccess, setSupportSuccess] = useState(false);
+  const [supportError, setSupportError] = useState('');
 
   useEffect(() => {
     if (!user?.communityId) return;
@@ -150,6 +157,44 @@ export default function SettingsTabScreen() {
     if (!isPassenger) return;
     setHomeAddressInput(user?.homeDestination?.label || '');
   }, [isPassenger, user?.homeDestination?.label]);
+
+  const handleSupportSubmit = useCallback(async () => {
+    if (!supportSubject.trim()) {
+      setSupportError('Please enter a subject.');
+      return;
+    }
+    if (!supportMessage.trim() || supportMessage.trim().length < 10) {
+      setSupportError('Please describe your concern in more detail.');
+      return;
+    }
+    setSupportError('');
+    setSupportLoading(true);
+    try {
+      await submitSupportMessage(supportSubject.trim(), supportMessage.trim());
+      setSupportSuccess(true);
+      setSupportSubject('');
+      setSupportMessage('');
+    } catch (err: any) {
+      setSupportError(err?.message || 'Failed to send. Please try again.');
+    } finally {
+      setSupportLoading(false);
+    }
+  }, [supportSubject, supportMessage]);
+
+  const openSupportModal = useCallback(() => {
+    setSupportSuccess(false);
+    setSupportError('');
+    setSupportModalVisible(true);
+  }, []);
+
+  const closeSupportModal = useCallback(() => {
+    if (supportLoading) return;
+    setSupportModalVisible(false);
+    setSupportSuccess(false);
+    setSupportError('');
+    setSupportSubject('');
+    setSupportMessage('');
+  }, [supportLoading]);
 
   const resolveAssignedShuttleId = useCallback(async () => {
     if (!user?._id) return null;
@@ -723,6 +768,91 @@ export default function SettingsTabScreen() {
                 </View>
                 <Ionicons name="chevron-forward" size={16} color={mutedColor} />
               </Pressable>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.controlRow,
+                  { borderColor },
+                  pressed && { opacity: 0.7 }
+                ]}
+                onPress={openSupportModal}
+              >
+                <View style={styles.controlCopy}>
+                  <View style={styles.controlTitleRow}>
+                    <Ionicons name="chatbubble-ellipses-outline" size={16} color={tint} />
+                    <ThemedText type="defaultSemiBold" style={{ color: textColor }}>Contact Support</ThemedText>
+                  </View>
+                  <ThemedText type="caption" style={{ color: mutedColor }}>
+                    Send a concern or inquiry to our team.
+                  </ThemedText>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={mutedColor} />
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.controlRow,
+                  { borderColor },
+                  pressed && { opacity: 0.7 }
+                ]}
+                onPress={() => router.push(ROUTES.ticketHistory)}
+              >
+                <View style={styles.controlCopy}>
+                  <View style={styles.controlTitleRow}>
+                    <Ionicons name="time-outline" size={16} color={tint} />
+                    <ThemedText type="defaultSemiBold" style={{ color: textColor }}>My Support Tickets</ThemedText>
+                  </View>
+                  <ThemedText type="caption" style={{ color: mutedColor }}>
+                    View your past messages and their status.
+                  </ThemedText>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={mutedColor} />
+              </Pressable>
+            </View>
+          </>
+        )}
+
+        {isDriver && (
+          <>
+            <ThemedText type="overline" style={[styles.sectionLabel, { color: mutedColor }]}>HELP & SUPPORT</ThemedText>
+            <View style={[styles.sectionBlock, { borderColor, backgroundColor: surfaceMuted }]}>
+              <ThemedText type="subtitle" style={{ color: textColor }}>Support</ThemedText>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.controlRow,
+                  { borderColor },
+                  pressed && { opacity: 0.7 }
+                ]}
+                onPress={openSupportModal}
+              >
+                <View style={styles.controlCopy}>
+                  <View style={styles.controlTitleRow}>
+                    <Ionicons name="chatbubble-ellipses-outline" size={16} color={tint} />
+                    <ThemedText type="defaultSemiBold" style={{ color: textColor }}>Contact Support</ThemedText>
+                  </View>
+                  <ThemedText type="caption" style={{ color: mutedColor }}>
+                    Report an issue or send an inquiry to our team.
+                  </ThemedText>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={mutedColor} />
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.controlRow,
+                  { borderColor },
+                  pressed && { opacity: 0.7 }
+                ]}
+                onPress={() => router.push(ROUTES.ticketHistory)}
+              >
+                <View style={styles.controlCopy}>
+                  <View style={styles.controlTitleRow}>
+                    <Ionicons name="time-outline" size={16} color={tint} />
+                    <ThemedText type="defaultSemiBold" style={{ color: textColor }}>My Support Tickets</ThemedText>
+                  </View>
+                  <ThemedText type="caption" style={{ color: mutedColor }}>
+                    View your past messages and their status.
+                  </ThemedText>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={mutedColor} />
+              </Pressable>
             </View>
           </>
         )}
@@ -931,6 +1061,102 @@ export default function SettingsTabScreen() {
                 )}
               </PremiumButton>
             </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── Customer Support Modal ──────────────────────────────────────── */}
+      <Modal
+        visible={supportModalVisible}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={closeSupportModal}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.supportModalContent, { backgroundColor: bgColor, borderColor }]}>
+            <View style={styles.modalHeader}>
+              <ThemedText type="subtitle" style={{ color: textColor }}>Contact Support</ThemedText>
+              <Pressable onPress={closeSupportModal} accessibilityRole="button" accessibilityLabel="Close support modal">
+                <Ionicons name="close" size={24} color={mutedColor} />
+              </Pressable>
+            </View>
+
+            {supportSuccess ? (
+              <View style={styles.supportSuccessWrap}>
+                <Ionicons name="checkmark-circle" size={52} color={tint} />
+                <ThemedText type="defaultSemiBold" style={[styles.supportSuccessTitle, { color: textColor }]}>
+                  Message Sent!
+                </ThemedText>
+                <ThemedText type="caption" style={[styles.supportSuccessDesc, { color: mutedColor }]}>
+                  Your concern has been sent to our team. We will get back to you as soon as possible.
+                </ThemedText>
+                <PremiumButton style={[styles.supportSubmitBtn, { borderColor: tint, backgroundColor: tint }]} onPress={closeSupportModal}>
+                  <ThemedText type="defaultSemiBold" style={{ color: AppPalette.white, fontSize: 14 }}>Done</ThemedText>
+                </PremiumButton>
+              </View>
+            ) : (
+              <>
+                <ThemedText type="caption" style={[styles.modalDesc, { color: mutedColor }]}>
+                  Describe your concern below and our support team will respond to your registered email.
+                </ThemedText>
+
+                <ThemedText type="caption" style={[styles.supportFieldLabel, { color: mutedColor }]}>Subject</ThemedText>
+                <TextInput
+                  style={[styles.supportInput, { borderColor, color: textColor, backgroundColor: surface }]}
+                  placeholder="e.g. Issue with booking"
+                  placeholderTextColor={mutedColor}
+                  value={supportSubject}
+                  onChangeText={(t) => { setSupportSubject(t); setSupportError(''); }}
+                  maxLength={100}
+                  editable={!supportLoading}
+                />
+
+                <ThemedText type="caption" style={[styles.supportFieldLabel, { color: mutedColor }]}>Message</ThemedText>
+                <TextInput
+                  style={[styles.supportInput, styles.supportTextarea, { borderColor, color: textColor, backgroundColor: surface }]}
+                  placeholder="Describe your concern in detail..."
+                  placeholderTextColor={mutedColor}
+                  value={supportMessage}
+                  onChangeText={(t) => { setSupportMessage(t); setSupportError(''); }}
+                  multiline
+                  numberOfLines={5}
+                  maxLength={1000}
+                  editable={!supportLoading}
+                  textAlignVertical="top"
+                />
+                <ThemedText type="caption" style={[styles.supportCharCount, { color: mutedColor }]}>
+                  {supportMessage.length}/1000
+                </ThemedText>
+
+                {supportError ? (
+                  <ThemedText type="caption" style={[styles.supportError, { color: AppPalette.danger }]}>
+                    {supportError}
+                  </ThemedText>
+                ) : null}
+
+                <View style={styles.requestActions}>
+                  <PremiumButton
+                    style={[styles.resolveBtn, { borderColor, backgroundColor: surfaceMuted }]}
+                    variant="secondary"
+                    onPress={closeSupportModal}
+                    disabled={supportLoading}
+                  >
+                    <ThemedText style={{ color: tint, fontSize: 13, fontFamily: OutfitFonts.semiBold }}>Cancel</ThemedText>
+                  </PremiumButton>
+                  <PremiumButton
+                    style={[styles.resolveBtn, { borderColor: tint, backgroundColor: tint }]}
+                    onPress={handleSupportSubmit}
+                    disabled={supportLoading}
+                  >
+                    {supportLoading ? (
+                      <ActivityIndicator color={AppPalette.white} />
+                    ) : (
+                      <ThemedText style={{ color: AppPalette.white, fontSize: 13, fontFamily: OutfitFonts.semiBold }}>Send</ThemedText>
+                    )}
+                  </PremiumButton>
+                </View>
+              </>
+            )}
           </View>
         </View>
       </Modal>
@@ -1183,5 +1409,60 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: DesignTokens.spacing.xs,
+  },
+  supportModalContent: {
+    borderTopLeftRadius: DesignTokens.radius.xl,
+    borderTopRightRadius: DesignTokens.radius.xl,
+    borderTopWidth: 1,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    padding: DesignTokens.spacing.md,
+    maxHeight: '90%',
+  },
+  supportFieldLabel: {
+    marginTop: DesignTokens.spacing.sm,
+    marginBottom: DesignTokens.spacing.xxs,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  supportInput: {
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.md,
+    paddingHorizontal: DesignTokens.spacing.sm,
+    paddingVertical: DesignTokens.spacing.xs,
+    fontSize: 14,
+    minHeight: 44,
+  },
+  supportTextarea: {
+    minHeight: 110,
+    paddingTop: DesignTokens.spacing.xs,
+  },
+  supportCharCount: {
+    textAlign: 'right',
+    marginTop: 2,
+  },
+  supportError: {
+    marginTop: DesignTokens.spacing.xs,
+  },
+  supportSubmitBtn: {
+    marginTop: DesignTokens.spacing.md,
+    minHeight: 44,
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.md,
+  },
+  supportSuccessWrap: {
+    alignItems: 'center',
+    paddingVertical: DesignTokens.spacing.xl,
+    gap: DesignTokens.spacing.sm,
+  },
+  supportSuccessTitle: {
+    fontSize: 18,
+    marginTop: DesignTokens.spacing.xs,
+  },
+  supportSuccessDesc: {
+    textAlign: 'center',
+    lineHeight: 20,
+    paddingHorizontal: DesignTokens.spacing.md,
   },
 });

@@ -46,6 +46,16 @@ export const patchUserStatus = async (
   return response.data?.user as User;
 };
 
+export const sendUserWarning = async (userId: string, note: string): Promise<User> => {
+  const response = await apiClient.post(`/users/${userId}/warn`, { note });
+  return response.data?.user as User;
+};
+
+export const deactivateUserWithNote = async (userId: string, note: string): Promise<User> => {
+  const response = await apiClient.post(`/users/${userId}/deactivate`, { note });
+  return response.data?.user as User;
+};
+
 export const fetchShuttles = async (params?: { active?: boolean; communityId?: string }): Promise<Shuttle[]> => {
   const response = await apiClient.get('/shuttles', {
     params: {

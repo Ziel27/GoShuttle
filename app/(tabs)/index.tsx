@@ -1,4 +1,5 @@
 import { HowToBookModal } from '@/components/HowToBookModal';
+import { formatPhaseLabel, formatShuttleLabel } from '@/utils/format';
 import { ThemedText } from '@/components/themed-text';
 import { MapIndicator, MapLoadingPlaceholder } from '@/components/ui/home-map-primitives';
 import {
@@ -240,6 +241,26 @@ export default function HomeScreen() {
   const [phaseGeofences, setPhaseGeofences] = useState<PhaseGeofence[]>([]);
   const [opsBypassMode, setOpsBypassMode] = useState(false);
   const [showHowToBookModal, setShowHowToBookModal] = useState(false);
+  const [dismissedWarningIds, setDismissedWarningIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    async function loadDismissedWarnings() {
+      try {
+        const raw = await AsyncStorage.getItem('@dismissed_warnings');
+        if (raw) setDismissedWarningIds(new Set(JSON.parse(raw)));
+      } catch { /* ignore */ }
+    }
+    loadDismissedWarnings();
+  }, []);
+
+  const handleDismissWarning = useCallback(async (warningId: string) => {
+    const next = new Set(dismissedWarningIds);
+    next.add(warningId);
+    setDismissedWarningIds(next);
+    try {
+      await AsyncStorage.setItem('@dismissed_warnings', JSON.stringify([...next]));
+    } catch { /* ignore */ }
+  }, [dismissedWarningIds]);
 
   useEffect(() => {
     async function checkHowToBook() {
@@ -2137,6 +2158,28 @@ export default function HomeScreen() {
         </ThemedText>
       </View>
 
+      {(user?.warnings ?? []).filter((w) => !dismissedWarningIds.has(w._id)).map((w, i) => (
+        <View key={w._id} style={[styles.warningCard, { borderColor: '#fde68a', backgroundColor: '#fefce8' }]}>
+          <View style={styles.warningCardHeader}>
+            <View style={styles.warningCardLeft}>
+              <Ionicons name="warning" size={16} color="#92400e" />
+              <Text style={styles.warningCardTitle}>
+                Account Warning {(user?.warnings?.findIndex((x) => x._id === w._id) ?? i) + 1}/{user?.warnings?.length}
+              </Text>
+            </View>
+            <Pressable
+              onPress={() => void handleDismissWarning(w._id)}
+              hitSlop={8}
+              accessibilityLabel="Dismiss warning"
+            >
+              <Ionicons name="close" size={16} color="#92400e" />
+            </Pressable>
+          </View>
+          <Text style={styles.warningCardNote}>{w.note}</Text>
+          <Text style={styles.warningCardMeta}>Issued by {w.issuedBy} · {new Date(w.date).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' })}</Text>
+        </View>
+      ))}
+
       {user?.role === 'driver' ? (
         <View style={styles.driverLayout}>
           <View style={[styles.mapWrap, styles.driverMapWrap]}>
@@ -2331,7 +2374,7 @@ export default function HomeScreen() {
                     {phaseGeofences.map((phase) => (
                       <View key={`driver-legend-phase-${phase._id}`} style={styles.phaseLegendRow}>
                         <View style={[styles.phaseLegendDot, { backgroundColor: phase.color || '#6366f1' }]} />
-                        <Text style={[styles.phaseLegendText, { color: textColor }]}>{phase.name.replace(/_/g, ' ')}</Text>
+                        <Text style={[styles.phaseLegendText, { color: textColor }]}>{formatPhaseLabel(phase.name)}</Text>
                       </View>
                     ))}
                   </>
@@ -2733,7 +2776,7 @@ export default function HomeScreen() {
                       <Callout tooltip>
                         <View style={[styles.calloutContainer, { backgroundColor: bgColor, borderColor }]}>
                           <ThemedText type="defaultSemiBold" style={{ color: textColor, fontSize: 14 }}>
-                            {item.label || item.plateNumber}
+                            {formatShuttleLabel(item.label, item.plateNumber)}
                           </ThemedText>
                           <View style={[styles.calloutSeparator, { backgroundColor: borderColor }]} />
                           <ThemedText type="caption" style={{ color: mutedColor, fontSize: 12 }}>
@@ -2835,7 +2878,7 @@ export default function HomeScreen() {
                     {phaseGeofences.map((phase) => (
                       <View key={`passenger-legend-phase-${phase._id}`} style={styles.phaseLegendRow}>
                         <View style={[styles.phaseLegendDot, { backgroundColor: phase.color || '#6366f1' }]} />
-                        <Text style={[styles.phaseLegendText, { color: textColor }]}>{phase.name.replace(/_/g, ' ')}</Text>
+                        <Text style={[styles.phaseLegendText, { color: textColor }]}>{formatPhaseLabel(phase.name)}</Text>
                       </View>
                     ))}
                   </>
@@ -3915,8 +3958,8 @@ export default function HomeScreen() {
                         style={[styles.dispatchAssignedDetailText, { color: colorScheme === 'dark' ? '#6ee7b7' : '#047857' }]}
                       >
                         {dispatchedShuttle.plateNumber
-                          ? `${dispatchedShuttle.plateNumber}${dispatchedShuttle.label ? ` · ${dispatchedShuttle.label}` : ''}`
-                          : dispatchedShuttle.label || 'Shuttle'}
+                          ? `${dispatchedShuttle.plateNumber}${dispatchedShuttle.label ? ` · Electric ${dispatchedShuttle.label}` : ''}`
+                          : formatShuttleLabel(dispatchedShuttle.label, undefined)}
                       </ThemedText>
                     </View>
                     <View style={styles.dispatchAssignedDetailRow}>
@@ -5317,5 +5360,43 @@ const styles = StyleSheet.create({
     fontSize: 10,
     textTransform: 'capitalize',
     flexShrink: 1,
+  },
+  warningCard: {
+    width: '92%',
+    alignSelf: 'center',
+    marginBottom: DesignTokens.spacing.xs,
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.md,
+    paddingHorizontal: DesignTokens.spacing.md,
+    paddingVertical: DesignTokens.spacing.sm,
+    gap: 4,
+  },
+  warningCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  warningCardLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  warningCardTitle: {
+    fontFamily: OutfitFonts.bold,
+    fontSize: 13,
+    color: '#92400e',
+  },
+  warningCardNote: {
+    fontFamily: OutfitFonts.regular,
+    fontSize: 13,
+    color: '#78350f',
+    lineHeight: 18,
+    marginTop: 2,
+  },
+  warningCardMeta: {
+    fontFamily: OutfitFonts.regular,
+    fontSize: 11,
+    color: '#a16207',
+    marginTop: 2,
   },
 });

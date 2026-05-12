@@ -292,8 +292,15 @@ export const ShuttlesPage = () => {
     return 'Unassigned';
   };
   const getAssignedPhase = (shuttle: Shuttle) => shuttle.assignedPhase || '';
-  const formatPhaseLabel = (phase?: string | null) =>
-    phase ? phase.replace(/_/g, ' ') : 'All phases';
+  const formatPhaseLabel = (phase?: string | null) => {
+    if (!phase) return 'All phases';
+    const cleaned = phase.replace(/_/g, ' ').trim();
+    const lower = cleaned.toLowerCase();
+    if (lower.startsWith('phase ')) {
+      return 'Phase ' + cleaned.slice(6);
+    }
+    return 'Phase ' + cleaned;
+  };
 
   const statusTotals = {
     idle: shuttles.filter((item) => effectiveShuttleStatus(item) === 'idle').length,
@@ -361,12 +368,12 @@ export const ShuttlesPage = () => {
                 />
               </div>
               <div>
-                <Label htmlFor="shuttleLabel" className="text-xs text-slate-600">Label</Label>
+                <Label htmlFor="shuttleLabel" className="text-xs text-slate-600">Electric No.</Label>
                 <Input
                   id="shuttleLabel"
                   value={newLabel}
                   onChange={(e) => setNewLabel(e.target.value)}
-                  placeholder="e.g. Blue Van"
+                  placeholder="e.g. 23"
                   className="mt-1 h-8"
                 />
               </div>
@@ -383,7 +390,7 @@ export const ShuttlesPage = () => {
                 />
               </div>
               <div>
-                <Label htmlFor="assignedPhase" className="text-xs text-slate-600">Assigned Phase</Label>
+                <Label htmlFor="assignedPhase" className="text-xs text-slate-600">Phase No.</Label>
                 <select
                   id="assignedPhase"
                   className="mt-1 h-8 w-full rounded-lg border border-input bg-background px-2 text-sm"
@@ -393,7 +400,7 @@ export const ShuttlesPage = () => {
                   <option value="">All phases</option>
                   {phaseGeofences.map((phase) => (
                     <option key={phase._id} value={phase.name}>
-                      {phase.name.replace(/_/g, ' ')}
+                      {formatPhaseLabel(phase.name)}
                     </option>
                   ))}
                 </select>
@@ -433,12 +440,12 @@ export const ShuttlesPage = () => {
           <Table>
             <TableHeader className="sticky top-0 z-10 bg-white">
             <TableRow>
-              <TableHead>Shuttle</TableHead>
+              <TableHead>Electric No.</TableHead>
               <TableHead>Current Driver</TableHead>
               <TableHead>Assign Driver</TableHead>
-              <TableHead>Assign Phase</TableHead>
+              <TableHead>Phase No.</TableHead>
               <TableHead>Action</TableHead>
-              <TableHead>Phase</TableHead>
+              <TableHead>Phase No.</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Capacity</TableHead>
               <TableHead>Updated</TableHead>
@@ -449,7 +456,9 @@ export const ShuttlesPage = () => {
               <TableRow key={shuttle._id}>
                 <TableCell>
                   <div className="space-y-0.5">
-                    <p className="font-medium text-slate-900">{shuttle.label || 'Unlabeled Shuttle'}</p>
+                    <p className="font-medium text-slate-900">
+                      {shuttle.label ? `Electric ${shuttle.label}` : 'Unlabeled Shuttle'}
+                    </p>
                     <p className="font-mono text-xs text-slate-500">{shuttle.plateNumber}</p>
                   </div>
                 </TableCell>
@@ -488,7 +497,7 @@ export const ShuttlesPage = () => {
                     <option value="">All phases</option>
                     {phaseGeofences.map((phase) => (
                       <option key={phase._id} value={phase.name}>
-                        {phase.name.replace(/_/g, ' ')}
+                        {formatPhaseLabel(phase.name)}
                       </option>
                     ))}
                   </select>

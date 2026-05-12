@@ -8,6 +8,7 @@ const RideRequest = require('../models/RideRequest');
 const Shuttle = require('../models/Shuttle');
 const { normalizePhase, buildPhaseAwareRequestQuery } = require('../utils/phase');
 const { pointInPolygon } = require('../services/geofence');
+const { sendWarningEmail, sendDeactivationEmail } = require('../utils/email');
 
 const parseCoordinate = (value) => {
   const num = Number(value);
@@ -522,6 +523,122 @@ const updateOwnHomePhase = async (req, res) => {
   }
 };
 
+/**
+ * POST /api/users/:id/warn
+ * Admin sends a warning to a user (max 2). Saves to DB and emails the user.
+ */
+const warnUser = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { note } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: 'Invalid user ID.' });
+    }
+    if (!note || !String(note).trim()) {
+      return res.status(400).json({ error: 'A warning note is required.' });
+    }
+    if (String(note).trim().length < 5) {
+      return res.status(400).json({ error: 'Warning note must be at least 5 characters.' });
+    }
+
+    const user = await User.findById(id);
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+
+    if (!isPlatformAdmin(req) && user.communityId.toString() !== req.user.communityId.toString()) {
+      return res.status(403).json({ error: 'Access denied. User is outside your community.' });
+    }
+
+    if (!user.isActive) {
+      return res.status(400).json({ error: 'Cannot warn a deactivated user.' });
+    }
+
+    if ((user.warnings || []).length >= 2) {
+      return res.status(400).json({ error: 'User has already received 2 warnings. You can now deactivate their account.' });
+    }
+
+    const issuedByName = [req.user.firstName, req.user.lastName].filter(Boolean).join(' ') || 'Admin';
+    user.warnings.push({
+      note: String(note).trim(),
+      issuedBy: issuedByName,
+      date: new Date(),
+    });
+
+    await user.save();
+
+    const warningNumber = user.warnings.length;
+    const toName = [user.firstName, user.lastName].filter(Boolean).join(' ');
+    await sendWarningEmail({
+      toEmail: user.email,
+      toName,
+      warningNumber,
+      note: String(note).trim(),
+      issuedBy: issuedByName,
+    });
+
+    return res.status(200).json({
+      message: `Warning ${warningNumber}/2 sent to ${toName}.`,
+      user,
+    });
+  } catch (error) {
+    console.error('Warn user error:', error);
+    return res.status(500).json({ error: 'Failed to send warning.' });
+  }
+};
+
+/**
+ * POST /api/users/:id/deactivate
+ * Admin deactivates a user with a required note (only after 2 warnings). Emails the user.
+ */
+const deactivateUserWithNote = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { note } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: 'Invalid user ID.' });
+    }
+    if (!note || !String(note).trim()) {
+      return res.status(400).json({ error: 'A deactivation reason is required.' });
+    }
+
+    const user = await User.findById(id);
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+
+    if (!isPlatformAdmin(req) && user.communityId.toString() !== req.user.communityId.toString()) {
+      return res.status(403).json({ error: 'Access denied. User is outside your community.' });
+    }
+
+    if (!user.isActive) {
+      return res.status(400).json({ error: 'User is already deactivated.' });
+    }
+
+    if ((user.warnings || []).length < 2) {
+      return res.status(400).json({ error: 'User must receive 2 warnings before deactivation.' });
+    }
+
+    user.isActive = false;
+    await user.save();
+
+    const issuedByName = [req.user.firstName, req.user.lastName].filter(Boolean).join(' ') || 'Admin';
+    const toName = [user.firstName, user.lastName].filter(Boolean).join(' ');
+    await sendDeactivationEmail({
+      toEmail: user.email,
+      toName,
+      note: String(note).trim(),
+      issuedBy: issuedByName,
+    });
+
+    return res.status(200).json({
+      message: `${toName}'s account has been deactivated.`,
+      user,
+    });
+  } catch (error) {
+    console.error('Deactivate user error:', error);
+    return res.status(500).json({ error: 'Failed to deactivate user.' });
+  }
+};
+
 module.exports = {
   createManagedUser,
   listUsers,
@@ -529,4 +646,6 @@ module.exports = {
   updateOwnStatus,
   updateOwnHomeDestination,
   updateOwnHomePhase,
+  warnUser,
+  deactivateUserWithNote,
 };

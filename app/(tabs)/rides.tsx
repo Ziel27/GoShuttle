@@ -12,7 +12,7 @@ import { getCommunityById } from '@/services/community';
 import { listPassengerRecentRides, PassengerRecentRide } from '@/services/trip';
 import { useAuthStore } from '@/store/auth';
 import { usePreferencesStore } from '@/store/preferences';
-import { formatMoney } from '@/utils/format';
+import { formatMoney, formatShuttleLabel } from '@/utils/format';
 import { Ionicons } from '@expo/vector-icons';
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { FlatList, Modal, Pressable, StyleSheet, TextInput, View } from 'react-native';
@@ -87,7 +87,7 @@ const RideItemCard = memo(function RideItemCard({
         <View style={styles.recentRideMeta}>
           <ThemedText type="defaultSemiBold" style={{ color: textColor }}>
             {ride.shuttle.plateNumber || 'Shuttle'}
-            {ride.shuttle.label ? ` · ${ride.shuttle.label}` : ''}
+            {ride.shuttle.label ? ` · Electric ${ride.shuttle.label}` : ''}
           </ThemedText>
           <ThemedText type="caption" style={{ color: mutedColor }}>
             Boarded: {boardedTime}
@@ -471,7 +471,7 @@ export default function RidesScreen() {
                 <View style={styles.rideModalBody}>
                   <ThemedText style={[styles.rideModalLine, { color: mutedColor }]}> 
                     Shuttle: {selectedRide.shuttle.plateNumber || 'Shuttle'}
-                    {selectedRide.shuttle.label ? ` - ${selectedRide.shuttle.label}` : ''}
+                    {selectedRide.shuttle.label ? ` · Electric ${selectedRide.shuttle.label}` : ''}
                   </ThemedText>
                   <ThemedText style={[styles.rideModalLine, { color: mutedColor }]}> 
                     Boarded At: {new Date(selectedRide.boardedAt).toLocaleString()}

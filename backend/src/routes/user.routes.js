@@ -6,6 +6,8 @@ const {
   updateOwnStatus,
   updateOwnHomeDestination,
   updateOwnHomePhase,
+  warnUser,
+  deactivateUserWithNote,
 } = require('../controllers/user.controller');
 const { authenticate, authorize } = require('../middleware/auth');
 
@@ -24,5 +26,7 @@ router.use(authorize('admin'));
 router.get('/', listUsers);
 router.post('/', createManagedUser);
 router.patch('/:id', updateUserStatus);
+router.post('/:id/warn', warnUser);
+router.post('/:id/deactivate', deactivateUserWithNote);
 
 module.exports = router;

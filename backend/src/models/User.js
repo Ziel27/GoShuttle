@@ -123,6 +123,32 @@ const userSchema = new mongoose.Schema(
       default: true,
     },
 
+    warnings: {
+      type: [
+        new mongoose.Schema(
+          {
+            note: {
+              type: String,
+              required: true,
+              trim: true,
+              maxlength: [500, 'Warning note cannot exceed 500 characters.'],
+            },
+            issuedBy: {
+              type: String,
+              required: true,
+              trim: true,
+            },
+            date: {
+              type: Date,
+              default: Date.now,
+            },
+          },
+          { _id: true }
+        ),
+      ],
+      default: [],
+    },
+
     resetPasswordCodeHash: {
       type: String,
       default: null,

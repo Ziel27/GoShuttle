@@ -305,6 +305,7 @@ app.use('/api/users', require('./routes/user.routes'));
 app.use('/api/shuttles', require('./routes/shuttle.routes'));
 app.use('/api/trips', require('./routes/trip.routes'));
 app.use('/api/announcements', require('./routes/announcement.routes'));
+app.use('/api/support', require('./routes/support.routes'));
 
 // Serve uploaded assets (e.g. remittance receipts)
 app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
