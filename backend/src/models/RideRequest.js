@@ -99,6 +99,16 @@ const rideRequestSchema = new mongoose.Schema(
       required: [true, 'Expected fare is required'],
       min: [0, 'Fare cannot be negative'],
     },
+    originalFare: {
+      type: Number,
+      default: null,
+      min: 0,
+    },
+    discountType: {
+      type: String,
+      enum: ['student', 'pwd', 'senior', 'none'],
+      default: 'none',
+    },
     note: {
       type: String,
       trim: true,

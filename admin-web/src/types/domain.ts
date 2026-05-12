@@ -33,6 +33,12 @@ export type Community = {
   }>;
   baseFare?: number;
   priorityFareMultiplier?: number;
+  discountSettings?: {
+    enabled: boolean;
+    studentPct: number;
+    pwdPct: number;
+    seniorPct: number;
+  };
   isActive?: boolean;
 
   branding?: {
@@ -48,6 +54,8 @@ export type UserWarning = {
   date: string;
 };
 
+export type DiscountVerificationStatus = 'none' | 'pending' | 'approved' | 'rejected';
+
 export type User = {
   _id: string;
   firstName: string;
@@ -58,6 +66,14 @@ export type User = {
   status?: 'active' | 'offline' | 'driving';
   isActive?: boolean;
   warnings?: UserWarning[];
+  discountVerification?: {
+    status: DiscountVerificationStatus;
+    discountType?: 'student' | 'pwd' | 'senior' | null;
+    idImageUrl?: string | null;
+    submittedAt?: string | null;
+    reviewedAt?: string | null;
+    rejectionReason?: string | null;
+  };
 };
 
 export type Shuttle = {

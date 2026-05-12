@@ -16,11 +16,16 @@ import {
 import {
     createManagedUser,
     deactivateUserWithNote,
+    fetchDiscountVerifications,
     fetchUsers,
     patchUserStatus,
+    reviewDiscountVerification,
     sendUserWarning,
+    type DiscountVerificationItem,
 } from '@/lib/admin-api';
 import type { User } from '@/types/domain';
+import { useAuth } from '@/context/auth-context';
+import { communityIdFromUnknown } from '@/lib/format';
 
 const MAX_WARNINGS = 2;
 
@@ -163,9 +168,19 @@ const ActionModal = ({ type, user, onClose, onConfirm }: ActionModalProps) => {
 };
 
 export const UsersPage = () => {
+  const { user: authUser } = useAuth();
+  const scopedCommunityId = communityIdFromUnknown(authUser?.communityId);
+
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [discountVerifications, setDiscountVerifications] = useState<DiscountVerificationItem[]>([]);
+  const [discountVerifLoading, setDiscountVerifLoading] = useState(false);
+  const [discountVerifError, setDiscountVerifError] = useState('');
+  const [discountVerifFilter, setDiscountVerifFilter] = useState<'pending' | 'approved' | 'rejected'>('pending');
+  const [discountVerifReviewing, setDiscountVerifReviewing] = useState('');
+  const [discountVerifRejectTarget, setDiscountVerifRejectTarget] = useState('');
+  const [discountVerifRejectionReason, setDiscountVerifRejectionReason] = useState('');
   const [mutatingId, setMutatingId] = useState('');
   const [query, setQuery] = useState('');
   const [roleFilter, setRoleFilter] = useState<'all' | 'admin' | 'driver' | 'passenger'>('all');
@@ -193,8 +208,23 @@ export const UsersPage = () => {
     }
   };
 
+  const loadDiscountVerifications = async (filter: 'pending' | 'approved' | 'rejected') => {
+    if (!scopedCommunityId) return;
+    setDiscountVerifLoading(true);
+    setDiscountVerifError('');
+    try {
+      const items = await fetchDiscountVerifications(scopedCommunityId, filter);
+      setDiscountVerifications(items);
+    } catch (e) {
+      setDiscountVerifError(e instanceof Error ? e.message : 'Failed to load verifications');
+    } finally {
+      setDiscountVerifLoading(false);
+    }
+  };
+
   useEffect(() => {
     void loadUsers();
+    void loadDiscountVerifications('pending');
   }, []);
 
   const activateUser = async (user: User) => {
@@ -311,6 +341,151 @@ export const UsersPage = () => {
           onConfirm={handleModalConfirm}
         />
       )}
+
+      {/* Discount Verification Queue */}
+      <Card className="border-slate-200 bg-white shadow-sm">
+        <CardHeader className="flex flex-row items-center justify-between">
+          <div>
+            <CardTitle className="text-slate-900">Discount ID Verifications</CardTitle>
+            <p className="mt-1 text-xs text-slate-500">Review passenger discount ID submissions.</p>
+          </div>
+          <div className="flex gap-2 flex-wrap">
+            {(['pending', 'approved', 'rejected'] as const).map((f) => (
+              <button
+                key={f}
+                onClick={() => {
+                  setDiscountVerifFilter(f);
+                  void loadDiscountVerifications(f);
+                }}
+                className={`rounded px-3 py-1 text-xs font-medium border transition-colors ${
+                  discountVerifFilter === f
+                    ? 'bg-slate-800 text-white border-slate-800'
+                    : 'bg-white text-slate-600 border-slate-200 hover:border-slate-400'
+                }`}
+              >
+                {f.charAt(0).toUpperCase() + f.slice(1)}
+              </button>
+            ))}
+            <button
+              onClick={() => void loadDiscountVerifications(discountVerifFilter)}
+              className="rounded px-3 py-1 text-xs font-medium border bg-white text-slate-600 border-slate-200 hover:border-slate-400"
+            >
+              Refresh
+            </button>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {discountVerifError ? <p className="text-sm text-destructive">{discountVerifError}</p> : null}
+          {discountVerifLoading ? <p className="text-sm text-slate-500">Loading...</p> : null}
+          {!discountVerifLoading && discountVerifications.length === 0 ? (
+            <p className="text-sm text-slate-400">No {discountVerifFilter} ID verification requests.</p>
+          ) : null}
+          <div className="space-y-2">
+            {discountVerifications.map((item) => (
+              <div key={item.userId} className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-2">
+                <div className="flex items-start justify-between gap-3 flex-wrap">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">{item.firstName} {item.lastName}</p>
+                    <p className="text-xs text-slate-500">{item.email}</p>
+                    <p className="text-xs text-slate-600 mt-0.5">
+                      Type: <span className="font-medium capitalize">{item.discountType}</span>
+                      {' · '}
+                      Submitted: {new Date(item.submittedAt).toLocaleDateString()}
+                    </p>
+                    {item.status === 'rejected' && item.rejectionReason ? (
+                      <p className="text-xs text-red-600 mt-0.5">Reason: {item.rejectionReason}</p>
+                    ) : null}
+                  </div>
+                  {item.idImageUrl ? (
+                    <a
+                      href={item.idImageUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs font-medium text-blue-600 underline"
+                    >
+                      View ID Photo →
+                    </a>
+                  ) : null}
+                </div>
+
+                {item.status === 'pending' && (
+                  <div className="space-y-2">
+                    {discountVerifRejectTarget === item.userId ? (
+                      <div className="space-y-2">
+                        <input
+                          type="text"
+                          placeholder="Rejection reason (optional)"
+                          value={discountVerifRejectionReason}
+                          onChange={(e) => setDiscountVerifRejectionReason(e.target.value)}
+                          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs outline-none focus:border-slate-400"
+                        />
+                        <div className="flex gap-2">
+                          <button
+                            disabled={discountVerifReviewing === item.userId}
+                            onClick={async () => {
+                              if (!scopedCommunityId) return;
+                              setDiscountVerifReviewing(item.userId);
+                              try {
+                                await reviewDiscountVerification(scopedCommunityId, item.userId, {
+                                  action: 'reject',
+                                  ...(discountVerifRejectionReason.trim() ? { rejectionReason: discountVerifRejectionReason.trim() } : {}),
+                                });
+                                setDiscountVerifications((prev) => prev.filter((v) => v.userId !== item.userId));
+                                setDiscountVerifRejectTarget('');
+                                setDiscountVerifRejectionReason('');
+                              } catch (e) {
+                                setDiscountVerifError(e instanceof Error ? e.message : 'Failed');
+                              } finally {
+                                setDiscountVerifReviewing('');
+                              }
+                            }}
+                            className="rounded-lg bg-red-600 px-3 py-1.5 text-xs text-white hover:bg-red-700 disabled:opacity-60"
+                          >
+                            {discountVerifReviewing === item.userId ? 'Rejecting...' : 'Confirm Reject'}
+                          </button>
+                          <button
+                            onClick={() => { setDiscountVerifRejectTarget(''); setDiscountVerifRejectionReason(''); }}
+                            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600 hover:border-slate-400"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex gap-2">
+                        <button
+                          disabled={discountVerifReviewing === item.userId}
+                          onClick={async () => {
+                            if (!scopedCommunityId) return;
+                            setDiscountVerifReviewing(item.userId);
+                            try {
+                              await reviewDiscountVerification(scopedCommunityId, item.userId, { action: 'approve' });
+                              setDiscountVerifications((prev) => prev.filter((v) => v.userId !== item.userId));
+                            } catch (e) {
+                              setDiscountVerifError(e instanceof Error ? e.message : 'Failed');
+                            } finally {
+                              setDiscountVerifReviewing('');
+                            }
+                          }}
+                          className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs text-white hover:bg-emerald-700 disabled:opacity-60"
+                        >
+                          {discountVerifReviewing === item.userId ? 'Approving...' : 'Approve'}
+                        </button>
+                        <button
+                          onClick={() => setDiscountVerifRejectTarget(item.userId)}
+                          className="rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs text-red-700 hover:border-red-400"
+                        >
+                          Reject
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
 
       <Card className="border-slate-200 bg-white shadow-sm">
         <CardHeader className="flex flex-row items-center justify-between">

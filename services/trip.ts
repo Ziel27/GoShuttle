@@ -202,6 +202,8 @@ export const createPickupIntent = async (
   booking?: {
     pickupLocation?: PickupLocationInput;
     passengerManifest?: PassengerManifestEntry[];
+    discountType?: 'student' | 'pwd' | 'senior' | null;
+    discountCount?: number;
   },
   note?: string | null
 ): Promise<{
@@ -222,6 +224,8 @@ export const createPickupIntent = async (
     detectedPhase,
     ...(booking?.pickupLocation ? { pickupLocation: booking.pickupLocation } : {}),
     ...(booking?.passengerManifest?.length ? { passengerManifest: booking.passengerManifest } : {}),
+    ...(booking?.discountType ? { discountType: booking.discountType } : {}),
+    ...(booking?.discountCount && booking.discountCount > 0 ? { discountCount: booking.discountCount } : {}),
     ...(note ? { note } : {}),
   });
 

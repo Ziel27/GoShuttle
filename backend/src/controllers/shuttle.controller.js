@@ -211,6 +211,9 @@ const autoBoardNearbyPickups = async ({ session, shuttle, driverId }) => {
     const linkedRideRequests = await RideRequest.find({ pickupRequestId: request._id, status: 'pending' }).session(session);
     if (linkedRideRequests && linkedRideRequests.length > 0) {
       for (const rr of linkedRideRequests) {
+        const rrDiscountType = rr.discountType && rr.discountType !== 'none' ? rr.discountType : 'none';
+        const rrOriginalFare = rr.originalFare || null;
+        const rrFareAtBoarding = rrDiscountType !== 'none' && rr.fareExpected ? rr.fareExpected : activeTrip.fareAtTime;
         passengerRidesToInsert.push({
           communityId: shuttle.communityId,
           passengerId: rr.passengerId || null,
@@ -220,7 +223,9 @@ const autoBoardNearbyPickups = async ({ session, shuttle, driverId }) => {
           driverId,
           tripId: activeTrip._id,
           rideRequestId: rr._id,
-          fareAtBoarding: activeTrip.fareAtTime,
+          fareAtBoarding: rrFareAtBoarding,
+          discountType: rrDiscountType,
+          originalFare: rrOriginalFare,
           pickupLocation: rr.pickupLocation || request.pickupLocation || request.location,
           destinationType: rr.destination?.type || request.destinationType || 'fixed',
           destinationLabel: rr.destination?.label || request.destinationLabel || 'Destination',
@@ -241,6 +246,7 @@ const autoBoardNearbyPickups = async ({ session, shuttle, driverId }) => {
           driverId,
           tripId: activeTrip._id,
           fareAtBoarding: activeTrip.fareAtTime,
+          discountType: 'none',
           pickupLocation: request.pickupLocation || request.location,
           destinationType: request.destinationType || 'fixed',
           destinationLabel: request.destinationLabel || 'Destination',
@@ -258,6 +264,7 @@ const autoBoardNearbyPickups = async ({ session, shuttle, driverId }) => {
         driverId,
         tripId: activeTrip._id,
         fareAtBoarding: activeTrip.fareAtTime,
+        discountType: 'none',
         pickupLocation: request.pickupLocation || request.location,
         destinationType: request.destinationType || 'fixed',
         destinationLabel: request.destinationLabel || 'Destination',
@@ -288,7 +295,9 @@ const autoBoardNearbyPickups = async ({ session, shuttle, driverId }) => {
     );
   }
   activeTrip.passengersBoarded += insertedCount;
-  activeTrip.revenueCollected = activeTrip.passengersBoarded * activeTrip.fareAtTime;
+  // Revenue = sum of actual fares paid (accounting for discounts)
+  const revenueFromThisBatch = passengerRidesToInsert.reduce((sum, r) => sum + (r.fareAtBoarding || 0), 0);
+  activeTrip.revenueCollected = (activeTrip.revenueCollected || 0) + revenueFromThisBatch;
   await activeTrip.save({ session });
 
   shuttle.currentCapacity += insertedCount;

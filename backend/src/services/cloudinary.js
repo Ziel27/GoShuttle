@@ -58,6 +58,51 @@ const uploadReceiptImage = async ({ buffer, tripId, communityId }) => {
   });
 };
 
+const uploadDiscountIdImage = async ({ buffer, userId, communityId }) => {
+  if (!buffer || !Buffer.isBuffer(buffer)) {
+    throw new Error('ID image buffer is required.');
+  }
+
+  if (process.env.NODE_ENV === 'test') {
+    return {
+      secureUrl: `https://example.test/discount-ids/${String(userId)}.jpg`,
+      publicId: `test/discount-ids/${String(userId)}`,
+    };
+  }
+
+  if (!hasCloudinaryConfig()) {
+    throw new Error('Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET.');
+  }
+
+  const folderPrefix = String(process.env.CLOUDINARY_FOLDER || 'goshuttle').trim().replace(/\/+$/, '') || 'goshuttle';
+  const folder = `${folderPrefix}/discount-ids/${String(communityId)}`;
+  const publicId = `discount_id_${String(userId)}_${Date.now()}`;
+
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder,
+        public_id: publicId,
+        resource_type: 'image',
+        overwrite: true,
+      },
+      (error, result) => {
+        if (error || !result) {
+          reject(error || new Error('Cloudinary upload failed.'));
+          return;
+        }
+        resolve({
+          secureUrl: result.secure_url,
+          publicId: result.public_id,
+        });
+      }
+    );
+
+    stream.end(buffer);
+  });
+};
+
 module.exports = {
   uploadReceiptImage,
+  uploadDiscountIdImage,
 };

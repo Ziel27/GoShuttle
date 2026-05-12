@@ -121,6 +121,30 @@ const passengerRideSchema = new mongoose.Schema(
       default: 'boarded',
       index: true,
     },
+
+    discountType: {
+      type: String,
+      enum: ['student', 'pwd', 'senior', 'none'],
+      default: 'none',
+    },
+    originalFare: {
+      type: Number,
+      default: null,
+      min: 0,
+    },
+    discountRevoked: {
+      type: Boolean,
+      default: false,
+    },
+    discountRevokedAt: {
+      type: Date,
+      default: null,
+    },
+    discountRevokedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
   },
   {
     timestamps: true,

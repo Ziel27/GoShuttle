@@ -23,6 +23,7 @@ const {
   getMyDispatch,
   cancelMyPickupIntents,
 } = require('../controllers/trip.controller');
+const { revokePassengerDiscount } = require('../controllers/discount.controller');
 
 
 const { authenticate, authorize } = require('../middleware/auth');
@@ -56,6 +57,7 @@ router.get('/remittance-summary', authorize('admin'), getRemittanceSummary);
 router.post('/ride-requests/:requestId/resolve', authorize('driver'), resolveRideRequest);
 router.get('/:shuttleId/onboard-destinations', authorize('driver', 'admin'), listOnboardDestinations);
 router.get('/:tripId/current-passengers', authorize('driver', 'admin'), getCurrentPassengers);
+router.patch('/rides/:rideId/revoke-discount', authorize('driver'), revokePassengerDiscount);
 
 module.exports = router;
 

@@ -119,10 +119,52 @@ export const updateCommunity = async (
     branding?: { primaryColor?: string; logoUrl?: string };
     isActive?: boolean;
     opsBypassMode?: boolean;
+    discountSettings?: {
+      enabled: boolean;
+      studentPct: number;
+      pwdPct: number;
+      seniorPct: number;
+    };
   }
 ): Promise<Community> => {
   const response = await apiClient.put(`/communities/${communityId}`, payload);
   return response.data?.community as Community;
+};
+
+export type DiscountVerificationItem = {
+  userId: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  discountType: 'student' | 'pwd' | 'senior';
+  idImageUrl: string;
+  submittedAt: string;
+  status: 'pending' | 'approved' | 'rejected';
+  rejectionReason?: string | null;
+};
+
+export const fetchDiscountVerifications = async (
+  communityId: string,
+  status?: 'pending' | 'approved' | 'rejected'
+): Promise<DiscountVerificationItem[]> => {
+  const response = await apiClient.get(`/communities/${communityId}/discount-verifications`, {
+    params: status ? { status } : undefined,
+  });
+  return (response.data?.verifications || []) as DiscountVerificationItem[];
+};
+
+export const reviewDiscountVerification = async (
+  communityId: string,
+  userId: string,
+  payload: { action: 'approve' | 'reject'; rejectionReason?: string }
+): Promise<DiscountVerificationItem> => {
+  const response = await apiClient.patch(
+    `/communities/${communityId}/discount-verifications/${userId}`,
+    payload
+  );
+  const dv = response.data?.discountVerification;
+  if (!dv) return response.data as DiscountVerificationItem;
+  return response.data as DiscountVerificationItem;
 };
 
 
