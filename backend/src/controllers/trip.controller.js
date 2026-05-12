@@ -451,6 +451,9 @@ const passengerBoard = async (req, res) => {
 
         if (linkedRideRequests && linkedRideRequests.length > 0) {
           for (const rr of linkedRideRequests) {
+            const rrDiscountType = rr.discountType && rr.discountType !== 'none' ? rr.discountType : 'none';
+            const rrOriginalFare = rr.originalFare || null;
+            const rrFareAtBoarding = rrDiscountType !== 'none' && rr.fareExpected ? rr.fareExpected : activeTrip.fareAtTime;
             passengerRidesToInsert.push({
               communityId: shuttle.communityId,
               passengerId: rr.passengerId || null,
@@ -460,7 +463,9 @@ const passengerBoard = async (req, res) => {
               driverId: req.user._id,
               tripId: activeTrip._id,
               rideRequestId: rr._id,
-              fareAtBoarding: activeTrip.fareAtTime,
+              fareAtBoarding: rrFareAtBoarding,
+              discountType: rrDiscountType,
+              originalFare: rrOriginalFare,
               pickupLocation: rr.pickupLocation || request.pickupLocation || request.location,
               destinationType: rr.destination?.type || request.destinationType || 'fixed',
               destinationLabel: rr.destination?.label || request.destinationLabel || 'Destination',
@@ -481,6 +486,7 @@ const passengerBoard = async (req, res) => {
               driverId: req.user._id,
               tripId: activeTrip._id,
               fareAtBoarding: activeTrip.fareAtTime,
+              discountType: 'none',
               pickupLocation: request.pickupLocation || request.location,
               destinationType: request.destinationType || 'fixed',
               destinationLabel: request.destinationLabel || 'Destination',
@@ -498,6 +504,7 @@ const passengerBoard = async (req, res) => {
             driverId: req.user._id,
             tripId: activeTrip._id,
             fareAtBoarding: activeTrip.fareAtTime,
+            discountType: 'none',
             pickupLocation: request.pickupLocation || request.location,
             destinationType: request.destinationType || 'fixed',
             destinationLabel: request.destinationLabel || 'Destination',
@@ -827,13 +834,20 @@ const createPickupIntent = async (req, res) => {
       ? req.body.note.trim().slice(0, 300) || null
       : null;
 
+    const VALID_DISCOUNT_TYPES = ['student', 'pwd', 'senior'];
+    const rawDiscountType = req.body.discountType;
+    const bookingDiscountType = VALID_DISCOUNT_TYPES.includes(rawDiscountType) ? rawDiscountType : null;
+    const bookingDiscountCount = bookingDiscountType
+      ? Math.max(1, Math.min(5, parseInt(req.body.discountCount, 10) || 1))
+      : 0;
+
 
     const coords = validateCoordinates(latitude, longitude);
     if (!coords.valid) {
       return res.status(400).json({ error: coords.message });
     }
 
-    const community = await Community.findById(req.user.communityId).select('fixedDestinations baseFare');
+    const community = await Community.findById(req.user.communityId).select('fixedDestinations baseFare priorityFareMultiplier discountSettings');
     if (!community) {
       return res.status(404).json({ error: 'Community not found.' });
     }
@@ -919,9 +933,47 @@ const createPickupIntent = async (req, res) => {
 
     // explicitPickupPoint (if any) is already validated above and will be used when creating RideRequests
 
-    const fareExpected = fareType === 'priority'
+    const baseFareForType = fareType === 'priority'
       ? Number((community.baseFare * (community.priorityFareMultiplier ?? 1.5)).toFixed(2))
       : community.baseFare;
+
+    // ── Discount resolution ───────────────────────────────────────────────────
+    // For self-bookings (no passengerManifest), auto-apply verified discount.
+    // For group bookings, use the explicit discountType/discountCount from the request.
+    const isSelfBooking = !Array.isArray(passengerManifest) || passengerManifest.length === 0;
+
+    let resolvedDiscountType = null;
+    let resolvedDiscountCount = 0;
+
+    if (isSelfBooking) {
+      // Auto-detect: apply verified discount for the booking passenger
+      const freshUser = await User.findById(req.user._id).select('discountVerification').lean();
+      const dv = freshUser?.discountVerification;
+      if (dv && dv.status === 'verified') {
+        resolvedDiscountType = dv.type;
+        resolvedDiscountCount = 1;
+      }
+    } else if (bookingDiscountType) {
+      resolvedDiscountType = bookingDiscountType;
+      resolvedDiscountCount = bookingDiscountCount;
+    }
+
+    const getDiscountPct = (dtype) => {
+      if (!dtype) return 0;
+      const ds = community.discountSettings || {};
+      if (dtype === 'student') return ds.studentDiscount || 0;
+      if (dtype === 'pwd') return ds.pwdDiscount || 0;
+      if (dtype === 'senior') return ds.seniorDiscount || 0;
+      return 0;
+    };
+
+    const discountPct = getDiscountPct(resolvedDiscountType);
+    const discountedFare = discountPct > 0
+      ? Number((baseFareForType * (1 - discountPct / 100)).toFixed(2))
+      : baseFareForType;
+
+    // fareExpected is the total for the first passenger (for backward compat, keep it per-seat)
+    const fareExpected = baseFareForType;
 
     // PERSISTENCE: Create permanent ride request(s) BEFORE ephemeral pickup intent.
     // Support passengerManifest for delegated/group bookings. If no manifest is provided,
@@ -945,8 +997,19 @@ const createPickupIntent = async (req, res) => {
       });
     }
 
+    // Append ID-presentation note when discount is active so driver sees it
+    let finalNote = note;
+    if (resolvedDiscountType && resolvedDiscountCount > 0 && discountPct > 0) {
+      const discountLabel = { student: 'Student', pwd: 'PWD', senior: 'Senior Citizen' }[resolvedDiscountType] || resolvedDiscountType;
+      const idNote = `[${discountLabel} Discount x${resolvedDiscountCount}] Please present a valid ${discountLabel} ID upon boarding.`;
+      finalNote = note ? `${note} | ${idNote}` : idNote;
+      finalNote = finalNote.slice(0, 500);
+    }
+
     const rideRequestsToCreate = [];
-    for (const entry of finalPassengerManifest) {
+    for (let i = 0; i < finalPassengerManifest.length; i++) {
+      const entry = finalPassengerManifest[i];
+      const isDiscounted = resolvedDiscountType && i < resolvedDiscountCount && discountPct > 0;
       const rr = {
         communityId: req.user.communityId,
         passengerId: entry.passengerId && mongoose.Types.ObjectId.isValid(String(entry.passengerId)) ? entry.passengerId : null,
@@ -960,8 +1023,10 @@ const createPickupIntent = async (req, res) => {
           label: destinationLabel,
           location: destinationLocation,
         },
-        fareExpected,
-        note,
+        fareExpected: isDiscounted ? discountedFare : baseFareForType,
+        originalFare: isDiscounted ? baseFareForType : null,
+        discountType: isDiscounted ? resolvedDiscountType : 'none',
+        note: finalNote,
         status: 'pending',
       };
       rideRequestsToCreate.push(rr);

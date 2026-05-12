@@ -225,6 +225,26 @@ router.put('/:id', authenticate, authorize('admin'), async (req, res) => {
     if (req.body.fixedDestinations !== undefined) update.fixedDestinations = req.body.fixedDestinations;
     if (req.body.opsBypassMode !== undefined) update.opsBypassMode = Boolean(req.body.opsBypassMode);
 
+    if (req.body.discountSettings !== undefined) {
+      const ds = req.body.discountSettings;
+      const parseDiscount = (val) => {
+        if (val === undefined || val === null) return undefined;
+        const n = Number(val);
+        return Number.isFinite(n) && n >= 0 && n <= 100 ? n : null;
+      };
+      const student = parseDiscount(ds.studentDiscount);
+      const pwd = parseDiscount(ds.pwdDiscount);
+      const senior = parseDiscount(ds.seniorDiscount);
+      if (student === null || pwd === null || senior === null) {
+        return res.status(400).json({ error: 'Discount values must be numbers between 0 and 100.' });
+      }
+      update.discountSettings = {
+        studentDiscount: student ?? 0,
+        pwdDiscount: pwd ?? 0,
+        seniorDiscount: senior ?? 0,
+      };
+    }
+
     const community = await Community.findByIdAndUpdate(id, { $set: update }, { new: true, runValidators: true });
     if (!community) {
       return res.status(404).json({ error: 'Community not found.' });

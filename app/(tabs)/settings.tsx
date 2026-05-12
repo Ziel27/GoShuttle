@@ -15,14 +15,16 @@ import { listShuttles } from '@/services/shuttle';
 import { cancelMyPickupIntents, endShift, resolveRideRequest, startShift, stopShift } from '@/services/trip';
 import { submitSupportMessage } from '@/services/support';
 
+import { getMyDiscountVerification, submitDiscountVerification, type DiscountType, type DiscountVerification } from '@/services/user';
 import { setHomeDestinationFromGps } from '@/services/user';
 import { useAuthStore } from '@/store/auth';
 import { usePreferencesStore } from '@/store/preferences';
 import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
 import { router } from 'expo-router';
+import * as ImagePicker from 'expo-image-picker';
 import { memo, useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Switch, TextInput, View } from 'react-native';
+import { ActivityIndicator, Image, Modal, Pressable, ScrollView, StyleSheet, Switch, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 type AppearanceOption = {
@@ -76,6 +78,247 @@ const ThemeOptionChip = memo(function ThemeOptionChip({
         {item.label}
       </ThemedText>
     </Pressable>
+  );
+});
+
+type DiscountVerificationSectionProps = {
+  tint: string;
+  textColor: string;
+  mutedColor: string;
+  borderColor: string;
+  surface: string;
+  surfaceMuted: string;
+  bgColor: string;
+  successColor: string;
+  dangerColor: string;
+};
+
+const DISCOUNT_TYPES: { key: DiscountType; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
+  { key: 'student', label: 'Student', icon: 'school-outline' },
+  { key: 'pwd', label: 'PWD', icon: 'accessibility-outline' },
+  { key: 'senior', label: 'Senior Citizen', icon: 'person-outline' },
+];
+
+const DiscountVerificationSection = memo(function DiscountVerificationSection({
+  tint,
+  textColor,
+  mutedColor,
+  borderColor,
+  surface,
+  surfaceMuted,
+  bgColor,
+  successColor,
+  dangerColor,
+}: DiscountVerificationSectionProps) {
+  const [verification, setVerification] = useState<DiscountVerification | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [feedback, setFeedback] = useState('');
+  const [selectedType, setSelectedType] = useState<DiscountType | null>(null);
+  const [pickedImageUri, setPickedImageUri] = useState<string | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    getMyDiscountVerification()
+      .then((v) => { if (mounted) { setVerification(v); setLoading(false); } })
+      .catch(() => { if (mounted) setLoading(false); });
+    return () => { mounted = false; };
+  }, []);
+
+  const handlePickImage = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      setFeedback('Photo library permission is required to upload your ID.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.8,
+      allowsEditing: true,
+    });
+    if (!result.canceled && result.assets[0]?.uri) {
+      setPickedImageUri(result.assets[0].uri);
+      setFeedback('');
+    }
+  };
+
+  const handleSubmit = async () => {
+    if (!selectedType) {
+      setFeedback('Please select a discount type.');
+      return;
+    }
+    if (!pickedImageUri) {
+      setFeedback('Please upload a photo of your valid ID.');
+      return;
+    }
+    setSubmitting(true);
+    setFeedback('');
+    try {
+      const updated = await submitDiscountVerification(selectedType, pickedImageUri);
+      setVerification(updated);
+      setPickedImageUri(null);
+      setSelectedType(null);
+      setFeedback('Application submitted. You will be notified once reviewed.');
+    } catch (err) {
+      setFeedback(err instanceof Error ? err.message : 'Failed to submit. Try again.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const statusColor = (status: DiscountVerification['status']) => {
+    if (status === 'approved') return successColor;
+    if (status === 'rejected') return dangerColor;
+    return tint;
+  };
+
+  const statusLabel = (status: DiscountVerification['status']) => {
+    if (status === 'approved') return 'Approved';
+    if (status === 'rejected') return 'Rejected';
+    if (status === 'pending') return 'Under Review';
+    return 'Not Submitted';
+  };
+
+  if (loading) {
+    return (
+      <View style={[{ borderColor, backgroundColor: surface }, styles.sectionBlock]}>
+        <ActivityIndicator size="small" color={tint} />
+      </View>
+    );
+  }
+
+  return (
+    <View style={[styles.sectionBlock, { borderColor, backgroundColor: surface }]}>
+      <ThemedText type="subtitle" style={{ color: textColor }}>Discount ID Verification</ThemedText>
+      <ThemedText type="caption" style={{ color: mutedColor }}>
+        Submit a valid government-issued ID to qualify for student, PWD, or senior discounts on every ride.
+      </ThemedText>
+
+      {verification && verification.status !== 'none' ? (
+        <View style={{ gap: 8, marginTop: 8 }}>
+          <View style={[{ borderColor: statusColor(verification.status), backgroundColor: bgColor }, styles.discountStatusBadge]}>
+            <Ionicons
+              name={verification.status === 'approved' ? 'checkmark-circle' : verification.status === 'rejected' ? 'close-circle' : 'time-outline'}
+              size={16}
+              color={statusColor(verification.status)}
+            />
+            <ThemedText type="defaultSemiBold" style={{ color: statusColor(verification.status), fontSize: 13 }}>
+              {statusLabel(verification.status)}
+            </ThemedText>
+            {verification.discountType ? (
+              <ThemedText type="caption" style={{ color: mutedColor, textTransform: 'capitalize' }}>
+                · {verification.discountType}
+              </ThemedText>
+            ) : null}
+          </View>
+
+          {verification.status === 'rejected' ? (
+            <>
+              {verification.rejectionReason ? (
+                <ThemedText type="caption" style={{ color: dangerColor }}>
+                  Reason: {verification.rejectionReason}
+                </ThemedText>
+              ) : null}
+              <ThemedText type="caption" style={{ color: mutedColor }}>
+                You may resubmit with a clearer or different ID.
+              </ThemedText>
+            </>
+          ) : null}
+
+          {verification.idImageUrl ? (
+            <Image
+              source={{ uri: verification.idImageUrl }}
+              style={styles.discountIdPreview}
+              resizeMode="cover"
+            />
+          ) : null}
+
+          {verification.status === 'approved' ? (
+            <ThemedText type="caption" style={{ color: successColor }}>
+              Your discount is active. It will be applied automatically at booking when available.
+            </ThemedText>
+          ) : null}
+
+          {verification.status === 'pending' ? (
+            <ThemedText type="caption" style={{ color: mutedColor }}>
+              Your submission is pending review by your community admin.
+            </ThemedText>
+          ) : null}
+        </View>
+      ) : null}
+
+      {(!verification || verification.status === 'none' || verification.status === 'rejected') ? (
+        <View style={{ gap: 12, marginTop: 12 }}>
+          <ThemedText type="caption" style={{ color: mutedColor }}>Select discount type:</ThemedText>
+          <View style={styles.discountTypeRow}>
+            {DISCOUNT_TYPES.map(({ key, label, icon }) => (
+              <Pressable
+                key={key}
+                onPress={() => setSelectedType(key)}
+                accessibilityRole="button"
+                style={({ pressed }) => [
+                  styles.discountTypeChip,
+                  {
+                    borderColor: selectedType === key ? tint : borderColor,
+                    backgroundColor: selectedType === key ? surfaceMuted : bgColor,
+                  },
+                  pressed && { opacity: 0.7 },
+                ]}
+              >
+                <Ionicons name={icon} size={14} color={selectedType === key ? tint : mutedColor} />
+                <ThemedText type="defaultSemiBold" style={{ color: selectedType === key ? tint : mutedColor, fontSize: 12 }}>
+                  {label}
+                </ThemedText>
+              </Pressable>
+            ))}
+          </View>
+
+          <Pressable
+            onPress={() => void handlePickImage()}
+            accessibilityRole="button"
+            style={({ pressed }) => [
+              styles.discountUploadBtn,
+              { borderColor: pickedImageUri ? successColor : borderColor, backgroundColor: bgColor },
+              pressed && { opacity: 0.7 },
+            ]}
+          >
+            <Ionicons name={pickedImageUri ? 'image' : 'cloud-upload-outline'} size={18} color={pickedImageUri ? successColor : tint} />
+            <ThemedText type="defaultSemiBold" style={{ color: pickedImageUri ? successColor : tint, fontSize: 13 }}>
+              {pickedImageUri ? 'ID Photo Selected ✓' : 'Upload ID Photo'}
+            </ThemedText>
+          </Pressable>
+
+          {pickedImageUri ? (
+            <Image source={{ uri: pickedImageUri }} style={styles.discountIdPreview} resizeMode="cover" />
+          ) : null}
+
+          {feedback ? (
+            <ThemedText type="caption" style={{ color: feedback.includes('submitted') ? successColor : dangerColor }}>
+              {feedback}
+            </ThemedText>
+          ) : null}
+
+          <Pressable
+            onPress={() => void handleSubmit()}
+            disabled={submitting}
+            accessibilityRole="button"
+            style={({ pressed }) => [
+              styles.discountSubmitBtn,
+              { borderColor: tint, backgroundColor: tint },
+              (pressed || submitting) && { opacity: 0.7 },
+            ]}
+          >
+            {submitting ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <ThemedText type="defaultSemiBold" style={{ color: '#fff', fontSize: 14 }}>
+                Submit for Verification
+              </ThemedText>
+            )}
+          </Pressable>
+        </View>
+      ) : null}
+    </View>
   );
 });
 
@@ -417,6 +660,8 @@ export default function SettingsTabScreen() {
   const surfaceMuted = useThemeColor({}, 'surfaceMuted');
   const surface = useThemeColor({}, 'surface');
   const tint = useThemeColor({}, 'tint');
+  const successColor = useThemeColor({}, 'success');
+  const dangerColor = useThemeColor({}, 'danger');
   const toggleTrackOn = '#6EE7B7';
   const toggleThumbOn = '#34D399';
 
@@ -720,6 +965,23 @@ export default function SettingsTabScreen() {
                 </View>
               )}
             </View>
+          </>
+        ) : null}
+
+        {isPassenger ? (
+          <>
+            <ThemedText type="overline" style={[styles.sectionLabel, { color: mutedColor }]}>DISCOUNT VERIFICATION</ThemedText>
+            <DiscountVerificationSection
+              tint={tint}
+              textColor={textColor}
+              mutedColor={mutedColor}
+              borderColor={borderColor}
+              surface={surface}
+              surfaceMuted={surfaceMuted}
+              bgColor={bgColor}
+              successColor={successColor}
+              dangerColor={dangerColor}
+            />
           </>
         ) : null}
 
@@ -1464,5 +1726,52 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 20,
     paddingHorizontal: DesignTokens.spacing.md,
+  },
+  discountStatusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: DesignTokens.spacing.xxs,
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.md,
+    paddingHorizontal: DesignTokens.spacing.sm,
+    paddingVertical: DesignTokens.spacing.xs,
+  },
+  discountTypeRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: DesignTokens.spacing.xs,
+  },
+  discountTypeChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: DesignTokens.spacing.xxs,
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.pill,
+    paddingHorizontal: DesignTokens.spacing.sm,
+    paddingVertical: DesignTokens.spacing.xs,
+  },
+  discountUploadBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: DesignTokens.spacing.xs,
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.md,
+    borderStyle: 'dashed',
+    paddingVertical: DesignTokens.spacing.sm,
+    minHeight: 48,
+  },
+  discountIdPreview: {
+    width: '100%',
+    height: 160,
+    borderRadius: DesignTokens.radius.md,
+  },
+  discountSubmitBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.md,
   },
 });

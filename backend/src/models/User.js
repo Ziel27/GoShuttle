@@ -149,6 +149,50 @@ const userSchema = new mongoose.Schema(
       default: [],
     },
 
+    discountVerification: {
+      type: new mongoose.Schema(
+        {
+          type: {
+            type: String,
+            enum: ['student', 'pwd', 'senior'],
+            required: true,
+          },
+          status: {
+            type: String,
+            enum: ['pending', 'verified', 'rejected'],
+            default: 'pending',
+          },
+          idImageUrl: {
+            type: String,
+            default: null,
+          },
+          idImagePublicId: {
+            type: String,
+            default: null,
+          },
+          submittedAt: {
+            type: Date,
+            default: Date.now,
+          },
+          reviewedAt: {
+            type: Date,
+            default: null,
+          },
+          reviewedBy: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'User',
+            default: null,
+          },
+          rejectionReason: {
+            type: String,
+            default: null,
+          },
+        },
+        { _id: false }
+      ),
+      default: undefined,
+    },
+
     resetPasswordCodeHash: {
       type: String,
       default: null,

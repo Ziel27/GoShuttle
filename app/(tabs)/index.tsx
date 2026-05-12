@@ -171,6 +171,8 @@ export default function HomeScreen() {
     { id: 'guest-1', name: '' },
   ]);
   const [guestPickupType, setGuestPickupType] = useState<'fixed' | 'home' | null>(null);
+  const [guestDiscountType, setGuestDiscountType] = useState<'student' | 'pwd' | 'senior' | null>(null);
+  const [guestDiscountCount, setGuestDiscountCount] = useState<number>(0);
   const [guestPickupFixedId, setGuestPickupFixedId] = useState<string>('');
   const [guestDropoffType, setGuestDropoffType] = useState<'fixed' | 'home' | null>(null);
   const [guestDropoffFixedId, setGuestDropoffFixedId] = useState<string>('');
@@ -1977,6 +1979,8 @@ export default function HomeScreen() {
           ? {
               ...(explicitPickupLocationForOptions ? { pickupLocation: explicitPickupLocationForOptions } : {}),
               passengerManifest: normalizedPassengerManifest,
+              ...(guestDiscountType ? { discountType: guestDiscountType } : {}),
+              ...(guestDiscountType && guestDiscountCount > 0 ? { discountCount: guestDiscountCount } : {}),
             }
           : selfBookingOptions,
         rideNote.trim() || null
@@ -2088,6 +2092,8 @@ export default function HomeScreen() {
     setGuestPickupFixedId('');
     setGuestDropoffType(null);
     setGuestDropoffFixedId('');
+    setGuestDiscountType(null);
+    setGuestDiscountCount(0);
   }, []);
 
   const toggleBookForOthers = useCallback(() => {
@@ -3190,6 +3196,95 @@ export default function HomeScreen() {
                             <ThemedText style={[styles.manifestCaption, { color: successColor, flex: 1 }]}>Uses the passenger's home GPS coordinate.</ThemedText>
                           </View>
                         )}
+                      </View>
+
+                      {/* Discount for Guests */}
+                      <View style={[styles.manifestSection, { borderColor, backgroundColor: surfaceColor }]}>
+                        <View style={styles.manifestSectionHeader}>
+                          <View style={[styles.manifestIconBadge, { backgroundColor: colorScheme === 'dark' ? AppPalette.darkOverlaySoft : palette.slateBg }]}>
+                            <Ionicons name="pricetag" size={16} color={tint} />
+                          </View>
+                          <View>
+                            <ThemedText style={[styles.manifestRowLabel, { color: textColor }]}>Guest Discount (Optional)</ThemedText>
+                            <ThemedText style={[styles.manifestCaption, { color: mutedColor }]}>Select discount type if any guests qualify. Present their ID to the driver.</ThemedText>
+                          </View>
+                        </View>
+
+                        <View style={styles.manifestActionRow}>
+                          {([
+                            { key: 'student', label: 'Student' },
+                            { key: 'pwd', label: 'PWD' },
+                            { key: 'senior', label: 'Senior' },
+                          ] as const).map(({ key, label }) => (
+                            <Pressable
+                              key={key}
+                              accessibilityRole="button"
+                              accessibilityLabel={`${label} discount`}
+                              onPress={() => {
+                                if (guestDiscountType === key) {
+                                  setGuestDiscountType(null);
+                                  setGuestDiscountCount(0);
+                                } else {
+                                  setGuestDiscountType(key);
+                                  setGuestDiscountCount(1);
+                                }
+                              }}
+                              style={({ pressed }) => [
+                                styles.manifestActionButton,
+                                {
+                                  borderColor: guestDiscountType === key ? tint : borderColor,
+                                  backgroundColor: guestDiscountType === key ? tint : bgColor,
+                                },
+                                pressed && styles.manifestTogglePressed,
+                              ]}
+                            >
+                              <ThemedText style={[styles.manifestActionText, { color: guestDiscountType === key ? palette.white : tint }]}>{label}</ThemedText>
+                            </Pressable>
+                          ))}
+                        </View>
+
+                        {guestDiscountType ? (
+                          <View style={{ gap: 8, marginTop: 4 }}>
+                            <ThemedText style={[styles.manifestCaption, { color: mutedColor }]}>
+                              How many guests have this discount?
+                            </ThemedText>
+                            <View style={styles.passengerCountStepper}>
+                              <Pressable
+                                accessibilityRole="button"
+                                accessibilityLabel="Decrease discount count"
+                                disabled={guestDiscountCount <= 1}
+                                onPress={() => setGuestDiscountCount((c) => Math.max(1, c - 1))}
+                                style={({ pressed }) => [
+                                  styles.passengerCountBtn,
+                                  { borderColor: guestDiscountCount <= 1 ? borderColor : tint, backgroundColor: bgColor },
+                                  pressed && { opacity: 0.7 },
+                                ]}
+                              >
+                                <Ionicons name="remove" size={16} color={guestDiscountCount <= 1 ? mutedColor : tint} />
+                              </Pressable>
+                              <ThemedText style={[styles.passengerCountValue, { color: textColor }]}>{guestDiscountCount}</ThemedText>
+                              <Pressable
+                                accessibilityRole="button"
+                                accessibilityLabel="Increase discount count"
+                                disabled={guestDiscountCount >= normalizedPassengerManifest.length}
+                                onPress={() => setGuestDiscountCount((c) => Math.min(normalizedPassengerManifest.length, c + 1))}
+                                style={({ pressed }) => [
+                                  styles.passengerCountBtn,
+                                  { borderColor: guestDiscountCount >= normalizedPassengerManifest.length ? borderColor : tint, backgroundColor: bgColor },
+                                  pressed && { opacity: 0.7 },
+                                ]}
+                              >
+                                <Ionicons name="add" size={16} color={guestDiscountCount >= normalizedPassengerManifest.length ? mutedColor : tint} />
+                              </Pressable>
+                            </View>
+                            <View style={[styles.manifestHomeNotice, { backgroundColor: colorScheme === 'dark' ? AppPalette.darkSkyBg : AppPalette.sky, borderColor: tint }]}>
+                              <Ionicons name="id-card-outline" size={14} color={tint} />
+                              <ThemedText style={[styles.manifestCaption, { color: tint, flex: 1 }]}>
+                                Remind guests to show a valid government-issued ID to the driver for discount verification.
+                              </ThemedText>
+                            </View>
+                          </View>
+                        ) : null}
                       </View>
                     </View>
                   ) : (
