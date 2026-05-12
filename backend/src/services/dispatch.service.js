@@ -16,6 +16,7 @@
 
 'use strict';
 
+const mongoose = require('mongoose');
 const Shuttle = require('../models/Shuttle');
 const PickupRequest = require('../models/PickupRequest');
 const {
@@ -38,16 +39,47 @@ const haversineMeters = (lat1, lng1, lat2, lng2) => {
 };
 
 // ─── Load on-duty shuttles (GPS + capacity data) ──────────────────────────────
+// pendingPickupCount is recomputed from live PickupRequest records on every call
+// to prevent drift from expired / improperly-cancelled requests.
 const loadOnDutyShuttles = async (communityId) => {
-  return Shuttle.find({
-    communityId,
-    isActive: true,
-    status: { $in: ['idle', 'en_route'] },
-    driverId: { $ne: null },
-  })
-    .select('_id driverId plateNumber label assignedPhase currentCapacity maxCapacity pendingPickupCount location status')
-    .populate('driverId', '_id status')
-    .lean();
+  const communityOid = mongoose.Types.ObjectId.isValid(communityId)
+    ? new mongoose.Types.ObjectId(String(communityId))
+    : communityId;
+
+  const [shuttles, pendingAgg] = await Promise.all([
+    Shuttle.find({
+      communityId,
+      isActive: true,
+      status: { $in: ['idle', 'en_route'] },
+      driverId: { $ne: null },
+    })
+      .select('_id driverId plateNumber label assignedPhase currentCapacity maxCapacity pendingPickupCount location status')
+      .populate('driverId', '_id status')
+      .lean(),
+
+    // Count actual dispatched-but-not-yet-boarded requests per shuttle
+    PickupRequest.aggregate([
+      {
+        $match: {
+          communityId: communityOid,
+          status: 'dispatched',
+          assignedShuttleId: { $ne: null },
+        },
+      },
+      { $group: { _id: '$assignedShuttleId', count: { $sum: 1 } } },
+    ]),
+  ]);
+
+  const actualPending = {};
+  for (const { _id, count } of pendingAgg) {
+    actualPending[String(_id)] = count;
+  }
+
+  // Override the cached counter with the DB-accurate value
+  return shuttles.map((s) => ({
+    ...s,
+    pendingPickupCount: actualPending[String(s._id)] ?? 0,
+  }));
 };
 
 // ─── Atomically increment pendingPickupCount and return updated shuttle ───────
@@ -266,7 +298,11 @@ const findAndDispatch = async ({
     .sort((a, b) => a.distanceMeters - b.distanceMeters);
 
   if (candidateShuttles.length === 0) {
-    return enqueueRequest({ pickupRequest, fareExpected, io, position: 0, queueReason: 'all_shuttles_full' });
+    // Determine the accurate reason: if no shuttle has a driver currently on shift,
+    // it is a duty issue — not a capacity issue.
+    const anyDriverOnShift = shuttles.some((s) => s.driverId?.status === 'driving');
+    const queueReason = anyDriverOnShift ? 'all_shuttles_full' : 'no_shuttles_on_duty';
+    return enqueueRequest({ pickupRequest, fareExpected, io, position: 0, queueReason });
   }
 
 

@@ -4269,8 +4269,7 @@ export default function HomeScreen() {
                       style={[
                         styles.shareTrackingBtn,
                         {
-                          borderColor: colorScheme === 'dark' ? tint : '#2563eb',
-                          backgroundColor: colorScheme === 'dark' ? 'rgba(37,99,235,0.12)' : '#eff6ff',
+                          backgroundColor: colorScheme === 'dark' ? '#1d4ed8' : '#2563eb',
                         },
                       ]}
                       onPress={async () => {
@@ -4292,10 +4291,14 @@ export default function HomeScreen() {
                       accessibilityRole="button"
                       accessibilityLabel="Share tracking link"
                     >
-                      <Ionicons name="share-outline" size={14} color={colorScheme === 'dark' ? tint : '#2563eb'} />
-                      <ThemedText style={[styles.shareTrackingText, { color: colorScheme === 'dark' ? tint : '#2563eb' }]}>
-                        Share Tracking Link
-                      </ThemedText>
+                      <View style={styles.shareTrackingIconWrap}>
+                        <Ionicons name="share-social-outline" size={20} color="#ffffff" />
+                      </View>
+                      <View style={styles.shareTrackingContent}>
+                        <ThemedText style={styles.shareTrackingTitle}>Share Tracking Link</ThemedText>
+                        <ThemedText style={styles.shareTrackingSubtitle}>Let others follow your ride live</ThemedText>
+                      </View>
+                      <Ionicons name="chevron-forward-outline" size={16} color="rgba(255,255,255,0.65)" />
                     </Pressable>
                   ) : null}
 
@@ -5006,12 +5009,33 @@ const styles = StyleSheet.create({
   shareTrackingBtn: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 12,
+    borderRadius: DesignTokens.radius.md,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    marginTop: 12,
+  },
+  shareTrackingIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
-    borderWidth: 1,
-    borderRadius: DesignTokens.radius.sm,
-    paddingVertical: 8,
-    marginTop: 10,
+  },
+  shareTrackingContent: {
+    flex: 1,
+  },
+  shareTrackingTitle: {
+    fontFamily: OutfitFonts.semiBold,
+    fontSize: 14,
+    color: '#ffffff',
+  },
+  shareTrackingSubtitle: {
+    fontFamily: OutfitFonts.regular,
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.75)',
+    marginTop: 1,
   },
   shareTrackingText: {
     fontFamily: OutfitFonts.semiBold,
