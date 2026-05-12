@@ -2790,39 +2790,6 @@ export default function HomeScreen() {
                     </View>
                   </View>
 
-                  <View
-                    style={[
-                      styles.automationCard,
-                      {
-                        borderColor,
-                        backgroundColor: colorScheme === 'dark' ? AppPalette.darkSkyBg : AppPalette.sky,
-                      },
-                    ]}
-                  >
-                    <View style={styles.rowBetween}>
-                      <ThemedText style={[styles.automationTitle, { color: textColor }]}>Manual Boarding Gates</ThemedText>
-                      <ThemedText style={[styles.automationReliability, { color: textColor }]}>
-                        Reliability {automationReliabilityScore}% ({automationReliabilityLabel})
-                      </ThemedText>
-                    </View>
-
-                    <View style={styles.automationRow}>
-                      <View style={[styles.automationDot, { backgroundColor: getDiagnosticColor(autoBoardDiagnostic.state) }]} />
-                      <View style={styles.automationCopy}>
-                        <ThemedText style={[styles.automationLabel, { color: textColor }]}>{autoBoardDiagnostic.label}</ThemedText>
-                        <ThemedText style={[styles.automationDetail, { color: mutedColor }]}>{autoBoardDiagnostic.detail}</ThemedText>
-                      </View>
-                    </View>
-
-                    <View style={styles.automationRow}>
-                      <View style={[styles.automationDot, { backgroundColor: getDiagnosticColor(autoUnboardDiagnostic.state) }]} />
-                      <View style={styles.automationCopy}>
-                        <ThemedText style={[styles.automationLabel, { color: textColor }]}>{autoUnboardDiagnostic.label}</ThemedText>
-                        <ThemedText style={[styles.automationDetail, { color: mutedColor }]}>{autoUnboardDiagnostic.detail}</ThemedText>
-                      </View>
-                    </View>
-                  </View>
-
                   <View style={styles.quickActionRow}>
                     <PremiumButton
                       style={styles.quickActionBtn}

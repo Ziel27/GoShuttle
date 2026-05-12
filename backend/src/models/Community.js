@@ -116,19 +116,23 @@ const communitySchema = new mongoose.Schema(
     discountSettings: {
       type: new mongoose.Schema(
         {
-          studentDiscount: {
+          enabled: {
+            type: Boolean,
+            default: false,
+          },
+          studentPct: {
             type: Number,
             default: 0,
             min: [0, 'Discount cannot be negative'],
             max: [100, 'Discount cannot exceed 100%'],
           },
-          pwdDiscount: {
+          pwdPct: {
             type: Number,
             default: 0,
             min: [0, 'Discount cannot be negative'],
             max: [100, 'Discount cannot exceed 100%'],
           },
-          seniorDiscount: {
+          seniorPct: {
             type: Number,
             default: 0,
             min: [0, 'Discount cannot be negative'],
@@ -137,7 +141,7 @@ const communitySchema = new mongoose.Schema(
         },
         { _id: false }
       ),
-      default: () => ({ studentDiscount: 0, pwdDiscount: 0, seniorDiscount: 0 }),
+      default: () => ({ enabled: false, studentPct: 0, pwdPct: 0, seniorPct: 0 }),
     },
     opsBypassMode: {
       type: Boolean,

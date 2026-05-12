@@ -232,16 +232,17 @@ router.put('/:id', authenticate, authorize('admin'), async (req, res) => {
         const n = Number(val);
         return Number.isFinite(n) && n >= 0 && n <= 100 ? n : null;
       };
-      const student = parseDiscount(ds.studentDiscount);
-      const pwd = parseDiscount(ds.pwdDiscount);
-      const senior = parseDiscount(ds.seniorDiscount);
+      const student = parseDiscount(ds.studentPct);
+      const pwd = parseDiscount(ds.pwdPct);
+      const senior = parseDiscount(ds.seniorPct);
       if (student === null || pwd === null || senior === null) {
         return res.status(400).json({ error: 'Discount values must be numbers between 0 and 100.' });
       }
       update.discountSettings = {
-        studentDiscount: student ?? 0,
-        pwdDiscount: pwd ?? 0,
-        seniorDiscount: senior ?? 0,
+        enabled: ds.enabled === true,
+        studentPct: student ?? 0,
+        pwdPct: pwd ?? 0,
+        seniorPct: senior ?? 0,
       };
     }
 
