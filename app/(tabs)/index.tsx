@@ -382,6 +382,31 @@ export default function HomeScreen() {
         longitude: activePassengerPickupRequest.destinationLocation.coordinates[0],
       }
     : null;
+
+  const activeCommunityId = user?.communityId ?? null;
+
+  const assignedShuttle: Shuttle | null = user?.role === 'driver'
+    ? (shuttles.find((s) =>
+        (typeof s.driverId === 'object' && s.driverId !== null && s.driverId._id === user._id) ||
+        s.driverId === user._id
+      ) ?? null)
+    : null;
+
+  const assignedShuttleId = assignedShuttle?._id;
+
+  const isDriverOnShift = user?.status === 'driving';
+
+  const hasSavedHomeDestination = Boolean(
+    user?.homeDestination?.location?.coordinates?.length === 2
+  );
+
+  const allowedPickupDestinationTypes: Array<'fixed' | 'home'> =
+    pickupOriginContext?.type === 'home'
+      ? ['fixed']
+      : pickupOriginContext?.type === 'fixed'
+        ? ['home']
+        : ['fixed', 'home'];
+
   const assignedShuttleCoordinate = assignedShuttle?.location?.coordinates?.length === 2
     ? {
         latitude: assignedShuttle.location.coordinates[1],
