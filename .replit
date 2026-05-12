@@ -11,8 +11,8 @@ channel = "stable-25_05"
 [userenv.shared]
 PORT = "3001"
 NODE_ENV = "development"
-VITE_ADMIN_API_URL = "http://localhost:3001/api"
-VITE_ADMIN_SOCKET_URL = "http://localhost:3001"
+VITE_ADMIN_API_URL = "/api"
+VITE_ADMIN_SOCKET_URL = ""
 CORS_ORIGIN = "*"
 
 [workflows]

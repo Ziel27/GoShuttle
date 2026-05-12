@@ -298,6 +298,7 @@ app.get('/api/health', async (_req, res) => {
 });
 
 // ─── API Routes ──────────────────────────────────────────────────
+app.use('/api/track', require('./routes/track.routes'));
 app.use('/api/auth', require('./routes/auth.routes'));
 app.use('/api/communities', require('./routes/community.routes'));
 app.use('/api/users', require('./routes/user.routes'));
