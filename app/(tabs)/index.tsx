@@ -378,7 +378,7 @@ export default function HomeScreen() {
   );
 
   const activePassengerPickupRequest = user?.role === 'driver'
-    ? (driverAssignedPickupRequest ?? activeCommunityPickupIntents[0] ?? null)
+    ? driverAssignedPickupRequest
     : activePassengerPickupIntents[0] ?? null;
   const activePassengerPickupRequestCount = Math.max(
     1,
