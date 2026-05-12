@@ -41,6 +41,13 @@ export type Community = {
   };
 };
 
+export type UserWarning = {
+  _id: string;
+  note: string;
+  issuedBy: string;
+  date: string;
+};
+
 export type User = {
   _id: string;
   firstName: string;
@@ -50,6 +57,7 @@ export type User = {
   communityId: string | Community;
   status?: 'active' | 'offline' | 'driving';
   isActive?: boolean;
+  warnings?: UserWarning[];
 };
 
 export type Shuttle = {

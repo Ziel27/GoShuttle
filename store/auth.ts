@@ -3,6 +3,13 @@ import { create } from 'zustand';
 
 import { api, setAuthToken } from '@/services/api';
 
+export type UserWarning = {
+  _id: string;
+  note: string;
+  issuedBy: string;
+  date: string;
+};
+
 type User = {
   _id: string;
   firstName: string;
@@ -21,6 +28,7 @@ type User = {
     };
     updatedAt?: string | null;
   };
+  warnings?: UserWarning[];
 };
 
 type RegisterPayload = {
