@@ -2,8 +2,8 @@ import { HowToBookModal } from '@/components/HowToBookModal';
 import { ThemedText } from '@/components/themed-text';
 import { MapIndicator, MapLoadingPlaceholder } from '@/components/ui/home-map-primitives';
 import {
-    FixedDestinationChip,
-    type FixedDestinationOption,
+  FixedDestinationChip,
+  type FixedDestinationOption,
 } from '@/components/ui/home-screen-primitives';
 import { PremiumButton } from '@/components/ui/premium-button';
 import { SectionHeader } from '@/components/ui/section-header';
@@ -15,26 +15,26 @@ import { useThemeColor } from '@/hooks/use-theme-color';
 import { getCommunityById, getPhaseGeofences, type PhaseGeofence } from '@/services/community';
 import { syncOfflineBoardings } from '@/services/offline-boarding-queue';
 import {
-    AutomationDiagnostics,
-    listShuttles,
-    Shuttle,
-    updateShuttleLocation,
+  AutomationDiagnostics,
+  listShuttles,
+  Shuttle,
+  updateShuttleLocation,
 } from '@/services/shuttle';
 import { connectCommunitySocket } from '@/services/socket';
 import {
-    AssignedShuttle,
-    boardPassenger,
-    cancelPickupIntent,
-    claimPickupIntent,
-    createPickupIntent,
-    getMyDispatch,
-    listOnboardDestinations,
-    listPickupIntents,
-    OnboardDestinationPassenger,
-    PickupIntent,
-    QueueReason,
-    revokePassengerDiscount,
-    unboardPassenger
+  AssignedShuttle,
+  boardPassenger,
+  cancelPickupIntent,
+  claimPickupIntent,
+  createPickupIntent,
+  getMyDispatch,
+  listOnboardDestinations,
+  listPickupIntents,
+  OnboardDestinationPassenger,
+  PickupIntent,
+  QueueReason,
+  revokePassengerDiscount,
+  unboardPassenger
 } from '@/services/trip';
 import { getMyDiscountVerification } from '@/services/user';
 import { formatPhaseLabel, formatShuttleLabel } from '@/utils/format';
@@ -43,20 +43,20 @@ import { formatPhaseLabel, formatShuttleLabel } from '@/utils/format';
 import { useAuthStore } from '@/store/auth';
 import { usePreferencesStore } from '@/store/preferences';
 import {
-    describeBoardingReason,
-    describeUnboardingReason,
-    detectPhaseFromCoordinates,
-    detectPickupOrigin,
-    getDistanceMeters,
-    getPickupIntentCoordinate,
-    isExpiredIntent,
-    type PickupIntentEventPayload,
-    type PickupOriginContext,
-    toMaxZoomOutRegionFromBoundary,
-    toPickupIntent,
-    toRegionFromBoundary,
-    toShuttleCoordinate,
-    upsertPickupIntent
+  describeBoardingReason,
+  describeUnboardingReason,
+  detectPhaseFromCoordinates,
+  detectPickupOrigin,
+  getDistanceMeters,
+  getPickupIntentCoordinate,
+  isExpiredIntent,
+  type PickupIntentEventPayload,
+  type PickupOriginContext,
+  toMaxZoomOutRegionFromBoundary,
+  toPickupIntent,
+  toRegionFromBoundary,
+  toShuttleCoordinate,
+  upsertPickupIntent
 } from '@/utils/home-screen';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -378,7 +378,7 @@ export default function HomeScreen() {
   );
 
   const activePassengerPickupRequest = user?.role === 'driver'
-    ? (driverAssignedPickupRequest || activeCommunityPickupIntents[0] ?? null)
+    ? (driverAssignedPickupRequest ?? activeCommunityPickupIntents[0] ?? null)
     : activePassengerPickupIntents[0] ?? null;
   const activePassengerPickupRequestCount = Math.max(
     1,
