@@ -1199,6 +1199,15 @@ const cancelPickupIntent = async (req, res) => {
       return res.status(409).json({ error: 'Only pending requests can be cancelled.' });
     }
 
+    // DISPATCH: Release the reserved slot FIRST (before status changes, so condition in releaseAndRetry works)
+    if (request.assignedShuttleId && request.status === 'dispatched') {
+      const { releasePendingSlot } = require('../services/dispatch.service');
+      await releasePendingSlot(request.assignedShuttleId).catch((err) =>
+        console.error('[cancelPickupIntent] releasePendingSlot error:', err)
+      );
+    }
+
+    // NOW mark as cancelled
     request.status = 'cancelled';
     await request.save();
 
@@ -1214,13 +1223,12 @@ const cancelPickupIntent = async (req, res) => {
       }
     );
 
-    // DISPATCH: Release the reserved slot and retry waiting queue
+    // DISPATCH: Retry waiting queue with the freed slot
     setImmediate(() => {
-      releaseAndRetry({
-        pickupRequestId: request._id,
-        communityId: request.communityId,
-        io: req.app.get('io'),
-      }).catch((err) => console.error('[cancelPickupIntent] releaseAndRetry error:', err));
+      const { retryWaitingQueue } = require('../services/dispatch.service');
+      retryWaitingQueue(request.communityId, req.app.get('io')).catch((err) =>
+        console.error('[cancelPickupIntent] retryWaitingQueue error:', err)
+      );
     });
 
 
