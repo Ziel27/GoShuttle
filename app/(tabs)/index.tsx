@@ -27,6 +27,7 @@ import {
     cancelPickupIntent,
     claimPickupIntent,
     createPickupIntent,
+    getMyDispatch,
     listOnboardDestinations,
     listPickupIntents,
     OnboardDestinationPassenger,
@@ -187,6 +188,7 @@ export default function HomeScreen() {
   const [rideNote, setRideNote] = useState('');
   const [pickupSearchQuery, setPickupSearchQuery] = useState('');
   const [claimingIntentId, setClaimingIntentId] = useState<string | null>(null);
+  const [driverAssignedPickupRequest, setDriverAssignedPickupRequest] = useState<PickupIntent | null>(null);
   const [manifestDraft, setManifestDraft] = useState<ManifestDraftEntry[]>([
     { id: 'guest-1', name: '', discountType: 'none' },
   ]);
@@ -375,7 +377,9 @@ export default function HomeScreen() {
     [pickupIntents, user?._id]
   );
 
-  const activePassengerPickupRequest = activePassengerPickupIntents[0] ?? null;
+  const activePassengerPickupRequest = user?.role === 'driver'
+    ? driverAssignedPickupRequest
+    : activePassengerPickupIntents[0] ?? null;
   const activePassengerPickupRequestCount = Math.max(
     1,
     activePassengerPickupRequest?.passengerManifest?.length || 1
@@ -480,11 +484,11 @@ export default function HomeScreen() {
   }, [activePassengerPickupRequest?._id]);
 
   const activePickupDestinationSummary = useMemo(() => {
-    const activeIntent = activePassengerPickupIntents[0];
+    const activeIntent = activePassengerPickupRequest;
     if (!activeIntent) return null;
 
     return `${activeIntent.destinationType === 'home' ? 'Home' : 'Fixed'} - ${activeIntent.destinationLabel}`;
-  }, [activePassengerPickupIntents]);
+  }, [activePassengerPickupRequest]);
 
   const selectedDestinationSummary = useMemo(() => {
     if (selectedDestinationType === 'home') {
@@ -511,16 +515,16 @@ export default function HomeScreen() {
           ? AppPalette.darkSkyBg
           : AppPalette.sky
         : surfaceColor;
-  const activePickupDestinationType = activePassengerPickupIntents[0]?.destinationType || selectedDestinationType || 'fixed';
+  const activePickupDestinationType = activePassengerPickupRequest?.destinationType || selectedDestinationType || 'fixed';
   const activePickupDestinationAccent = activePickupDestinationType === 'home' ? successColor : tint;
   const activePickupManifestSummary = useMemo(() => {
-    const manifest = activePassengerPickupIntents[0]?.passengerManifest || [];
+    const manifest = activePassengerPickupRequest?.passengerManifest || [];
     if (manifest.length === 0) return null;
 
     return manifest
       .map((entry) => entry.name || 'Guest')
       .join(', ');
-  }, [activePassengerPickupIntents]);
+  }, [activePassengerPickupRequest]);
 
   const manifestSummary = useMemo(() => {
     const filledEntries = manifestDraft
@@ -989,6 +993,24 @@ export default function HomeScreen() {
     }
   }, [setPreferenceAwareFeedback]);
 
+  const refreshPassengerDispatch = useCallback(async () => {
+    if (user?.role !== 'passenger' || !activeCommunityId) {
+      return;
+    }
+
+    try {
+      const dispatch = await getMyDispatch();
+
+      setDispatchedShuttle(dispatch?.assignedShuttle ?? null);
+
+      if (!dispatch || dispatch.status !== 'queued') {
+        setQueueNotice(null);
+      }
+    } catch {
+      // Keep the current UI state if the refresh fails; socket events will retry later.
+    }
+  }, [activeCommunityId, user?.role]);
+
   const handleDriverMapRegionChange = useCallback((region: Region) => {
     if (driverConstraintTimer.current) {
       clearTimeout(driverConstraintTimer.current);
@@ -1070,10 +1092,15 @@ export default function HomeScreen() {
               : item
           )
         );
+
+        setDriverAssignedPickupRequest((current) =>
+          current && String(current._id) === String(payload.requestId) ? null : current
+        );
       }
 
       if (payload.passengerId && payload.passengerId === user?._id) {
         setPreferenceAwareFeedback('Pickup successful. You have boarded.', 'ride');
+        void refreshPassengerDispatch();
       }
     };
 
@@ -1097,8 +1124,14 @@ export default function HomeScreen() {
       recentPickupCancelEventRef.current = { requestId, at: now };
 
       setPickupIntents((items) => items.filter((item) => item._id !== requestId));
+      setDriverAssignedPickupRequest((current) =>
+        current && String(current._id) === requestId ? null : current
+      );
 
       if (payload.passengerId && payload.passengerId === user?._id) {
+        setDispatchedShuttle(null);
+        setQueueNotice(null);
+        void refreshPassengerDispatch();
         setPreferenceAwareFeedback('Pickup request cancelled.', 'ride');
         return;
       }
@@ -1134,17 +1167,69 @@ export default function HomeScreen() {
 
     // DISPATCH: Passenger receives confirmation of which shuttle was assigned
     const onDispatchPassengerAssigned = (payload: any) => {
-      if (!user?._id || user.role !== 'passenger') return;
-      if (String(payload?.passengerId) !== user._id) return;
-
       const shuttle = payload?.shuttle as AssignedShuttle | undefined;
+      if (user?.role === 'passenger') {
+        if (!user?._id) return;
+        if (String(payload?.passengerId) !== user._id) return;
+
+        if (shuttle) {
+          setDispatchedShuttle(shuttle);
+          setQueueNotice(null);
+          setPreferenceAwareFeedback(
+            `Shuttle ${shuttle.plateNumber || shuttle.label || ''} is on the way!`,
+            'ride'
+          );
+        }
+
+        void refreshPassengerDispatch();
+        return;
+      }
+
+      if (user?.role !== 'driver') return;
+
+      const requestId = String(payload?.requestId || '');
+      const pickupLocation = payload?.pickupLocation?.coordinates?.length === 2
+        ? {
+            type: 'Point' as const,
+            coordinates: payload.pickupLocation.coordinates as [number, number],
+          }
+        : null;
+      const location = payload?.location?.coordinates?.length === 2
+        ? {
+            type: 'Point' as const,
+            coordinates: payload.location.coordinates as [number, number],
+          }
+        : pickupLocation;
+
+      if (!requestId || !location) return;
+
+      setDriverAssignedPickupRequest({
+        _id: requestId,
+        communityId: activeCommunityId || '',
+        passengerId: String(payload?.passengerId || ''),
+        location,
+        pickupLocation,
+        destinationType: payload?.destinationType || 'fixed',
+        destinationLabel: payload?.destinationLabel || 'Destination',
+        destinationLocation: payload?.destinationLocation?.coordinates?.length === 2
+          ? {
+              type: 'Point',
+              coordinates: payload.destinationLocation.coordinates,
+            }
+          : location,
+        passengerHomePhase: null,
+        fareType: payload?.fareType || 'standard',
+        status: 'dispatched',
+        expiresAt: payload?.expiresAt || new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+        passengerManifest: [],
+        note: payload?.note || null,
+        trackingToken: payload?.trackingToken || null,
+        trackingUrl: payload?.trackingUrl || null,
+      });
+
+      setActivePassengerManualBoardCount(0);
       if (shuttle) {
-        setDispatchedShuttle(shuttle);
-        setQueueNotice(null);
-        setPreferenceAwareFeedback(
-          `Shuttle ${shuttle.plateNumber || shuttle.label || ''} is on the way!`,
-          'ride'
-        );
+        setPreferenceAwareFeedback('Pickup assigned. Head to the passenger.', 'service');
       }
     };
 
@@ -1206,7 +1291,7 @@ export default function HomeScreen() {
       socket.off('dispatch:queued', onDispatchQueued);
       socket.off('dispatch:shuttle-pending-updated', onDispatchShuttlePendingUpdated);
     };
-  }, [activeCommunityId, dispatchedShuttle, loadShuttles, setPreferenceAwareFeedback, token, user?._id, user?.role]);
+  }, [activeCommunityId, dispatchedShuttle, loadShuttles, refreshPassengerDispatch, setPreferenceAwareFeedback, token, user?._id, user?.role]);
 
 
   useEffect(() => {
@@ -1220,7 +1305,9 @@ export default function HomeScreen() {
       try {
         const requests = await listPickupIntents();
         if (!mounted) return;
-        setPickupIntents(requests.filter((item) => item.status === 'pending' && !isExpiredIntent(item)));
+        setPickupIntents(
+          requests.filter((item) => (item.status === 'pending' || item.status === 'queued') && !isExpiredIntent(item))
+        );
       } catch (error) {
         const now = Date.now();
         if (now - pollErrorNoticeRef.current.pickup >= POLL_ERROR_NOTICE_COOLDOWN_MS) {
@@ -2315,6 +2402,7 @@ export default function HomeScreen() {
       // Clear dispatch state on cancel
       setDispatchedShuttle(null);
       setQueueNotice(null);
+      void refreshPassengerDispatch();
       setPreferenceAwareFeedback('Pickup request cancelled.', 'ride');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to cancel pickup request.';
