@@ -633,16 +633,6 @@ export default function HomeScreen() {
     [pickupIntents]
   );
 
-  const activePassengerPickupIntents = useMemo(
-    () =>
-      pickupIntents.filter(
-        (item) =>
-          item.passengerId === user?._id &&
-          ['pending', 'claimed', 'queued', 'dispatched'].includes(item.status)
-      ),
-    [pickupIntents, user?._id]
-  );
-
   const filteredPickupIntents = useMemo(() => {
     const q = pickupSearchQuery.trim().toLowerCase();
     if (!q) return activeCommunityPickupIntents;
