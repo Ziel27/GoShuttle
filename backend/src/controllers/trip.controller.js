@@ -936,9 +936,10 @@ const createPickupIntent = async (req, res) => {
     const getDiscountPct = (dtype) => {
       if (!dtype) return 0;
       const ds = community.discountSettings || {};
-      if (dtype === 'student') return ds.studentDiscount || 0;
-      if (dtype === 'pwd') return ds.pwdDiscount || 0;
-      if (dtype === 'senior') return ds.seniorDiscount || 0;
+      if (!ds.enabled) return 0;
+      if (dtype === 'student') return ds.studentPct || 0;
+      if (dtype === 'pwd') return ds.pwdPct || 0;
+      if (dtype === 'senior') return ds.seniorPct || 0;
       return 0;
     };
 
@@ -1017,9 +1018,10 @@ const createPickupIntent = async (req, res) => {
       const getPassengerDiscountPct = (dtype) => {
         if (!dtype || dtype === 'none') return 0;
         const ds = community.discountSettings || {};
-        if (dtype === 'student') return ds.studentDiscount || 0;
-        if (dtype === 'pwd') return ds.pwdDiscount || 0;
-        if (dtype === 'senior') return ds.seniorDiscount || 0;
+        if (!ds.enabled) return 0;
+        if (dtype === 'student') return ds.studentPct || 0;
+        if (dtype === 'pwd') return ds.pwdPct || 0;
+        if (dtype === 'senior') return ds.seniorPct || 0;
         return 0;
       };
       const passengerDiscountPct = getPassengerDiscountPct(passengerDiscountType);

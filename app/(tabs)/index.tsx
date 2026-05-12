@@ -95,9 +95,9 @@ type SelfPassengerEntry = {
 };
 
 type CommunityDiscountSettings = {
-  studentDiscount: number;
-  pwdDiscount: number;
-  seniorDiscount: number;
+  studentPct: number;
+  pwdPct: number;
+  seniorPct: number;
 };
 
 const palette = {
@@ -263,9 +263,9 @@ export default function HomeScreen() {
 
   const [communityFares, setCommunityFares] = useState<{ base: number; priorityMultiplier: number } | null>(null);
   const [communityDiscounts, setCommunityDiscounts] = useState<CommunityDiscountSettings>({
-    studentDiscount: 0,
-    pwdDiscount: 0,
-    seniorDiscount: 0,
+    studentPct: 0,
+    pwdPct: 0,
+    seniorPct: 0,
   });
   const [ownerVerifiedDiscountType, setOwnerVerifiedDiscountType] = useState<'student' | 'pwd' | 'senior' | 'none'>('none');
   const [phaseGeofences, setPhaseGeofences] = useState<PhaseGeofence[]>([]);
@@ -557,9 +557,9 @@ export default function HomeScreen() {
       : communityFares.base;
 
     const discountPctFor = (discountType: SelfPassengerEntry['discountType']) => {
-      if (discountType === 'student') return communityDiscounts.studentDiscount;
-      if (discountType === 'pwd') return communityDiscounts.pwdDiscount;
-      if (discountType === 'senior') return communityDiscounts.seniorDiscount;
+      if (discountType === 'student') return communityDiscounts.studentPct;
+      if (discountType === 'pwd') return communityDiscounts.pwdPct;
+      if (discountType === 'senior') return communityDiscounts.seniorPct;
       return 0;
     };
 
@@ -595,9 +595,9 @@ export default function HomeScreen() {
       : communityFares.base;
 
     const discountPctFor = (discountType: ManifestDraftEntry['discountType']) => {
-      if (discountType === 'student') return communityDiscounts.studentDiscount;
-      if (discountType === 'pwd') return communityDiscounts.pwdDiscount;
-      if (discountType === 'senior') return communityDiscounts.seniorDiscount;
+      if (discountType === 'student') return communityDiscounts.studentPct;
+      if (discountType === 'pwd') return communityDiscounts.pwdPct;
+      if (discountType === 'senior') return communityDiscounts.seniorPct;
       return 0;
     };
 
@@ -1407,9 +1407,9 @@ export default function HomeScreen() {
           discountSettings?: Partial<CommunityDiscountSettings>;
         };
         setCommunityDiscounts({
-          studentDiscount: Number(communityAny.discountSettings?.studentDiscount ?? 0),
-          pwdDiscount: Number(communityAny.discountSettings?.pwdDiscount ?? 0),
-          seniorDiscount: Number(communityAny.discountSettings?.seniorDiscount ?? 0),
+          studentPct: Number(communityAny.discountSettings?.studentPct ?? 0),
+          pwdPct: Number(communityAny.discountSettings?.pwdPct ?? 0),
+          seniorPct: Number(communityAny.discountSettings?.seniorPct ?? 0),
         });
 
 
