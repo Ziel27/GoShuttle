@@ -2516,8 +2516,8 @@ export default function HomeScreen() {
                                   </View>
                                 </View>
                                 {item.note ? (
-                                  <View style={[styles.pickupQueueNote, { borderTopColor: borderColor }]}>
-                                    <Ionicons name="chatbubble-ellipses-outline" size={11} color={tint} style={{ marginRight: 4 }} />
+                                  <View style={[styles.pickupQueueNote, { borderColor: tint + '33', backgroundColor: tint + '12' }]}>
+                                    <Ionicons name="chatbubble-ellipses-outline" size={11} color={tint} style={{ marginTop: 1, marginRight: 5 }} />
                                     <ThemedText style={[styles.pickupQueueNoteText, { color: textColor }]} numberOfLines={3}>
                                       {item.note}
                                     </ThemedText>
@@ -3729,22 +3729,48 @@ export default function HomeScreen() {
 
 
               {activePassengerPickupIntents.length === 0 && (
-                <View style={[styles.noteInputCard, { borderColor, backgroundColor: bgColor }]}>
-                  <View style={styles.noteInputRow}>
-                    <Ionicons name="chatbubble-ellipses-outline" size={16} color={mutedColor} style={{ marginRight: 8 }} />
-                    <TextInput
-                      value={rideNote}
-                      onChangeText={(v) => setRideNote(v.slice(0, 300))}
-                      placeholder="Note to driver (optional)"
-                      placeholderTextColor={mutedColor}
-                      multiline
-                      numberOfLines={2}
-                      style={[styles.noteInputBare, { color: textColor }]}
-                      accessibilityLabel="Note to driver"
+                <View
+                  style={[
+                    styles.noteInputCard,
+                    {
+                      borderColor: rideNote.length > 0 ? tint : borderColor,
+                      backgroundColor: bgColor,
+                    },
+                  ]}
+                >
+                  <View style={styles.noteInputHeader}>
+                    <Ionicons
+                      name="chatbubble-ellipses-outline"
+                      size={13}
+                      color={rideNote.length > 0 ? tint : mutedColor}
                     />
+                    <ThemedText style={[styles.noteInputLabel, { color: rideNote.length > 0 ? tint : mutedColor }]}>
+                      Note to driver
+                    </ThemedText>
+                    <ThemedText style={[styles.noteInputOptional, { color: mutedColor }]}>optional</ThemedText>
                   </View>
+                  <TextInput
+                    value={rideNote}
+                    onChangeText={(v) => setRideNote(v.slice(0, 300))}
+                    placeholder="e.g. I'll be waiting at the gate"
+                    placeholderTextColor={mutedColor}
+                    multiline
+                    numberOfLines={2}
+                    style={[styles.noteInputBare, { color: textColor }]}
+                    accessibilityLabel="Note to driver"
+                    textAlignVertical="top"
+                  />
                   {rideNote.length > 0 && (
-                    <ThemedText style={[styles.noteCharCount, { color: mutedColor }]}>{rideNote.length}/300</ThemedText>
+                    <View style={styles.noteCharCountRow}>
+                      <ThemedText
+                        style={[
+                          styles.noteCharCount,
+                          { color: rideNote.length > 270 ? dangerColor : mutedColor },
+                        ]}
+                      >
+                        {rideNote.length}/300
+                      </ThemedText>
+                    </View>
                   )}
                 </View>
               )}
@@ -4647,14 +4673,17 @@ const styles = StyleSheet.create({
   pickupQueueNote: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    marginTop: 6,
-    paddingTop: 6,
-    borderTopWidth: 1,
+    marginTop: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
   },
   pickupQueueNoteText: {
     fontFamily: OutfitFonts.regular,
     fontSize: 12,
     flex: 1,
+    lineHeight: 17,
   },
   shareTrackingBtn: {
     flexDirection: 'row',
@@ -4674,9 +4703,25 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: DesignTokens.radius.md,
     paddingHorizontal: DesignTokens.spacing.sm,
-    paddingTop: DesignTokens.spacing.sm,
-    paddingBottom: 6,
+    paddingTop: 10,
+    paddingBottom: 8,
     marginTop: DesignTokens.spacing.xs,
+  },
+  noteInputHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginBottom: 6,
+  },
+  noteInputLabel: {
+    fontFamily: OutfitFonts.semiBold,
+    fontSize: 12,
+    flex: 1,
+  },
+  noteInputOptional: {
+    fontFamily: OutfitFonts.regular,
+    fontSize: 11,
+    fontStyle: 'italic',
   },
   noteInputRow: {
     flexDirection: 'row',
@@ -4686,13 +4731,17 @@ const styles = StyleSheet.create({
     flex: 1,
     fontFamily: OutfitFonts.regular,
     fontSize: 14,
-    minHeight: 44,
+    minHeight: 48,
     textAlignVertical: 'top',
+    lineHeight: 20,
+  },
+  noteCharCountRow: {
+    alignItems: 'flex-end',
+    marginTop: 4,
   },
   noteCharCount: {
+    fontFamily: OutfitFonts.regular,
     fontSize: 11,
-    textAlign: 'right',
-    marginTop: 2,
   },
   passengerPrimaryButton: {
     marginTop: DesignTokens.spacing.xs,

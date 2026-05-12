@@ -3,6 +3,8 @@ import 'leaflet/dist/leaflet.css';
 import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 
+import { API_BASE_URL } from '@/lib/config';
+
 delete (L.Icon.Default.prototype as unknown as Record<string, unknown>)._getIconUrl;
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png',
@@ -30,8 +32,9 @@ const STATUS_LABELS: Record<string, string> = {
   dispatched: 'Shuttle on the way',
   queued: 'In queue',
   bumped: 'Re-queued',
-  expired: 'Request expired',
+  expired: 'Ride complete',
   cancelled: 'Cancelled',
+  completed: 'Ride complete',
 };
 
 const driverIcon = L.divIcon({
@@ -60,9 +63,11 @@ export const TrackPage = () => {
   const { token } = useParams<{ token: string }>();
   const [data, setData] = useState<TrackingData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [completed, setCompleted] = useState(false);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [secondsAgo, setSecondsAgo] = useState(0);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -92,14 +97,37 @@ export const TrackPage = () => {
   const fetchData = async () => {
     if (!token) return;
     try {
-      const res = await fetch(`/api/track/${token}`);
+      const res = await fetch(`${API_BASE_URL}/track/${token}`);
+
+      if (res.status === 410) {
+        setCompleted(true);
+        setLoading(false);
+        if (pollRef.current) {
+          clearInterval(pollRef.current);
+          pollRef.current = null;
+        }
+        return;
+      }
+
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         setError(err.error || 'Tracking link not found or has expired.');
         setLoading(false);
         return;
       }
+
       const json: TrackingData = await res.json();
+
+      if (json.status === 'expired' || json.status === 'cancelled') {
+        setCompleted(true);
+        setLoading(false);
+        if (pollRef.current) {
+          clearInterval(pollRef.current);
+          pollRef.current = null;
+        }
+        return;
+      }
+
       setData(json);
       setLastUpdated(new Date());
       setSecondsAgo(0);
@@ -128,8 +156,10 @@ export const TrackPage = () => {
 
   useEffect(() => {
     fetchData();
-    const pollInterval = setInterval(fetchData, 5000);
-    return () => clearInterval(pollInterval);
+    pollRef.current = setInterval(fetchData, 5000);
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
   }, [token]);
 
   useEffect(() => {
@@ -138,7 +168,24 @@ export const TrackPage = () => {
   }, [lastUpdated]);
 
   const isDriverMode = data?.mode === 'driver';
-  const isTerminal = data?.status === 'expired' || data?.status === 'cancelled';
+  const isTerminal = completed || data?.status === 'expired' || data?.status === 'cancelled';
+
+  if (completed) {
+    return (
+      <div style={{
+        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+        height: '100dvh', fontFamily: "'Outfit', sans-serif", background: '#f0fdf4', padding: 24,
+        textAlign: 'center',
+      }}>
+        <div style={{ fontSize: 64, marginBottom: 16 }}>✅</div>
+        <div style={{ fontSize: 22, fontWeight: 700, color: '#166534', marginBottom: 8 }}>Ride Complete</div>
+        <div style={{ fontSize: 15, color: '#4b7a5e', maxWidth: 300, lineHeight: 1.6 }}>
+          The passenger has been dropped off. This tracking link is no longer active.
+        </div>
+        <div style={{ marginTop: 32, color: '#cbd5e1', fontSize: 12 }}>Powered by GoShuttle</div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100dvh', fontFamily: "'Outfit', sans-serif", background: '#f8fafc' }}>

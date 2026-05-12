@@ -27,6 +27,7 @@ services:
       SOCKET_PING_TIMEOUT: ${SOCKET_PING_TIMEOUT:-60000}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       GEOFENCE_CACHE_TTL: ${GEOFENCE_CACHE_TTL:-300000}
+      WEB_BASE_URL: ${WEB_BASE_URL:-}
     ports:
       - "5000:5000"
     networks:
