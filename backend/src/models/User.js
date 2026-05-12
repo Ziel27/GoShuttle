@@ -159,7 +159,7 @@ const userSchema = new mongoose.Schema(
           },
           status: {
             type: String,
-            enum: ['pending', 'approved', 'rejected'],
+            enum: ['pending', 'approved', 'rejected', 'expired'],
             default: 'pending',
           },
           idImageUrl: {
@@ -186,6 +186,18 @@ const userSchema = new mongoose.Schema(
           rejectionReason: {
             type: String,
             default: null,
+          },
+          validFrom: {
+            type: Date,
+            default: null,
+          },
+          validUntil: {
+            type: Date,
+            default: null,
+          },
+          expirationNotificationSent: {
+            type: Boolean,
+            default: false,
           },
         },
         { _id: false }

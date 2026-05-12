@@ -15,6 +15,7 @@ const connectDB = require('./config/db');
 const User = require('./models/User');
 const { registerSocketHandlers } = require('./services/socket-handlers');
 const { startRemittanceEnforcementJob } = require('./services/remittance-enforcement');
+const { startIdVerificationExpirationJob } = require('./services/id-verification-expiration');
 
 // ─── Environment Validation ───────────────────────────────────────
 const validateEnvironment = () => {
@@ -194,6 +195,7 @@ registerSocketHandlers(io);
 // Start background enforcement jobs (e.g., Remittance deadline tracking)
 if (process.env.NODE_ENV !== 'test') {
   startRemittanceEnforcementJob(io);
+  startIdVerificationExpirationJob();
 }
 
 // ─── Global Middleware ───────────────────────────────────────────

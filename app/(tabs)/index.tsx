@@ -22,6 +22,7 @@ import {
   updateShuttleLocation,
 } from '@/services/shuttle';
 import { connectCommunitySocket } from '@/services/socket';
+import { getMyDiscountVerification } from '@/services/user';
 import {
   AssignedShuttle,
   boardPassenger,
@@ -80,6 +81,21 @@ const MANUAL_AUTOMATION_COOLDOWN_MS = 15_000;
 type ManifestDraftEntry = {
   id: string;
   name: string;
+  discountType: 'student' | 'pwd' | 'senior' | 'none';
+};
+
+type SelfPassengerEntry = {
+  id: string;
+  name: string;
+  passengerId?: string;
+  discountType: 'student' | 'pwd' | 'senior' | 'none';
+  isOwner: boolean;
+};
+
+type CommunityDiscountSettings = {
+  studentDiscount: number;
+  pwdDiscount: number;
+  seniorDiscount: number;
 };
 
 const palette = {
@@ -168,11 +184,9 @@ export default function HomeScreen() {
   const [rideNote, setRideNote] = useState('');
   const [pickupSearchQuery, setPickupSearchQuery] = useState('');
   const [manifestDraft, setManifestDraft] = useState<ManifestDraftEntry[]>([
-    { id: 'guest-1', name: '' },
+    { id: 'guest-1', name: '', discountType: 'none' },
   ]);
   const [guestPickupType, setGuestPickupType] = useState<'fixed' | 'home' | null>(null);
-  const [guestDiscountType, setGuestDiscountType] = useState<'student' | 'pwd' | 'senior' | null>(null);
-  const [guestDiscountCount, setGuestDiscountCount] = useState<number>(0);
   const [guestPickupFixedId, setGuestPickupFixedId] = useState<string>('');
   const [guestDropoffType, setGuestDropoffType] = useState<'fixed' | 'home' | null>(null);
   const [guestDropoffFixedId, setGuestDropoffFixedId] = useState<string>('');
@@ -209,6 +223,7 @@ export default function HomeScreen() {
   // ── Dispatch state (passenger-only) ───────────────────────────────────────
   const [fareType, setFareType] = useState<'standard' | 'priority'>('standard');
   const [passengerCount, setPassengerCount] = useState(1);
+  const [selfPassengerDraft, setSelfPassengerDraft] = useState<SelfPassengerEntry[]>([]);
   const [dispatchedShuttle, setDispatchedShuttle] = useState<AssignedShuttle | null>(null);
   const [queueNotice, setQueueNotice] = useState<{
     position: number | null;
@@ -240,10 +255,75 @@ export default function HomeScreen() {
   const isAppActive = useCallback(() => appStateRef.current === 'active', []);
 
   const [communityFares, setCommunityFares] = useState<{ base: number; priorityMultiplier: number } | null>(null);
+  const [communityDiscounts, setCommunityDiscounts] = useState<CommunityDiscountSettings>({
+    studentDiscount: 0,
+    pwdDiscount: 0,
+    seniorDiscount: 0,
+  });
+  const [ownerVerifiedDiscountType, setOwnerVerifiedDiscountType] = useState<'student' | 'pwd' | 'senior' | 'none'>('none');
   const [phaseGeofences, setPhaseGeofences] = useState<PhaseGeofence[]>([]);
   const [opsBypassMode, setOpsBypassMode] = useState(false);
   const [showHowToBookModal, setShowHowToBookModal] = useState(false);
   const [dismissedWarningIds, setDismissedWarningIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!user || bookForOthers) return;
+
+    setSelfPassengerDraft((current) => {
+      const ownerName = `${user.firstName || ''} ${user.lastName || ''}`.trim() || 'Me';
+      const next: SelfPassengerEntry[] = [];
+
+      for (let i = 0; i < passengerCount; i += 1) {
+        if (i === 0) {
+          next.push({
+            id: 'self-owner',
+            name: ownerName,
+            passengerId: user._id,
+            discountType: ownerVerifiedDiscountType,
+            isOwner: true,
+          });
+          continue;
+        }
+
+        const existing = current[i];
+        next.push({
+          id: existing?.id || `self-companion-${i}`,
+          name: existing?.name || `Companion ${i}`,
+          discountType: existing?.discountType || 'none',
+          isOwner: false,
+        });
+      }
+
+      return next;
+    });
+  }, [user, passengerCount, bookForOthers, ownerVerifiedDiscountType]);
+
+  useEffect(() => {
+    if (user?.role !== 'passenger') {
+      setOwnerVerifiedDiscountType('none');
+      return;
+    }
+
+    let active = true;
+    const loadOwnerDiscountStatus = async () => {
+      try {
+        const verification = await getMyDiscountVerification();
+        if (!active) return;
+        if (verification.status === 'approved' && verification.discountType) {
+          setOwnerVerifiedDiscountType(verification.discountType);
+          return;
+        }
+        setOwnerVerifiedDiscountType('none');
+      } catch {
+        if (active) setOwnerVerifiedDiscountType('none');
+      }
+    };
+
+    loadOwnerDiscountStatus();
+    return () => {
+      active = false;
+    };
+  }, [user?.role]);
 
   useEffect(() => {
     async function loadDismissedWarnings() {
@@ -275,84 +355,6 @@ export default function HomeScreen() {
     }
     checkHowToBook();
   }, [user?.role]);
-
-
-  const getDriverId = (driverId: Shuttle['driverId']): string | null => {
-    if (typeof driverId === 'string') return driverId;
-    if (driverId && typeof driverId === 'object' && typeof driverId._id === 'string') return driverId._id;
-    return null;
-  };
-
-  const getShuttleDriverStatus = useCallback((driverId: Shuttle['driverId']) => {
-    if (driverId && typeof driverId === 'object') {
-      return driverId.status || 'offline';
-    }
-    return 'offline';
-  }, []);
-
-  const isDriverOnShift = user?.role === 'driver' && user?.status === 'driving';
-  const hasSavedHomeDestination = (user?.homeDestination?.location?.coordinates || []).length === 2;
-  const activeCommunityId = useMemo(() => toCommunityIdString(user?.communityId), [user?.communityId]);
-
-  const allowedPickupDestinationTypes = useMemo(() => {
-    const hasFixedDestinations = fixedDestinations.length > 0;
-    const hasHomeDestination = hasSavedHomeDestination;
-
-    if (pickupOriginContext?.type === 'home') {
-      if (hasFixedDestinations) return ['fixed'] as const;
-      if (hasHomeDestination) return ['home'] as const;
-    }
-
-    if (pickupOriginContext?.type === 'fixed') {
-      if (hasHomeDestination) return ['home'] as const;
-      if (hasFixedDestinations) return ['fixed'] as const;
-    }
-
-    const options: Array<'fixed' | 'home'> = [];
-    if (hasFixedDestinations) options.push('fixed');
-    if (hasHomeDestination) options.push('home');
-    return options;
-  }, [fixedDestinations.length, hasSavedHomeDestination, pickupOriginContext?.type]);
-
-  const assignedShuttle = useMemo(() => {
-    if (!user) return null;
-    if (user.role !== 'driver') return null;
-    return shuttles.find((item) => getDriverId(item.driverId) === user._id) || null;
-  }, [shuttles, user]);
-  const assignedShuttleId = assignedShuttle?._id || null;
-
-  const activePassengerPickupIntents = useMemo(() => {
-    const myId = user?._id;
-    if (!myId) return [];
-
-    return pickupIntents
-      .filter((item) => item.passengerId === myId && item.status === 'pending' && !isExpiredIntent(item))
-      .sort((a, b) => new Date(a.expiresAt).getTime() - new Date(b.expiresAt).getTime());
-  }, [pickupIntents, user?._id]);
-
-  const selectedFixedDestination = useMemo(
-    () => fixedDestinations.find((item) => item._id === selectedFixedDestinationId) || null,
-    [fixedDestinations, selectedFixedDestinationId]
-  );
-
-  const selectedDestinationSummary = useMemo(() => {
-    if (!selectedDestinationType) {
-      return 'Choose a destination type first';
-    }
-
-    if (selectedDestinationType === 'home') {
-      if (!hasSavedHomeDestination) {
-        return 'Home pickup - not set yet (set it in Settings)';
-      }
-      return `Home pickup - ${user?.homeDestination?.label || 'Home'}`;
-    }
-
-    if (!selectedFixedDestination) {
-      return 'Fixed destination - no destination selected';
-    }
-
-    return `Fixed destination - ${selectedFixedDestination.name}`;
-  }, [hasSavedHomeDestination, selectedDestinationType, selectedFixedDestination, user?.homeDestination?.label]);
 
   const activePickupDestinationSummary = useMemo(() => {
     const activeIntent = activePassengerPickupIntents[0];
@@ -412,6 +414,87 @@ export default function HomeScreen() {
     }
     return passengerCount;
   }, [bookForOthers, normalizedPassengerManifest.length, passengerCount]);
+
+  const regularBookingFareBreakdown = useMemo(() => {
+    if (bookForOthers || !communityFares || selfPassengerDraft.length === 0) {
+      return null;
+    }
+
+    const perSeatBase = fareType === 'priority'
+      ? communityFares.base * communityFares.priorityMultiplier
+      : communityFares.base;
+
+    const discountPctFor = (discountType: SelfPassengerEntry['discountType']) => {
+      if (discountType === 'student') return communityDiscounts.studentDiscount;
+      if (discountType === 'pwd') return communityDiscounts.pwdDiscount;
+      if (discountType === 'senior') return communityDiscounts.seniorDiscount;
+      return 0;
+    };
+
+    const rows = selfPassengerDraft.map((entry) => {
+      const discountPct = discountPctFor(entry.discountType);
+      const finalFare = discountPct > 0
+        ? Number((perSeatBase * (1 - discountPct / 100)).toFixed(2))
+        : Number(perSeatBase.toFixed(2));
+      return {
+        id: entry.id,
+        label: entry.isOwner ? `${entry.name} (You)` : entry.name,
+        discountType: entry.discountType,
+        discountPct,
+        finalFare,
+      };
+    });
+
+    const total = Number(rows.reduce((sum, row) => sum + row.finalFare, 0).toFixed(2));
+
+    return {
+      rows,
+      total,
+    };
+  }, [bookForOthers, communityDiscounts, communityFares, fareType, selfPassengerDraft]);
+
+  const guestBookingFareBreakdown = useMemo(() => {
+    if (!bookForOthers || !communityFares || normalizedPassengerManifest.length === 0) {
+      return null;
+    }
+
+    const perSeatBase = fareType === 'priority'
+      ? communityFares.base * communityFares.priorityMultiplier
+      : communityFares.base;
+
+    const discountPctFor = (discountType: ManifestDraftEntry['discountType']) => {
+      if (discountType === 'student') return communityDiscounts.studentDiscount;
+      if (discountType === 'pwd') return communityDiscounts.pwdDiscount;
+      if (discountType === 'senior') return communityDiscounts.seniorDiscount;
+      return 0;
+    };
+
+    const rows = manifestDraft
+      .filter((entry) => entry.name.trim().length > 0)
+      .map((entry, idx) => {
+        const discountPct = discountPctFor(entry.discountType);
+        const finalFare = discountPct > 0
+          ? Number((perSeatBase * (1 - discountPct / 100)).toFixed(2))
+          : Number(perSeatBase.toFixed(2));
+
+        return {
+          id: entry.id,
+          label: entry.name.trim() || `Guest ${idx + 1}`,
+          discountType: entry.discountType,
+          discountPct,
+          finalFare,
+        };
+      });
+
+    if (rows.length === 0) return null;
+
+    const total = Number(rows.reduce((sum, row) => sum + row.finalFare, 0).toFixed(2));
+
+    return {
+      rows,
+      total,
+    };
+  }, [bookForOthers, communityDiscounts, communityFares, fareType, manifestDraft, normalizedPassengerManifest.length]);
 
   // When booking for others, ensure the guest pickup/dropoff types are opposite
   useEffect(() => {
@@ -1164,6 +1247,15 @@ export default function HomeScreen() {
             priorityMultiplier: community.priorityFareMultiplier ?? 1.5,
           });
         }
+
+        const communityAny = community as {
+          discountSettings?: Partial<CommunityDiscountSettings>;
+        };
+        setCommunityDiscounts({
+          studentDiscount: Number(communityAny.discountSettings?.studentDiscount ?? 0),
+          pwdDiscount: Number(communityAny.discountSettings?.pwdDiscount ?? 0),
+          seniorDiscount: Number(communityAny.discountSettings?.seniorDiscount ?? 0),
+        });
 
 
         const normalized = ring
@@ -1957,15 +2049,15 @@ export default function HomeScreen() {
         }
       }
 
-      // Build manifest for self-booking with companions
-      let selfBookingOptions: { passengerManifest?: { name?: string; phone?: string }[] } | undefined = undefined;
-      if (!bookForOthers && passengerCount > 1 && user) {
-        const ownerName = `${user.firstName} ${user.lastName}`.trim();
+      // Build manifest for self-booking including per-passenger discount selections.
+      let selfBookingOptions: { passengerManifest?: { name?: string; phone?: string; passengerId?: string; discountType?: 'student' | 'pwd' | 'senior' }[] } | undefined = undefined;
+      if (!bookForOthers && selfPassengerDraft.length > 0 && user) {
         const ownerPhone = user.phone || undefined;
-        const manifest: { name: string; phone?: string }[] = [
-          { name: ownerName, phone: ownerPhone },
-          ...Array.from({ length: passengerCount - 1 }, (_, i) => ({ name: `Companion ${i + 1}` })),
-        ];
+        const manifest = selfPassengerDraft.map((entry, idx) => ({
+          name: entry.name,
+          ...(idx === 0 ? { passengerId: user._id, phone: ownerPhone } : {}),
+          ...(entry.discountType !== 'none' ? { discountType: entry.discountType } : {}),
+        }));
         selfBookingOptions = { passengerManifest: manifest };
       }
 
@@ -1978,9 +2070,10 @@ export default function HomeScreen() {
         bookForOthers && normalizedPassengerManifest.length > 0
           ? {
               ...(explicitPickupLocationForOptions ? { pickupLocation: explicitPickupLocationForOptions } : {}),
-              passengerManifest: normalizedPassengerManifest,
-              ...(guestDiscountType ? { discountType: guestDiscountType } : {}),
-              ...(guestDiscountType && guestDiscountCount > 0 ? { discountCount: guestDiscountCount } : {}),
+              passengerManifest: manifestDraft.map(guest => ({
+                name: guest.name,
+                ...(guest.discountType !== 'none' ? { discountType: guest.discountType } : {}),
+              })),
             }
           : selfBookingOptions,
         rideNote.trim() || null
@@ -1990,6 +2083,7 @@ export default function HomeScreen() {
         resetGuestBookingDraft();
       }
       setPassengerCount(1);
+      setSelfPassengerDraft([]);
       setRideNote('');
 
       setPickupIntents((items) => upsertPickupIntent(items, result.request));
@@ -2087,13 +2181,11 @@ export default function HomeScreen() {
   }, []);
 
   const resetGuestBookingDraft = useCallback(() => {
-    setManifestDraft([{ id: 'guest-1', name: '' }]);
+    setManifestDraft([{ id: 'guest-1', name: '', discountType: 'none' }]);
     setGuestPickupType(null);
     setGuestPickupFixedId('');
     setGuestDropoffType(null);
     setGuestDropoffFixedId('');
-    setGuestDiscountType(null);
-    setGuestDiscountCount(0);
   }, []);
 
   const toggleBookForOthers = useCallback(() => {
@@ -2123,14 +2215,14 @@ export default function HomeScreen() {
   const addManifestEntry = useCallback(() => {
     setManifestDraft((current) => {
       if (current.length >= 5) return current;
-      return [...current, { id: `guest-${Date.now()}-${current.length}`, name: '' }];
+      return [...current, { id: `guest-${Date.now()}-${current.length}`, name: '', discountType: 'none' }];
     });
   }, []);
 
   const removeManifestEntry = useCallback((id: string) => {
     setManifestDraft((current) => {
       const next = current.filter((entry) => entry.id !== id);
-      return next.length > 0 ? next : [{ id: 'guest-1', name: '' }];
+      return next.length > 0 ? next : [{ id: 'guest-1', name: '', discountType: 'none' }];
     });
   }, []);
 
@@ -3198,94 +3290,82 @@ export default function HomeScreen() {
                         )}
                       </View>
 
-                      {/* Discount for Guests */}
-                      <View style={[styles.manifestSection, { borderColor, backgroundColor: surfaceColor }]}>
-                        <View style={styles.manifestSectionHeader}>
-                          <View style={[styles.manifestIconBadge, { backgroundColor: colorScheme === 'dark' ? AppPalette.darkOverlaySoft : palette.slateBg }]}>
-                            <Ionicons name="pricetag" size={16} color={tint} />
-                          </View>
-                          <View>
-                            <ThemedText style={[styles.manifestRowLabel, { color: textColor }]}>Guest Discount (Optional)</ThemedText>
-                            <ThemedText style={[styles.manifestCaption, { color: mutedColor }]}>Select discount type if any guests qualify. Present their ID to the driver.</ThemedText>
-                          </View>
-                        </View>
-
-                        <View style={styles.manifestActionRow}>
-                          {([
-                            { key: 'student', label: 'Student' },
-                            { key: 'pwd', label: 'PWD' },
-                            { key: 'senior', label: 'Senior' },
-                          ] as const).map(({ key, label }) => (
-                            <Pressable
-                              key={key}
-                              accessibilityRole="button"
-                              accessibilityLabel={`${label} discount`}
-                              onPress={() => {
-                                if (guestDiscountType === key) {
-                                  setGuestDiscountType(null);
-                                  setGuestDiscountCount(0);
-                                } else {
-                                  setGuestDiscountType(key);
-                                  setGuestDiscountCount(1);
-                                }
-                              }}
-                              style={({ pressed }) => [
-                                styles.manifestActionButton,
-                                {
-                                  borderColor: guestDiscountType === key ? tint : borderColor,
-                                  backgroundColor: guestDiscountType === key ? tint : bgColor,
-                                },
-                                pressed && styles.manifestTogglePressed,
-                              ]}
-                            >
-                              <ThemedText style={[styles.manifestActionText, { color: guestDiscountType === key ? palette.white : tint }]}>{label}</ThemedText>
-                            </Pressable>
-                          ))}
-                        </View>
-
-                        {guestDiscountType ? (
-                          <View style={{ gap: 8, marginTop: 4 }}>
-                            <ThemedText style={[styles.manifestCaption, { color: mutedColor }]}>
-                              How many guests have this discount?
-                            </ThemedText>
-                            <View style={styles.passengerCountStepper}>
-                              <Pressable
-                                accessibilityRole="button"
-                                accessibilityLabel="Decrease discount count"
-                                disabled={guestDiscountCount <= 1}
-                                onPress={() => setGuestDiscountCount((c) => Math.max(1, c - 1))}
-                                style={({ pressed }) => [
-                                  styles.passengerCountBtn,
-                                  { borderColor: guestDiscountCount <= 1 ? borderColor : tint, backgroundColor: bgColor },
-                                  pressed && { opacity: 0.7 },
-                                ]}
-                              >
-                                <Ionicons name="remove" size={16} color={guestDiscountCount <= 1 ? mutedColor : tint} />
-                              </Pressable>
-                              <ThemedText style={[styles.passengerCountValue, { color: textColor }]}>{guestDiscountCount}</ThemedText>
-                              <Pressable
-                                accessibilityRole="button"
-                                accessibilityLabel="Increase discount count"
-                                disabled={guestDiscountCount >= normalizedPassengerManifest.length}
-                                onPress={() => setGuestDiscountCount((c) => Math.min(normalizedPassengerManifest.length, c + 1))}
-                                style={({ pressed }) => [
-                                  styles.passengerCountBtn,
-                                  { borderColor: guestDiscountCount >= normalizedPassengerManifest.length ? borderColor : tint, backgroundColor: bgColor },
-                                  pressed && { opacity: 0.7 },
-                                ]}
-                              >
-                                <Ionicons name="add" size={16} color={guestDiscountCount >= normalizedPassengerManifest.length ? mutedColor : tint} />
-                              </Pressable>
+                      {/* Per-Guest Discounts */}
+                      {manifestDraft.map((guest, idx) => (
+                        <View key={guest.id} style={[styles.manifestSection, { borderColor, backgroundColor: surfaceColor, marginTop: idx === 0 ? 0 : 8 }]}> 
+                          <View style={styles.manifestSectionHeader}>
+                            <View style={[styles.manifestIconBadge, { backgroundColor: colorScheme === 'dark' ? AppPalette.darkOverlaySoft : palette.slateBg }]}> 
+                              <Ionicons name="pricetag" size={16} color={tint} />
                             </View>
-                            <View style={[styles.manifestHomeNotice, { backgroundColor: colorScheme === 'dark' ? AppPalette.darkSkyBg : AppPalette.sky, borderColor: tint }]}>
-                              <Ionicons name="id-card-outline" size={14} color={tint} />
-                              <ThemedText style={[styles.manifestCaption, { color: tint, flex: 1 }]}>
-                                Remind guests to show a valid government-issued ID to the driver for discount verification.
+                            <View style={{ flex: 1 }}>
+                              <ThemedText style={[styles.manifestRowLabel, { color: textColor }]}>{guest.name || `Guest ${idx + 1}`} - Discount</ThemedText>
+                              <ThemedText style={[styles.manifestCaption, { color: mutedColor }]}>Select if this guest qualifies for a discount.</ThemedText>
+                            </View>
+                          </View>
+
+                          <View style={styles.manifestActionRow}>
+                            {([
+                              { key: 'none', label: 'None' },
+                              { key: 'student', label: 'Student' },
+                              { key: 'pwd', label: 'PWD' },
+                              { key: 'senior', label: 'Senior' },
+                            ] as const).map(({ key, label }) => (
+                              <Pressable
+                                key={`${guest.id}-${key}`}
+                                accessibilityRole="radio"
+                                accessibilityState={{ checked: guest.discountType === key }}
+                                onPress={() => {
+                                  setManifestDraft((draft) =>
+                                    draft.map((entry) =>
+                                      entry.id === guest.id ? { ...entry, discountType: key } : entry
+                                    )
+                                  );
+                                }}
+                                style={({ pressed }) => [
+                                  styles.manifestActionButton,
+                                  {
+                                    borderColor: guest.discountType === key ? tint : borderColor,
+                                    backgroundColor: guest.discountType === key ? tint : bgColor,
+                                  },
+                                  pressed && styles.manifestTogglePressed,
+                                ]}
+                              >
+                                <ThemedText style={[styles.manifestActionText, { color: guest.discountType === key ? palette.white : tint }]}>{label}</ThemedText>
+                              </Pressable>
+                            ))}
+                          </View>
+                        </View>
+                      ))}
+
+                      {guestBookingFareBreakdown ? (
+                        <View style={[styles.manifestSection, { borderColor, backgroundColor: bgColor }]}> 
+                          <View style={styles.manifestSectionHeader}>
+                            <View style={[styles.manifestIconBadge, { backgroundColor: colorScheme === 'dark' ? AppPalette.darkOverlaySoft : palette.slateBg }]}> 
+                              <Ionicons name="receipt-outline" size={16} color={tint} />
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <ThemedText style={[styles.manifestRowLabel, { color: textColor }]}>Estimated Fare Breakdown</ThemedText>
+                              <ThemedText style={[styles.manifestCaption, { color: mutedColor }]}>Per guest estimate before driver boarding confirmation.</ThemedText>
+                            </View>
+                          </View>
+
+                          {guestBookingFareBreakdown.rows.map((row) => (
+                            <View key={row.id} style={styles.rowBetween}>
+                              <ThemedText style={[styles.manifestCaption, { color: textColor }]}>
+                                {row.label}{row.discountType !== 'none' ? ` · ${row.discountType.toUpperCase()} ${row.discountPct}%` : ''}
+                              </ThemedText>
+                              <ThemedText style={[styles.manifestCaption, { color: row.discountType !== 'none' ? tint : textColor, fontFamily: OutfitFonts.bold }]}>
+                                ₱{row.finalFare.toFixed(2)}
                               </ThemedText>
                             </View>
+                          ))}
+
+                          <View style={[styles.rowBetween, { marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: borderColor }]}> 
+                            <ThemedText style={[styles.manifestRowLabel, { color: textColor }]}>Estimated Total</ThemedText>
+                            <ThemedText style={[styles.manifestRowLabel, { color: tint }]}>₱{guestBookingFareBreakdown.total.toFixed(2)}</ThemedText>
                           </View>
-                        ) : null}
-                      </View>
+                        </View>
+                      ) : null}
                     </View>
                   ) : (
                     <ThemedText style={[styles.manifestCaption, { color: mutedColor }]}>Keep this off to book only for yourself.</ThemedText>
@@ -3587,6 +3667,74 @@ export default function HomeScreen() {
                       Max 5 passengers (shuttle capacity reached)
                     </ThemedText>
                   )}
+
+                  <View style={[styles.manifestSection, { borderColor, backgroundColor: surfaceColor, marginTop: 10 }]}> 
+                    <View style={styles.manifestSectionHeader}>
+                      <View style={[styles.manifestIconBadge, { backgroundColor: colorScheme === 'dark' ? AppPalette.darkOverlaySoft : palette.slateBg }]}> 
+                        <Ionicons name="pricetag" size={16} color={tint} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <ThemedText style={[styles.manifestRowLabel, { color: textColor }]}>Passenger Discounts</ThemedText>
+                        <ThemedText style={[styles.manifestCaption, { color: mutedColor }]}>Set discount per passenger. Your account discount is validated automatically.</ThemedText>
+                      </View>
+                    </View>
+
+                    {selfPassengerDraft.map((entry, idx) => (
+                      <View
+                        key={entry.id}
+                        style={{
+                          marginTop: idx === 0 ? 8 : 10,
+                          paddingTop: idx === 0 ? 0 : 10,
+                          borderTopWidth: idx === 0 ? 0 : 1,
+                          borderTopColor: borderColor,
+                        }}
+                      >
+                        <ThemedText style={[styles.manifestCaption, { color: textColor, marginBottom: 6 }]}> 
+                          {entry.isOwner ? `${entry.name} (You)` : entry.name}
+                        </ThemedText>
+
+                        <View style={styles.manifestActionRow}>
+                          {([
+                            { key: 'none', label: 'None' },
+                            { key: 'student', label: 'Student' },
+                            { key: 'pwd', label: 'PWD' },
+                            { key: 'senior', label: 'Senior' },
+                          ] as const).map(({ key, label }) => (
+                            <Pressable
+                              key={`${entry.id}-${key}`}
+                              accessibilityRole="radio"
+                              accessibilityState={{ checked: entry.discountType === key }}
+                              disabled={entry.isOwner}
+                              onPress={() => {
+                                setSelfPassengerDraft((draft) =>
+                                  draft.map((p) =>
+                                    p.id === entry.id ? { ...p, discountType: key } : p
+                                  )
+                                );
+                              }}
+                              style={({ pressed }) => [
+                                styles.manifestActionButton,
+                                {
+                                  borderColor: entry.discountType === key ? tint : borderColor,
+                                  backgroundColor: entry.discountType === key ? tint : bgColor,
+                                  opacity: entry.isOwner ? 0.65 : 1,
+                                },
+                                pressed && !entry.isOwner && styles.manifestTogglePressed,
+                              ]}
+                            >
+                              <ThemedText style={[styles.manifestActionText, { color: entry.discountType === key ? palette.white : tint }]}>{label}</ThemedText>
+                            </Pressable>
+                          ))}
+                        </View>
+
+                        {entry.isOwner ? (
+                          <ThemedText style={[styles.manifestCaption, { color: mutedColor, marginTop: 6 }]}> 
+                            Owner discount depends on your account verification status.
+                          </ThemedText>
+                        ) : null}
+                      </View>
+                    ))}
+                  </View>
                 </>
               )}
 
@@ -3725,6 +3873,40 @@ export default function HomeScreen() {
 
                 </View>
               )}
+
+              {!bookForOthers && activePassengerPickupIntents.length === 0 && regularBookingFareBreakdown ? (
+                <View style={[styles.manifestSection, { borderColor, backgroundColor: bgColor, marginTop: 10 }]}> 
+                  <View style={styles.manifestSectionHeader}>
+                    <View style={[styles.manifestIconBadge, { backgroundColor: colorScheme === 'dark' ? AppPalette.darkOverlaySoft : palette.slateBg }]}> 
+                      <Ionicons name="receipt-outline" size={16} color={tint} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <ThemedText style={[styles.manifestRowLabel, { color: textColor }]}>Estimated Fare Breakdown</ThemedText>
+                      <ThemedText style={[styles.manifestCaption, { color: mutedColor }]}>Per passenger estimate before driver boarding confirmation.</ThemedText>
+                    </View>
+                  </View>
+
+                  {regularBookingFareBreakdown.rows.map((row) => (
+                    <View key={row.id} style={styles.rowBetween}>
+                      <ThemedText style={[styles.manifestCaption, { color: textColor }]}>
+                        {row.label}{row.discountType !== 'none' ? ` · ${row.discountType.toUpperCase()} ${row.discountPct}%` : ''}
+                      </ThemedText>
+                      <ThemedText style={[styles.manifestCaption, { color: row.discountType !== 'none' ? tint : textColor, fontFamily: OutfitFonts.bold }]}>
+                        ₱{row.finalFare.toFixed(2)}
+                      </ThemedText>
+                    </View>
+                  ))}
+
+                  <View style={[styles.rowBetween, { marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: borderColor }]}> 
+                    <ThemedText style={[styles.manifestRowLabel, { color: textColor }]}>Estimated Total</ThemedText>
+                    <ThemedText style={[styles.manifestRowLabel, { color: tint }]}>₱{regularBookingFareBreakdown.total.toFixed(2)}</ThemedText>
+                  </View>
+
+                  <ThemedText style={[styles.manifestCaption, { color: mutedColor, marginTop: 6 }]}> 
+                    Your account discount is auto-validated. If not approved, your fare is charged at regular price.
+                  </ThemedText>
+                </View>
+              ) : null}
 
 
 

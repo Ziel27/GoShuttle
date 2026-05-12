@@ -121,18 +121,30 @@ const listDiscountVerifications = async (req, res) => {
 
     return res.status(200).json({
       count: users.length,
-      verifications: users.map((u) => ({
-        userId: String(u._id),
-        firstName: u.firstName,
-        lastName: u.lastName,
-        email: u.email,
-        discountType: u.discountVerification?.type ?? null,
-        status: u.discountVerification?.status ?? 'pending',
-        idImageUrl: u.discountVerification?.idImageUrl ?? null,
-        submittedAt: u.discountVerification?.submittedAt ?? null,
-        reviewedAt: u.discountVerification?.reviewedAt ?? null,
-        rejectionReason: u.discountVerification?.rejectionReason ?? null,
-      })),
+      verifications: users.map((u) => {
+        const dv = u.discountVerification;
+        const isExpired = dv?.validUntil && new Date() > dv.validUntil;
+        const daysUntilExpiry = dv?.validUntil
+          ? Math.ceil((dv.validUntil - new Date()) / (1000 * 60 * 60 * 24))
+          : null;
+
+        return {
+          userId: String(u._id),
+          firstName: u.firstName,
+          lastName: u.lastName,
+          email: u.email,
+          discountType: dv?.type ?? null,
+          status: isExpired ? 'expired' : (dv?.status ?? 'pending'),
+          idImageUrl: dv?.idImageUrl ?? null,
+          submittedAt: dv?.submittedAt ?? null,
+          reviewedAt: dv?.reviewedAt ?? null,
+          rejectionReason: dv?.rejectionReason ?? null,
+          validFrom: dv?.validFrom ?? null,
+          validUntil: dv?.validUntil ?? null,
+          daysUntilExpiry,
+          isExpired,
+        };
+      }),
     });
   } catch (error) {
     console.error('List discount verifications error:', error);
@@ -156,7 +168,7 @@ const reviewDiscountVerification = async (req, res) => {
       return res.status(403).json({ error: 'Access denied. You can only review your own community.' });
     }
 
-    const { action, rejectionReason } = req.body;
+    const { action, rejectionReason, validityMonths } = req.body;
     if (!['approve', 'reject'].includes(action)) {
       return res.status(400).json({ error: 'action must be approve or reject.' });
     }
@@ -164,6 +176,13 @@ const reviewDiscountVerification = async (req, res) => {
 
     if (status === 'rejected' && (!rejectionReason || !String(rejectionReason).trim())) {
       return res.status(400).json({ error: 'rejectionReason is required when rejecting.' });
+    }
+
+    if (status === 'approved' && validityMonths !== undefined) {
+      const months = Number(validityMonths);
+      if (!Number.isInteger(months) || months < 1 || months > 60) {
+        return res.status(400).json({ error: 'validityMonths must be an integer between 1 and 60.' });
+      }
     }
 
     const user = await User.findOne({ _id: userId, communityId: id, role: 'passenger' });
@@ -181,6 +200,18 @@ const reviewDiscountVerification = async (req, res) => {
     user.discountVerification.rejectionReason = status === 'rejected'
       ? String(rejectionReason).trim()
       : null;
+
+    // Set validity dates when approving
+    if (status === 'approved') {
+      const months = validityMonths ? Number(validityMonths) : 12; // Default: 12 months
+      const validFrom = new Date();
+      const validUntil = new Date(validFrom);
+      validUntil.setMonth(validUntil.getMonth() + months);
+
+      user.discountVerification.validFrom = validFrom;
+      user.discountVerification.validUntil = validUntil;
+      user.discountVerification.expirationNotificationSent = false;
+    }
 
     await user.save();
 
@@ -268,10 +299,54 @@ const revokePassengerDiscount = async (req, res) => {
   }
 };
 
+/**
+ * GET /api/users/me/discount-verification-status
+ * Passenger gets their ID verification expiration status
+ */
+const getMyVerificationExpirationStatus = async (req, res) => {
+  try {
+    if (req.user.role !== 'passenger') {
+      return res.status(403).json({ error: 'Only passengers can view this.' });
+    }
+
+    const user = await User.findById(req.user._id).select('discountVerification').lean();
+    if (!user || !user.discountVerification) {
+      return res.status(200).json({
+        hasVerification: false,
+        discountVerification: null,
+      });
+    }
+
+    const dv = user.discountVerification;
+    const now = new Date();
+    const isExpired = dv.validUntil && now > dv.validUntil;
+    const daysUntilExpiry = dv.validUntil
+      ? Math.ceil((dv.validUntil - now) / (1000 * 60 * 60 * 24))
+      : null;
+
+    return res.status(200).json({
+      hasVerification: true,
+      discountVerification: {
+        type: dv.type,
+        status: isExpired ? 'expired' : dv.status,
+        validFrom: dv.validFrom,
+        validUntil: dv.validUntil,
+        daysUntilExpiry,
+        isExpired,
+        expirationNotificationSent: dv.expirationNotificationSent,
+      },
+    });
+  } catch (error) {
+    console.error('Get verification expiration status error:', error);
+    return res.status(500).json({ error: 'Failed to fetch verification status.' });
+  }
+};
+
 module.exports = {
   submitDiscountVerification,
   getMyDiscountVerification,
   listDiscountVerifications,
   reviewDiscountVerification,
   revokePassengerDiscount,
+  getMyVerificationExpirationStatus,
 };
