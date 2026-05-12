@@ -2817,7 +2817,7 @@ const listOnboardDestinations = async (req, res) => {
       status: 'boarded',
     })
       .populate('passengerId', 'firstName lastName')
-      .select('passengerId boardedAt destinationType destinationLabel destinationLocation')
+      .select('passengerId boardedAt destinationType destinationLabel destinationLocation discountType fareAtBoarding originalFare discountRevoked')
       .sort({ boardedAt: 1 })
       .lean();
 
@@ -2831,6 +2831,10 @@ const listOnboardDestinations = async (req, res) => {
       destinationType: ride.destinationType,
       destinationLabel: ride.destinationLabel,
       destinationLocation: ride.destinationLocation,
+      discountType: ride.discountType || 'none',
+      fareAtBoarding: ride.fareAtBoarding,
+      originalFare: ride.originalFare || null,
+      discountRevoked: ride.discountRevoked || false,
     }));
 
     return res.status(200).json({ shuttleId, count: passengers.length, passengers });

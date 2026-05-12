@@ -101,6 +101,10 @@ export type OnboardDestinationPassenger = {
     type: 'Point';
     coordinates: [number, number];
   };
+  discountType: 'student' | 'pwd' | 'senior' | 'none';
+  fareAtBoarding: number;
+  originalFare: number | null;
+  discountRevoked: boolean;
 };
 
 export type CurrentPassenger = {
@@ -403,5 +407,22 @@ export const resolveRideRequest = async (
   resolution: 'no_show' | 'late_manual'
 ): Promise<void> => {
   await api.post(`/trips/ride-requests/${requestId}/resolve`, { resolution });
+};
+
+/**
+ * Driver revokes a boarded passenger's discount, resetting fare to full amount.
+ * @throws {Error} When the API request fails.
+ */
+export const revokePassengerDiscount = async (rideId: string): Promise<{
+  message: string;
+  fareDifference: number;
+  newFare: number;
+}> => {
+  const response = await api.patch(`/trips/rides/${rideId}/revoke-discount`);
+  return {
+    message: response.data?.message as string,
+    fareDifference: (response.data?.fareDifference as number) ?? 0,
+    newFare: (response.data?.ride?.fareAtBoarding as number) ?? 0,
+  };
 };
 

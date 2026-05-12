@@ -32,6 +32,7 @@ import {
     OnboardDestinationPassenger,
     PickupIntent,
     QueueReason,
+    revokePassengerDiscount,
     unboardPassenger
 } from '@/services/trip';
 import { getMyDiscountVerification } from '@/services/user';
@@ -196,6 +197,7 @@ export default function HomeScreen() {
   const [communitySyncTick, setCommunitySyncTick] = useState(0);
   const [activePassengerManualBoardCount, setActivePassengerManualBoardCount] = useState(0);
   const [onboardDestinations, setOnboardDestinations] = useState<OnboardDestinationPassenger[]>([]);
+  const [revokingDiscountId, setRevokingDiscountId] = useState<string | null>(null);
   const [autoSyncStatus, setAutoSyncStatus] = useState<'idle' | 'syncing' | 'error'>('idle');
   const [lastAutoSyncAt, setLastAutoSyncAt] = useState<Date | null>(null);
   const [lastAutomationDiagnostics, setLastAutomationDiagnostics] = useState<AutomationDiagnostics | null>(null);
@@ -2395,7 +2397,28 @@ export default function HomeScreen() {
     });
   }, []);
 
-
+  const handleRevokeDiscount = useCallback(async (rideId: string, passengerName: string) => {
+    setRevokingDiscountId(rideId);
+    try {
+      const result = await revokePassengerDiscount(rideId);
+      setOnboardDestinations((prev) =>
+        prev.map((item) =>
+          item.rideId === rideId
+            ? { ...item, discountRevoked: true, fareAtBoarding: result.newFare }
+            : item
+        )
+      );
+      setPreferenceAwareFeedback(
+        `Discount revoked for ${passengerName}. Full fare of ₱${result.newFare.toFixed(2)} applies.`,
+        'ride'
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to revoke discount.';
+      setPreferenceAwareFeedback(msg, 'critical');
+    } finally {
+      setRevokingDiscountId(null);
+    }
+  }, []);
 
   return (
     <SafeAreaView style={[styles.root, { backgroundColor: bgColor }]} edges={['top', 'left', 'right']}>
@@ -2889,12 +2912,41 @@ export default function HomeScreen() {
                     <ThemedText style={[styles.metaText, { color: mutedColor }]}>Onboard Destination List</ThemedText>
                     {onboardDestinations.length === 0 ? (
                       <ThemedText style={[styles.metaText, { color: mutedColor }]}>No onboard passengers.</ThemedText>
-                    ) : onboardDestinations.map((item) => (
-                      <View key={item.rideId} style={styles.rowBetween}>
-                        <ThemedText style={[styles.metaText, { color: textColor }]}>{item.passengerName}</ThemedText>
-                        <ThemedText style={[styles.metaText, { color: mutedColor }]}>{item.destinationLabel}</ThemedText>
-                      </View>
-                    ))}
+                    ) : onboardDestinations.map((item) => {
+                      const hasActiveDiscount = item.discountType !== 'none' && !item.discountRevoked;
+                      const discountLabel = item.discountType === 'student' ? 'Student' : item.discountType === 'pwd' ? 'PWD' : item.discountType === 'senior' ? 'Senior' : null;
+                      const isRevoking = revokingDiscountId === item.rideId;
+                      return (
+                        <View key={item.rideId} style={{ marginBottom: 6 }}>
+                          <View style={styles.rowBetween}>
+                            <ThemedText style={[styles.metaText, { color: textColor }]}>{item.passengerName}</ThemedText>
+                            <ThemedText style={[styles.metaText, { color: mutedColor }]}>{item.destinationLabel}</ThemedText>
+                          </View>
+                          {hasActiveDiscount && discountLabel ? (
+                            <View style={[styles.rowBetween, { marginTop: 2 }]}>
+                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                                <View style={{ backgroundColor: '#fef3c7', borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2 }}>
+                                  <ThemedText style={{ fontSize: 11, color: '#92400e', fontWeight: '600' }}>{discountLabel} Discount · ₱{item.fareAtBoarding.toFixed(2)}</ThemedText>
+                                </View>
+                              </View>
+                              <Pressable
+                                onPress={() => handleRevokeDiscount(item.rideId, item.passengerName)}
+                                disabled={isRevoking}
+                                style={{ backgroundColor: dangerColor, borderRadius: 4, paddingHorizontal: 8, paddingVertical: 3, opacity: isRevoking ? 0.5 : 1 }}
+                              >
+                                <ThemedText style={{ fontSize: 11, color: '#fff', fontWeight: '600' }}>{isRevoking ? 'Revoking…' : 'Revoke'}</ThemedText>
+                              </Pressable>
+                            </View>
+                          ) : item.discountRevoked && discountLabel ? (
+                            <View style={{ marginTop: 2 }}>
+                              <View style={{ backgroundColor: '#f3f4f6', borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2, alignSelf: 'flex-start' }}>
+                                <ThemedText style={{ fontSize: 11, color: '#6b7280' }}>{discountLabel} Discount Revoked · ₱{item.fareAtBoarding.toFixed(2)}</ThemedText>
+                              </View>
+                            </View>
+                          ) : null}
+                        </View>
+                      );
+                    })}
                   </View>
                 </>
               ) : (
