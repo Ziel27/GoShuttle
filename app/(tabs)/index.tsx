@@ -419,6 +419,25 @@ export default function HomeScreen() {
   const activePassengerDropoffDistanceMeters = assignedShuttleCoordinate && activePassengerDropoffCoordinate
     ? getDistanceMeters(assignedShuttleCoordinate, activePassengerDropoffCoordinate)
     : null;
+
+  // ETA for passenger: find the dispatched shuttle's live location from the shuttles list
+  const dispatchedShuttleLiveCoord = useMemo(() => {
+    if (!dispatchedShuttle) return null;
+    const live = shuttles.find((s) => s._id === dispatchedShuttle.shuttleId);
+    if (live?.location?.coordinates?.length === 2) {
+      return { latitude: live.location.coordinates[1], longitude: live.location.coordinates[0] };
+    }
+    if (dispatchedShuttle.location?.coordinates?.length === 2) {
+      return { latitude: dispatchedShuttle.location.coordinates[1], longitude: dispatchedShuttle.location.coordinates[0] };
+    }
+    return null;
+  }, [dispatchedShuttle, shuttles]);
+
+  const dispatchedShuttleEtaMinutes = useMemo(() => {
+    if (!dispatchedShuttleLiveCoord || !activePassengerPickupCoordinate) return null;
+    const distM = getDistanceMeters(dispatchedShuttleLiveCoord, activePassengerPickupCoordinate);
+    return Math.max(1, Math.round(distM / 500));
+  }, [dispatchedShuttleLiveCoord, activePassengerPickupCoordinate]);
   const isWithinPickupRadius =
     activePassengerPickupDistanceMeters !== null && activePassengerPickupDistanceMeters <= DRIVER_PICKUP_RADIUS_METERS;
   const isWithinDropoffRadius =
@@ -4409,6 +4428,16 @@ export default function HomeScreen() {
                           : ''}
                       </ThemedText>
                     </View>
+                    {dispatchedShuttleEtaMinutes !== null && (
+                      <View style={styles.dispatchAssignedDetailRow}>
+                        <Ionicons name="time-outline" size={13} color={colorScheme === 'dark' ? '#6ee7b7' : '#059669'} />
+                        <ThemedText
+                          style={[styles.dispatchAssignedDetailText, { color: colorScheme === 'dark' ? '#6ee7b7' : '#047857', fontWeight: '700' }]}
+                        >
+                          ETA: ~{dispatchedShuttleEtaMinutes} min to pickup
+                        </ThemedText>
+                      </View>
+                    )}
                   </View>
 
                   {/* Step progress */}

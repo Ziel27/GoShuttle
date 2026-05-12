@@ -13,7 +13,7 @@ const { distanceMeters } = require('../services/geofence');
 const { completeRideRequestsForPassengers } = require('../services/ride-request-lifecycle');
 const { startManualAutomationCooldown } = require('../services/automation-cooldown');
 const { uploadReceiptImage } = require('../services/cloudinary');
-const { findAndDispatch, releaseAndRetry, retryWaitingQueue, releasePendingSlot } = require('../services/dispatch.service');
+const { findAndDispatch, releaseAndRetry, retryWaitingQueue, releasePendingSlot, haversineMeters } = require('../services/dispatch.service');
 const {
   normalizePhase,
   isShuttlePhaseCompatible,
@@ -3209,6 +3209,12 @@ const getTrackingInfo = async (req, res) => {
       ? { latitude: pickupCoords[1], longitude: pickupCoords[0] }
       : null;
 
+    // Destination location for drop-off pin
+    const destCoords = pickupRequest.destinationLocation?.coordinates;
+    const destinationLatLng = (Array.isArray(destCoords) && destCoords.length === 2)
+      ? { latitude: destCoords[1], longitude: destCoords[0] }
+      : null;
+
     const response = {
       mode: pickupRequest.trackingMode || 'passenger',
       status: pickupRequest.status,
@@ -3219,9 +3225,11 @@ const getTrackingInfo = async (req, res) => {
       passengerNames,
       location: null,
       pickupLocation: pickupLatLng,
+      destinationLocation: destinationLatLng,
       shuttleLabel: null,
       shuttlePlate: null,
       locationUpdatedAt: null,
+      etaMinutes: null,
     };
 
     if (pickupRequest.trackingMode === 'driver') {
@@ -3232,6 +3240,12 @@ const getTrackingInfo = async (req, res) => {
         response.shuttleLabel = shuttle.label || null;
         response.shuttlePlate = shuttle.plateNumber || null;
         response.locationUpdatedAt = shuttle.lastLocationUpdate || null;
+
+        // ETA: time for shuttle to reach pickup (30 km/h ≈ 500 m/min in community)
+        if (pickupLatLng) {
+          const distM = haversineMeters(lat, lng, pickupLatLng.latitude, pickupLatLng.longitude);
+          response.etaMinutes = Math.max(1, Math.round(distM / 500));
+        }
       } else {
         // No shuttle assigned yet — show passenger pickup location so map is useful
         response.location = pickupLatLng;

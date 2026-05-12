@@ -22,9 +22,11 @@ type TrackingData = {
   passengerNames: string[];
   location: { latitude: number; longitude: number } | null;
   pickupLocation: { latitude: number; longitude: number } | null;
+  destinationLocation: { latitude: number; longitude: number } | null;
   shuttleLabel: string | null;
   shuttlePlate: string | null;
   locationUpdatedAt: string | null;
+  etaMinutes: number | null;
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -81,6 +83,17 @@ const pickupPinIcon = L.divIcon({
   className: '',
 });
 
+const destinationPinIcon = L.divIcon({
+  html: `<div style="
+    background:#16a34a;width:38px;height:38px;border-radius:50%;
+    display:flex;align-items:center;justify-content:center;
+    border:3px solid white;box-shadow:0 2px 10px rgba(0,0,0,0.25);
+    font-size:18px;line-height:1;">🏁</div>`,
+  iconSize: [38, 38],
+  iconAnchor: [19, 38],
+  className: '',
+});
+
 export const TrackPage = () => {
   const { token } = useParams<{ token: string }>();
   const [data, setData] = useState<TrackingData | null>(null);
@@ -96,6 +109,7 @@ export const TrackPage = () => {
   const mapRef = useRef<L.Map | null>(null);
   const primaryMarkerRef = useRef<L.Marker | null>(null);
   const pickupMarkerRef = useRef<L.Marker | null>(null);
+  const destinationMarkerRef = useRef<L.Marker | null>(null);
   const hasInitialFocus = useRef(false);
   const userInteracting = useRef(false);
 
@@ -127,6 +141,7 @@ export const TrackPage = () => {
       mapRef.current = null;
       primaryMarkerRef.current = null;
       pickupMarkerRef.current = null;
+      destinationMarkerRef.current = null;
       hasInitialFocus.current = false;
       userInteracting.current = false;
     };
@@ -175,16 +190,17 @@ export const TrackPage = () => {
 
       if (!mapRef.current) return;
 
+      const isDriverMode = json.mode === 'driver';
+      const hasRealShuttle = isDriverMode && json.shuttleLabel !== null;
+
       // ── Primary marker (shuttle or passenger) ─────────────────────────────
       if (json.location) {
         const { latitude, longitude } = json.location;
         const latlng: L.LatLngExpression = [latitude, longitude];
-        const isDriverMode = json.mode === 'driver';
 
-        // In driver mode with a real shuttle location, use shuttle icon.
-        // In driver mode but no shuttle assigned yet (showing pickup fallback), use pickup pin.
-        // In passenger mode, use person icon.
-        const hasRealShuttle = isDriverMode && json.shuttleLabel !== null;
+        // In driver mode with a real shuttle: bus icon
+        // In driver mode without shuttle (pickup fallback): pickup pin
+        // In passenger mode: person icon
         const icon = isDriverMode
           ? (hasRealShuttle ? shuttleIcon : pickupPinIcon)
           : passengerIcon;
@@ -194,27 +210,60 @@ export const TrackPage = () => {
         } else {
           primaryMarkerRef.current.setLatLng(latlng).setIcon(icon);
         }
-
-        // Auto-focus: always on first load; follow continuously unless user panned
-        if (!hasInitialFocus.current) {
-          mapRef.current.setView(latlng, 16);
-          hasInitialFocus.current = true;
-        } else if (!userInteracting.current) {
-          mapRef.current.panTo(latlng, { animate: true, duration: 0.5 });
-        }
       }
 
-      // ── Pickup location pin (secondary, driver mode only) ─────────────────
-      if (json.mode === 'driver' && json.pickupLocation && json.location) {
+      // ── Pickup pin (where passenger waits) ────────────────────────────────
+      // Show in driver mode when shuttle is tracking (secondary to shuttle icon)
+      if (isDriverMode && hasRealShuttle && json.pickupLocation) {
         const { latitude, longitude } = json.pickupLocation;
-        const pickupLatlng: L.LatLngExpression = [latitude, longitude];
+        const latlng: L.LatLngExpression = [latitude, longitude];
         if (!pickupMarkerRef.current) {
-          pickupMarkerRef.current = L.marker(pickupLatlng, { icon: pickupPinIcon }).addTo(mapRef.current!);
+          pickupMarkerRef.current = L.marker(latlng, { icon: pickupPinIcon }).addTo(mapRef.current!);
           pickupMarkerRef.current.bindTooltip('Pickup point', { permanent: false, direction: 'top' });
+        } else {
+          pickupMarkerRef.current.setLatLng(latlng);
         }
       } else if (pickupMarkerRef.current) {
         pickupMarkerRef.current.remove();
         pickupMarkerRef.current = null;
+      }
+
+      // ── Destination pin (drop-off location) ───────────────────────────────
+      if (json.destinationLocation) {
+        const { latitude, longitude } = json.destinationLocation;
+        const latlng: L.LatLngExpression = [latitude, longitude];
+        if (!destinationMarkerRef.current) {
+          destinationMarkerRef.current = L.marker(latlng, { icon: destinationPinIcon }).addTo(mapRef.current!);
+          destinationMarkerRef.current.bindTooltip(
+            json.destinationLabel ? `Drop-off: ${json.destinationLabel}` : 'Drop-off point',
+            { permanent: false, direction: 'top' }
+          );
+        } else {
+          destinationMarkerRef.current.setLatLng(latlng);
+        }
+      } else if (destinationMarkerRef.current) {
+        destinationMarkerRef.current.remove();
+        destinationMarkerRef.current = null;
+      }
+
+      // ── Initial map focus ─────────────────────────────────────────────────
+      if (!hasInitialFocus.current && json.location) {
+        hasInitialFocus.current = true;
+
+        // Collect all known points to fit into view
+        const points: L.LatLngExpression[] = [[json.location.latitude, json.location.longitude]];
+        if (json.pickupLocation) points.push([json.pickupLocation.latitude, json.pickupLocation.longitude]);
+        if (json.destinationLocation) points.push([json.destinationLocation.latitude, json.destinationLocation.longitude]);
+
+        if (points.length > 1) {
+          // Fit bounds with padding so all pins are visible
+          mapRef.current!.fitBounds(L.latLngBounds(points), { padding: [56, 56], maxZoom: 17 });
+        } else {
+          mapRef.current!.setView([json.location.latitude, json.location.longitude], 16);
+        }
+      } else if (!userInteracting.current && json.location) {
+        // Continuously pan to track the primary marker
+        mapRef.current!.panTo([json.location.latitude, json.location.longitude], { animate: true, duration: 0.5 });
       }
 
     } catch {
@@ -239,6 +288,7 @@ export const TrackPage = () => {
   const isTerminal = completed || data?.status === 'expired' || data?.status === 'cancelled';
   const hasRealShuttle = isDriverMode && data?.shuttleLabel !== null;
   const statusStyle = STATUS_COLORS[data?.status ?? ''] ?? { bg: '#f1f5f9', text: '#475569', dot: '#94a3b8' };
+  const hasEta = typeof data?.etaMinutes === 'number' && data.etaMinutes !== null && !isTerminal;
 
   const accentColor = isDriverMode ? '#1d4ed8' : '#991b1b';
   const accentLight = isDriverMode ? '#dbeafe' : '#fee2e2';
@@ -362,6 +412,35 @@ export const TrackPage = () => {
           </div>
         )}
 
+        {/* Map legend pills (pickup + destination) */}
+        {data && !loading && (data.pickupLocation || data.destinationLocation) && (
+          <div style={{
+            position: 'absolute', top: 12, left: 12, zIndex: 5,
+            display: 'flex', flexDirection: 'column', gap: 6,
+          }}>
+            {isDriverMode && hasRealShuttle && data.pickupLocation && (
+              <div style={{
+                background: 'rgba(255,255,255,0.95)', borderRadius: 99, padding: '5px 12px',
+                boxShadow: '0 2px 8px rgba(0,0,0,0.12)', fontSize: 12, fontWeight: 600,
+                display: 'flex', alignItems: 'center', gap: 6, color: '#5b21b6',
+                backdropFilter: 'blur(4px)',
+              }}>
+                <span style={{ fontSize: 14 }}>📍</span> Pickup point
+              </div>
+            )}
+            {data.destinationLocation && (
+              <div style={{
+                background: 'rgba(255,255,255,0.95)', borderRadius: 99, padding: '5px 12px',
+                boxShadow: '0 2px 8px rgba(0,0,0,0.12)', fontSize: 12, fontWeight: 600,
+                display: 'flex', alignItems: 'center', gap: 6, color: '#15803d',
+                backdropFilter: 'blur(4px)',
+              }}>
+                <span style={{ fontSize: 14 }}>🏁</span> Drop-off: {data.destinationLabel || 'Destination'}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Re-center button */}
         {!isFollowing && data?.location && (
           <button
@@ -379,7 +458,7 @@ export const TrackPage = () => {
           </button>
         )}
 
-        {/* Last updated chip - floating over map bottom-left */}
+        {/* Last updated chip */}
         {lastUpdated && !isTerminal && !loading && (
           <div style={{
             position: 'absolute', bottom: 16, left: 16, zIndex: 5,
@@ -400,12 +479,59 @@ export const TrackPage = () => {
           background: 'white',
           borderTop: '1px solid #e2e8f0',
           flexShrink: 0,
-          maxHeight: '42vh',
+          maxHeight: '46vh',
           overflowY: 'auto',
         }}>
+
+          {/* ── ETA Hero (shown when shuttle is en route) ─────────────────── */}
+          {hasEta && (
+            <div style={{
+              margin: '12px 16px 0',
+              background: 'linear-gradient(135deg, #1d4ed8 0%, #2563eb 100%)',
+              borderRadius: 14,
+              padding: '14px 18px',
+              display: 'flex', alignItems: 'center', gap: 14,
+              boxShadow: '0 4px 16px rgba(29,78,216,0.25)',
+            }}>
+              <div style={{
+                width: 52, height: 52, borderRadius: 12, flexShrink: 0,
+                background: 'rgba(255,255,255,0.15)',
+                display: 'flex', flexDirection: 'column',
+                alignItems: 'center', justifyContent: 'center',
+              }}>
+                <span style={{ fontSize: 22 }}>🕐</span>
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.7)', fontWeight: 700, letterSpacing: 0.8, marginBottom: 2 }}>
+                  ESTIMATED ARRIVAL
+                </div>
+                <div style={{ fontSize: 28, fontWeight: 800, color: 'white', lineHeight: 1.1 }}>
+                  ~{data.etaMinutes} min
+                </div>
+                <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.75)', marginTop: 3 }}>
+                  Shuttle en route to pickup point
+                </div>
+              </div>
+              <div style={{
+                padding: '5px 10px',
+                background: 'rgba(255,255,255,0.18)',
+                borderRadius: 99,
+                fontSize: 11, fontWeight: 700, color: 'white', letterSpacing: 0.5,
+                display: 'flex', alignItems: 'center', gap: 5,
+              }}>
+                <span style={{
+                  width: 6, height: 6, borderRadius: '50%',
+                  background: '#4ade80', display: 'inline-block',
+                  animation: 'pulse 2s infinite',
+                }} />
+                LIVE
+              </div>
+            </div>
+          )}
+
           {/* Status bar */}
           <div style={{
-            padding: '10px 16px 0',
+            padding: `${hasEta ? 10 : 10}px 16px 0`,
             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           }}>
             <span style={{
@@ -431,14 +557,31 @@ export const TrackPage = () => {
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
               <div style={{
                 width: 34, height: 34, borderRadius: 10, flexShrink: 0,
-                background: accentLight,
+                background: '#dcfce7',
                 display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16,
               }}>🏁</div>
               <div>
-                <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 600, marginBottom: 2, letterSpacing: 0.3 }}>DESTINATION</div>
+                <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 600, marginBottom: 2, letterSpacing: 0.3 }}>DROP-OFF</div>
                 <div style={{ fontSize: 15, color: '#0f172a', fontWeight: 700 }}>{data.destinationLabel}</div>
               </div>
             </div>
+
+            {/* Pickup location row (driver mode) */}
+            {isDriverMode && data.pickupLocation && (
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                <div style={{
+                  width: 34, height: 34, borderRadius: 10, flexShrink: 0,
+                  background: '#ede9fe',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16,
+                }}>📍</div>
+                <div>
+                  <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 600, marginBottom: 2, letterSpacing: 0.3 }}>PICKUP POINT</div>
+                  <div style={{ fontSize: 13, color: '#334155' }}>
+                    {data.pickupLocation.latitude.toFixed(5)}, {data.pickupLocation.longitude.toFixed(5)}
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Passenger(s) */}
             {data.passengerNames.length > 0 && (
@@ -462,7 +605,7 @@ export const TrackPage = () => {
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
                 <div style={{
                   width: 34, height: 34, borderRadius: 10, flexShrink: 0,
-                  background: '#dbeafe',
+                  background: accentLight,
                   display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16,
                 }}>🚌</div>
                 <div>
@@ -519,7 +662,7 @@ export const TrackPage = () => {
       )}
 
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap');
         @keyframes pulse {
           0%, 100% { opacity: 1; }
           50% { opacity: 0.35; }
