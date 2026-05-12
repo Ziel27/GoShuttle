@@ -3203,6 +3203,12 @@ const getTrackingInfo = async (req, res) => {
       .map((p) => p.name || 'Guest')
       .filter(Boolean);
 
+    // Always extract passenger pickup coords for map context
+    const pickupCoords = pickupRequest.pickupLocation?.coordinates || pickupRequest.location?.coordinates;
+    const pickupLatLng = (Array.isArray(pickupCoords) && pickupCoords.length === 2)
+      ? { latitude: pickupCoords[1], longitude: pickupCoords[0] }
+      : null;
+
     const response = {
       mode: pickupRequest.trackingMode || 'passenger',
       status: pickupRequest.status,
@@ -3212,6 +3218,7 @@ const getTrackingInfo = async (req, res) => {
       expiresAt: pickupRequest.expiresAt,
       passengerNames,
       location: null,
+      pickupLocation: pickupLatLng,
       shuttleLabel: null,
       shuttlePlate: null,
       locationUpdatedAt: null,
@@ -3225,6 +3232,9 @@ const getTrackingInfo = async (req, res) => {
         response.shuttleLabel = shuttle.label || null;
         response.shuttlePlate = shuttle.plateNumber || null;
         response.locationUpdatedAt = shuttle.lastLocationUpdate || null;
+      } else {
+        // No shuttle assigned yet — show passenger pickup location so map is useful
+        response.location = pickupLatLng;
       }
     } else {
       const coords = pickupRequest.location?.coordinates;

@@ -21,6 +21,7 @@ type TrackingData = {
   expiresAt: string;
   passengerNames: string[];
   location: { latitude: number; longitude: number } | null;
+  pickupLocation: { latitude: number; longitude: number } | null;
   shuttleLabel: string | null;
   shuttlePlate: string | null;
   locationUpdatedAt: string | null;
@@ -37,25 +38,46 @@ const STATUS_LABELS: Record<string, string> = {
   completed: 'Ride complete',
 };
 
-const driverIcon = L.divIcon({
+const STATUS_COLORS: Record<string, { bg: string; text: string; dot: string }> = {
+  dispatched: { bg: '#dcfce7', text: '#166534', dot: '#22c55e' },
+  pending:    { bg: '#fef3c7', text: '#92400e', dot: '#f59e0b' },
+  queued:     { bg: '#fef3c7', text: '#92400e', dot: '#f59e0b' },
+  bumped:     { bg: '#fef3c7', text: '#92400e', dot: '#f59e0b' },
+  cancelled:  { bg: '#fee2e2', text: '#991b1b', dot: '#ef4444' },
+  expired:    { bg: '#f1f5f9', text: '#64748b', dot: '#94a3b8' },
+  completed:  { bg: '#f1f5f9', text: '#64748b', dot: '#94a3b8' },
+};
+
+const shuttleIcon = L.divIcon({
   html: `<div style="
-    background:#2563eb;width:44px;height:44px;border-radius:50%;
+    background:#1d4ed8;width:46px;height:46px;border-radius:50%;
     display:flex;align-items:center;justify-content:center;
-    border:3px solid white;box-shadow:0 2px 12px rgba(0,0,0,0.25);
+    border:3px solid white;box-shadow:0 3px 14px rgba(0,0,0,0.3);
     font-size:22px;line-height:1;">🚌</div>`,
-  iconSize: [44, 44],
-  iconAnchor: [22, 22],
+  iconSize: [46, 46],
+  iconAnchor: [23, 23],
   className: '',
 });
 
 const passengerIcon = L.divIcon({
   html: `<div style="
-    background:#dc2626;width:44px;height:44px;border-radius:50%;
+    background:#dc2626;width:46px;height:46px;border-radius:50%;
     display:flex;align-items:center;justify-content:center;
-    border:3px solid white;box-shadow:0 2px 12px rgba(0,0,0,0.25);
-    font-size:22px;line-height:1;">📍</div>`,
-  iconSize: [44, 44],
-  iconAnchor: [22, 22],
+    border:3px solid white;box-shadow:0 3px 14px rgba(0,0,0,0.3);
+    font-size:22px;line-height:1;">🧍</div>`,
+  iconSize: [46, 46],
+  iconAnchor: [23, 46],
+  className: '',
+});
+
+const pickupPinIcon = L.divIcon({
+  html: `<div style="
+    background:#7c3aed;width:38px;height:38px;border-radius:50%;
+    display:flex;align-items:center;justify-content:center;
+    border:3px solid white;box-shadow:0 2px 10px rgba(0,0,0,0.25);
+    font-size:18px;line-height:1;opacity:0.85;">📍</div>`,
+  iconSize: [38, 38],
+  iconAnchor: [19, 38],
   className: '',
 });
 
@@ -67,32 +89,56 @@ export const TrackPage = () => {
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [secondsAgo, setSecondsAgo] = useState(0);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [isFollowing, setIsFollowing] = useState(true);
 
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
-  const markerRef = useRef<L.Marker | null>(null);
-  const hasSetInitialView = useRef(false);
+  const primaryMarkerRef = useRef<L.Marker | null>(null);
+  const pickupMarkerRef = useRef<L.Marker | null>(null);
+  const hasInitialFocus = useRef(false);
+  const userInteracting = useRef(false);
 
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return;
+
     const map = L.map(mapContainerRef.current, {
       zoom: 16,
       center: [14.5995, 120.9842],
-      zoomControl: true,
+      zoomControl: false,
     });
+
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
       maxZoom: 19,
     }).addTo(map);
+
+    L.control.zoom({ position: 'topright' }).addTo(map);
+
+    map.on('dragstart', () => {
+      userInteracting.current = true;
+      setIsFollowing(false);
+    });
+
     mapRef.current = map;
+
     return () => {
       map.remove();
       mapRef.current = null;
-      markerRef.current = null;
-      hasSetInitialView.current = false;
+      primaryMarkerRef.current = null;
+      pickupMarkerRef.current = null;
+      hasInitialFocus.current = false;
+      userInteracting.current = false;
     };
   }, []);
+
+  const recenter = () => {
+    if (!mapRef.current || !primaryMarkerRef.current) return;
+    userInteracting.current = false;
+    setIsFollowing(true);
+    const latlng = primaryMarkerRef.current.getLatLng();
+    mapRef.current.flyTo(latlng, Math.max(mapRef.current.getZoom(), 16), { animate: true, duration: 0.8 });
+  };
 
   const fetchData = async () => {
     if (!token) return;
@@ -102,10 +148,7 @@ export const TrackPage = () => {
       if (res.status === 410) {
         setCompleted(true);
         setLoading(false);
-        if (pollRef.current) {
-          clearInterval(pollRef.current);
-          pollRef.current = null;
-        }
+        if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
         return;
       }
 
@@ -121,10 +164,7 @@ export const TrackPage = () => {
       if (json.status === 'expired' || json.status === 'cancelled') {
         setCompleted(true);
         setLoading(false);
-        if (pollRef.current) {
-          clearInterval(pollRef.current);
-          pollRef.current = null;
-        }
+        if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
         return;
       }
 
@@ -133,20 +173,50 @@ export const TrackPage = () => {
       setSecondsAgo(0);
       setError(null);
 
-      if (json.location && mapRef.current) {
+      if (!mapRef.current) return;
+
+      // ── Primary marker (shuttle or passenger) ─────────────────────────────
+      if (json.location) {
         const { latitude, longitude } = json.location;
         const latlng: L.LatLngExpression = [latitude, longitude];
-        const icon = json.mode === 'driver' ? driverIcon : passengerIcon;
-        if (!markerRef.current) {
-          markerRef.current = L.marker(latlng, { icon }).addTo(mapRef.current);
+        const isDriverMode = json.mode === 'driver';
+
+        // In driver mode with a real shuttle location, use shuttle icon.
+        // In driver mode but no shuttle assigned yet (showing pickup fallback), use pickup pin.
+        // In passenger mode, use person icon.
+        const hasRealShuttle = isDriverMode && json.shuttleLabel !== null;
+        const icon = isDriverMode
+          ? (hasRealShuttle ? shuttleIcon : pickupPinIcon)
+          : passengerIcon;
+
+        if (!primaryMarkerRef.current) {
+          primaryMarkerRef.current = L.marker(latlng, { icon }).addTo(mapRef.current);
         } else {
-          markerRef.current.setLatLng(latlng);
+          primaryMarkerRef.current.setLatLng(latlng).setIcon(icon);
         }
-        if (!hasSetInitialView.current) {
+
+        // Auto-focus: always on first load; follow continuously unless user panned
+        if (!hasInitialFocus.current) {
           mapRef.current.setView(latlng, 16);
-          hasSetInitialView.current = true;
+          hasInitialFocus.current = true;
+        } else if (!userInteracting.current) {
+          mapRef.current.panTo(latlng, { animate: true, duration: 0.5 });
         }
       }
+
+      // ── Pickup location pin (secondary, driver mode only) ─────────────────
+      if (json.mode === 'driver' && json.pickupLocation && json.location) {
+        const { latitude, longitude } = json.pickupLocation;
+        const pickupLatlng: L.LatLngExpression = [latitude, longitude];
+        if (!pickupMarkerRef.current) {
+          pickupMarkerRef.current = L.marker(pickupLatlng, { icon: pickupPinIcon }).addTo(mapRef.current!);
+          pickupMarkerRef.current.bindTooltip('Pickup point', { permanent: false, direction: 'top' });
+        }
+      } else if (pickupMarkerRef.current) {
+        pickupMarkerRef.current.remove();
+        pickupMarkerRef.current = null;
+      }
+
     } catch {
       setError('Could not reach the tracking server.');
     } finally {
@@ -157,9 +227,7 @@ export const TrackPage = () => {
   useEffect(() => {
     fetchData();
     pollRef.current = setInterval(fetchData, 5000);
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [token]);
 
   useEffect(() => {
@@ -169,215 +237,297 @@ export const TrackPage = () => {
 
   const isDriverMode = data?.mode === 'driver';
   const isTerminal = completed || data?.status === 'expired' || data?.status === 'cancelled';
+  const hasRealShuttle = isDriverMode && data?.shuttleLabel !== null;
+  const statusStyle = STATUS_COLORS[data?.status ?? ''] ?? { bg: '#f1f5f9', text: '#475569', dot: '#94a3b8' };
+
+  const accentColor = isDriverMode ? '#1d4ed8' : '#991b1b';
+  const accentLight = isDriverMode ? '#dbeafe' : '#fee2e2';
 
   if (completed) {
     return (
       <div style={{
         display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-        height: '100dvh', fontFamily: "'Outfit', sans-serif", background: '#f0fdf4', padding: 24,
-        textAlign: 'center',
+        height: '100dvh', fontFamily: "'Outfit', system-ui, sans-serif",
+        background: 'linear-gradient(135deg,#f0fdf4 0%,#dcfce7 100%)', padding: 24, textAlign: 'center',
       }}>
-        <div style={{ fontSize: 64, marginBottom: 16 }}>✅</div>
+        <div style={{
+          width: 80, height: 80, borderRadius: 40,
+          background: '#dcfce7', border: '2px solid #86efac',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 40, marginBottom: 20,
+        }}>✅</div>
         <div style={{ fontSize: 22, fontWeight: 700, color: '#166534', marginBottom: 8 }}>Ride Complete</div>
         <div style={{ fontSize: 15, color: '#4b7a5e', maxWidth: 300, lineHeight: 1.6 }}>
           The passenger has been dropped off. This tracking link is no longer active.
         </div>
-        <div style={{ marginTop: 32, color: '#cbd5e1', fontSize: 12 }}>Powered by GoShuttle</div>
+        <div style={{ marginTop: 32, color: '#94a3b8', fontSize: 12, fontWeight: 600, letterSpacing: 1 }}>
+          POWERED BY GOSHUTTLE
+        </div>
       </div>
     );
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100dvh', fontFamily: "'Outfit', sans-serif", background: '#f8fafc' }}>
-      {/* Top bar */}
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100dvh', fontFamily: "'Outfit', system-ui, sans-serif", background: '#f8fafc' }}>
+
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '12px 16px',
-        background: isDriverMode ? '#1e40af' : '#991b1b',
+        padding: '10px 16px',
+        background: accentColor,
         color: 'white',
-        boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
-        zIndex: 10,
-        gap: 12,
+        boxShadow: '0 2px 12px rgba(0,0,0,0.2)',
+        zIndex: 10, gap: 12, flexShrink: 0,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 22 }}>{isDriverMode ? '🚌' : '📍'}</span>
+          <div style={{
+            width: 38, height: 38, borderRadius: 10,
+            background: 'rgba(255,255,255,0.18)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20,
+          }}>
+            {isDriverMode ? '🚌' : '📍'}
+          </div>
           <div>
             <div style={{ fontWeight: 700, fontSize: 15, lineHeight: 1.2 }}>
-              {isDriverMode ? 'Shuttle Tracking' : 'Passenger Location'}
-            </div>
-            <div style={{ fontSize: 12, opacity: 0.85, marginTop: 1 }}>
               {isDriverMode
-                ? 'Live shuttle position — updates every 5s'
-                : 'Passenger pickup location'}
+                ? (hasRealShuttle ? 'Shuttle Tracking' : 'Awaiting Dispatch')
+                : 'Passenger Location'}
+            </div>
+            <div style={{ fontSize: 11, opacity: 0.8, marginTop: 2 }}>
+              {isDriverMode
+                ? (hasRealShuttle ? 'Live shuttle position · updates every 5s' : 'Waiting for a shuttle to be assigned')
+                : 'Pickup location shared by passenger'}
             </div>
           </div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-          {!isTerminal && (
-            <>
-              <div style={{
-                width: 8, height: 8, borderRadius: '50%',
-                background: '#4ade80',
-                boxShadow: '0 0 0 2px rgba(74,222,128,0.4)',
-                animation: 'pulse 2s infinite',
-              }} />
-              <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: 1 }}>LIVE</span>
-            </>
-          )}
-        </div>
+
+        {!isTerminal && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 5,
+            background: 'rgba(255,255,255,0.15)',
+            borderRadius: 99, padding: '4px 10px', flexShrink: 0,
+          }}>
+            <div style={{
+              width: 7, height: 7, borderRadius: '50%',
+              background: '#4ade80',
+              animation: 'pulse 2s infinite',
+            }} />
+            <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.8 }}>LIVE</span>
+          </div>
+        )}
       </div>
 
-      {/* Map */}
+      {/* ── Map ────────────────────────────────────────────────────────────── */}
       <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
         <div ref={mapContainerRef} style={{ width: '100%', height: '100%' }} />
 
+        {/* Loading overlay */}
         {loading && (
           <div style={{
             position: 'absolute', inset: 0, display: 'flex', alignItems: 'center',
-            justifyContent: 'center', background: 'rgba(248,250,252,0.85)', zIndex: 5,
+            justifyContent: 'center', background: 'rgba(248,250,252,0.9)', zIndex: 5,
           }}>
             <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 36, marginBottom: 12 }}>🗺️</div>
-              <div style={{ color: '#475569', fontWeight: 500 }}>Loading tracking data…</div>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>🗺️</div>
+              <div style={{ color: '#475569', fontWeight: 600, fontSize: 14 }}>Loading tracking data…</div>
             </div>
           </div>
         )}
 
+        {/* Error overlay */}
         {error && (
           <div style={{
             position: 'absolute', inset: 0, display: 'flex', alignItems: 'center',
-            justifyContent: 'center', background: 'rgba(248,250,252,0.9)', zIndex: 5, padding: 24,
+            justifyContent: 'center', background: 'rgba(248,250,252,0.95)', zIndex: 5, padding: 24,
           }}>
             <div style={{ textAlign: 'center', maxWidth: 320 }}>
-              <div style={{ fontSize: 40, marginBottom: 12 }}>🔍</div>
-              <div style={{ color: '#b91c1c', fontWeight: 600, fontSize: 16, marginBottom: 8 }}>
-                Link Not Found
-              </div>
-              <div style={{ color: '#64748b', fontSize: 14 }}>{error}</div>
+              <div style={{ fontSize: 44, marginBottom: 14 }}>🔍</div>
+              <div style={{ color: '#b91c1c', fontWeight: 700, fontSize: 17, marginBottom: 8 }}>Link Not Found</div>
+              <div style={{ color: '#64748b', fontSize: 14, lineHeight: 1.6 }}>{error}</div>
             </div>
           </div>
         )}
 
+        {/* No location pill */}
         {data && !data.location && !loading && (
           <div style={{
             position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)',
-            background: 'white', borderRadius: 99, padding: '6px 14px',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.12)', zIndex: 5,
-            fontSize: 12, color: '#64748b', whiteSpace: 'nowrap',
+            background: 'white', borderRadius: 99, padding: '7px 16px',
+            boxShadow: '0 2px 12px rgba(0,0,0,0.12)', zIndex: 5,
+            fontSize: 13, color: '#64748b', whiteSpace: 'nowrap',
+            display: 'flex', alignItems: 'center', gap: 6,
           }}>
-            {isDriverMode ? '⏳ Waiting for shuttle to be assigned…' : '📍 Location unavailable'}
+            <span>⏳</span>
+            {isDriverMode ? 'Waiting for shuttle to be assigned…' : 'Location unavailable'}
+          </div>
+        )}
+
+        {/* Re-center button */}
+        {!isFollowing && data?.location && (
+          <button
+            onClick={recenter}
+            style={{
+              position: 'absolute', bottom: 16, right: 16, zIndex: 5,
+              background: accentColor, color: 'white',
+              border: 'none', borderRadius: 99, padding: '9px 16px',
+              fontFamily: 'inherit', fontSize: 13, fontWeight: 600,
+              boxShadow: '0 3px 12px rgba(0,0,0,0.25)',
+              cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
+            }}
+          >
+            <span>📡</span> Re-center
+          </button>
+        )}
+
+        {/* Last updated chip - floating over map bottom-left */}
+        {lastUpdated && !isTerminal && !loading && (
+          <div style={{
+            position: 'absolute', bottom: 16, left: 16, zIndex: 5,
+            background: 'rgba(255,255,255,0.92)',
+            borderRadius: 99, padding: '5px 12px',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+            fontSize: 11, color: '#64748b',
+            backdropFilter: 'blur(4px)',
+          }}>
+            {secondsAgo < 5 ? '● Just updated' : `● ${secondsAgo}s ago`}
           </div>
         )}
       </div>
 
-      {/* Info card */}
+      {/* ── Info card ──────────────────────────────────────────────────────── */}
       {data && !error && (
         <div style={{
           background: 'white',
           borderTop: '1px solid #e2e8f0',
-          padding: '14px 16px',
-          maxHeight: '38vh',
+          flexShrink: 0,
+          maxHeight: '42vh',
           overflowY: 'auto',
-          boxShadow: '0 -2px 12px rgba(0,0,0,0.06)',
         }}>
-          {/* Status pill */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+          {/* Status bar */}
+          <div style={{
+            padding: '10px 16px 0',
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          }}>
             <span style={{
-              display: 'inline-flex', alignItems: 'center', gap: 5,
-              background: isTerminal ? '#f1f5f9' : isDriverMode ? '#dbeafe' : '#fee2e2',
-              color: isTerminal ? '#64748b' : isDriverMode ? '#1e40af' : '#991b1b',
-              borderRadius: 99, padding: '4px 10px', fontSize: 12, fontWeight: 600,
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              background: statusStyle.bg, color: statusStyle.text,
+              borderRadius: 99, padding: '5px 12px', fontSize: 12, fontWeight: 700,
+              letterSpacing: 0.2,
             }}>
-              <span>{isTerminal ? '⏹' : '●'}</span>
+              <span style={{
+                width: 7, height: 7, borderRadius: '50%',
+                background: statusStyle.dot,
+                animation: isTerminal ? 'none' : 'pulse 2s infinite',
+                display: 'inline-block', flexShrink: 0,
+              }} />
               {STATUS_LABELS[data.status] || data.status}
             </span>
-            {lastUpdated && !isTerminal && (
-              <span style={{ fontSize: 11, color: '#94a3b8' }}>
-                {secondsAgo < 5 ? 'Just updated' : `${secondsAgo}s ago`}
-              </span>
-            )}
           </div>
 
-          {/* Destination */}
-          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 8 }}>
-            <span style={{ fontSize: 15, marginTop: 1 }}>🏁</span>
-            <div>
-              <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 500, marginBottom: 1 }}>Destination</div>
-              <div style={{ fontSize: 14, color: '#1e293b', fontWeight: 600 }}>{data.destinationLabel}</div>
-            </div>
-          </div>
+          {/* Details */}
+          <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
 
-          {/* Passengers */}
-          {data.passengerNames.length > 0 && (
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 8 }}>
-              <span style={{ fontSize: 15, marginTop: 1 }}>👤</span>
+            {/* Destination */}
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+              <div style={{
+                width: 34, height: 34, borderRadius: 10, flexShrink: 0,
+                background: accentLight,
+                display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16,
+              }}>🏁</div>
               <div>
-                <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 500, marginBottom: 1 }}>
-                  {data.passengerNames.length === 1 ? 'Passenger' : 'Passengers'}
-                </div>
-                <div style={{ fontSize: 14, color: '#1e293b' }}>{data.passengerNames.join(', ')}</div>
+                <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 600, marginBottom: 2, letterSpacing: 0.3 }}>DESTINATION</div>
+                <div style={{ fontSize: 15, color: '#0f172a', fontWeight: 700 }}>{data.destinationLabel}</div>
               </div>
             </div>
-          )}
 
-          {/* Shuttle info (driver mode only) */}
-          {isDriverMode && (data.shuttleLabel || data.shuttlePlate) && (
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 8 }}>
-              <span style={{ fontSize: 15, marginTop: 1 }}>🚌</span>
-              <div>
-                <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 500, marginBottom: 1 }}>Shuttle</div>
-                <div style={{ fontSize: 14, color: '#1e293b', fontWeight: 600 }}>
-                  {[data.shuttleLabel, data.shuttlePlate].filter(Boolean).join(' · ')}
-                </div>
-                {data.locationUpdatedAt && (
-                  <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>
-                    Last GPS ping: {new Date(data.locationUpdatedAt).toLocaleTimeString()}
+            {/* Passenger(s) */}
+            {data.passengerNames.length > 0 && (
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                <div style={{
+                  width: 34, height: 34, borderRadius: 10, flexShrink: 0,
+                  background: '#f1f5f9',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16,
+                }}>🧍</div>
+                <div>
+                  <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 600, marginBottom: 2, letterSpacing: 0.3 }}>
+                    {data.passengerNames.length === 1 ? 'PASSENGER' : 'PASSENGERS'}
                   </div>
-                )}
+                  <div style={{ fontSize: 14, color: '#0f172a' }}>{data.passengerNames.join(', ')}</div>
+                </div>
               </div>
-            </div>
-          )}
+            )}
 
-          {/* Note */}
-          {data.note && (
-            <div style={{
-              marginTop: 8, padding: '8px 10px',
-              background: '#f8fafc', borderRadius: 8, borderLeft: '3px solid #2563eb',
-              display: 'flex', gap: 8,
-            }}>
-              <span style={{ fontSize: 13 }}>💬</span>
-              <div>
-                <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 500, marginBottom: 2 }}>Note</div>
-                <div style={{ fontSize: 13, color: '#334155' }}>{data.note}</div>
+            {/* Shuttle info (driver mode, real shuttle only) */}
+            {isDriverMode && hasRealShuttle && (
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                <div style={{
+                  width: 34, height: 34, borderRadius: 10, flexShrink: 0,
+                  background: '#dbeafe',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16,
+                }}>🚌</div>
+                <div>
+                  <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 600, marginBottom: 2, letterSpacing: 0.3 }}>SHUTTLE</div>
+                  <div style={{ fontSize: 14, color: '#0f172a', fontWeight: 700 }}>
+                    {[data.shuttleLabel, data.shuttlePlate].filter(Boolean).join(' · ')}
+                  </div>
+                  {data.locationUpdatedAt && (
+                    <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>
+                      GPS: {new Date(data.locationUpdatedAt).toLocaleTimeString()}
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          )}
+            )}
 
-          {/* Fare type */}
-          <div style={{ marginTop: 8, display: 'flex', gap: 6 }}>
-            <span style={{
-              display: 'inline-flex', alignItems: 'center', gap: 4,
-              background: data.fareType === 'priority' ? '#fef3c7' : '#f1f5f9',
-              color: data.fareType === 'priority' ? '#92400e' : '#475569',
-              borderRadius: 99, padding: '3px 9px', fontSize: 11, fontWeight: 600,
-            }}>
-              {data.fareType === 'priority' ? '⚡ Priority' : '🚗 Standard'}
-            </span>
+            {/* Note */}
+            {data.note && (
+              <div style={{
+                padding: '9px 12px',
+                background: '#f8fafc', borderRadius: 10, borderLeft: `3px solid ${accentColor}`,
+                display: 'flex', gap: 8,
+              }}>
+                <span style={{ fontSize: 14, flexShrink: 0 }}>💬</span>
+                <div>
+                  <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 600, marginBottom: 2, letterSpacing: 0.3 }}>NOTE</div>
+                  <div style={{ fontSize: 13, color: '#334155', lineHeight: 1.5 }}>{data.note}</div>
+                </div>
+              </div>
+            )}
+
+            {/* Fare type */}
+            <div>
+              <span style={{
+                display: 'inline-flex', alignItems: 'center', gap: 5,
+                background: data.fareType === 'priority' ? '#fef3c7' : '#f1f5f9',
+                color: data.fareType === 'priority' ? '#92400e' : '#475569',
+                borderRadius: 99, padding: '4px 11px', fontSize: 12, fontWeight: 700,
+              }}>
+                {data.fareType === 'priority' ? '⚡ Priority' : '🚗 Standard'}
+              </span>
+            </div>
           </div>
 
-          {/* Branding */}
-          <div style={{ marginTop: 12, textAlign: 'center', color: '#cbd5e1', fontSize: 11 }}>
-            Powered by GoShuttle
+          {/* Branding footer */}
+          <div style={{
+            borderTop: '1px solid #f1f5f9',
+            padding: '8px 16px',
+            textAlign: 'center', color: '#cbd5e1', fontSize: 11, fontWeight: 600, letterSpacing: 0.8,
+          }}>
+            POWERED BY GOSHUTTLE
           </div>
         </div>
       )}
 
       <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap');
         @keyframes pulse {
           0%, 100% { opacity: 1; }
-          50% { opacity: 0.4; }
+          50% { opacity: 0.35; }
         }
-        .leaflet-container { font-family: inherit; }
+        .leaflet-container { font-family: 'Outfit', system-ui, sans-serif; }
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 4px; }
       `}</style>
     </div>
   );
