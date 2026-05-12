@@ -62,6 +62,8 @@ export type DispatchStatus = {
   queuePosition: number | null;
   dispatchedAt: string | null;
   expiresAt: string;
+  trackingToken?: string | null;
+  trackingUrl?: string | null;
   assignedShuttle: AssignedShuttle | null;
 };
 

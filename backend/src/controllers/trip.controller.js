@@ -3084,6 +3084,11 @@ const getMyDispatch = async (req, res) => {
       return res.status(200).json({ dispatch: null });
     }
 
+    const webBaseUrl = process.env.WEB_BASE_URL || '';
+    const trackingUrl = webBaseUrl && request.trackingToken
+      ? `${webBaseUrl}/track/${request.trackingToken}`
+      : null;
+
     return res.status(200).json({
       dispatch: {
         requestId: request._id,
@@ -3093,6 +3098,8 @@ const getMyDispatch = async (req, res) => {
         queuePosition: request.queuePosition,
         dispatchedAt: request.dispatchedAt,
         expiresAt: request.expiresAt,
+        trackingToken: request.trackingToken || null,
+        trackingUrl,
         assignedShuttle: request.assignedShuttleId
           ? {
               shuttleId: request.assignedShuttleId._id,
