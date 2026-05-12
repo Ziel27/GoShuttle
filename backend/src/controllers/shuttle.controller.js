@@ -10,7 +10,7 @@ const RideRequest = require('../models/RideRequest');
 const { isLocationInBoundary } = require('../services/geofence');
 const { completeRideRequestsForPassengers } = require('../services/ride-request-lifecycle');
 const { getManualAutomationCooldownRemainingMs } = require('../services/automation-cooldown');
-const { normalizePhase, buildPhaseAwareRequestQuery } = require('../utils/phase');
+const { normalizePhase, buildPhaseAwareRequestQuery, isShuttlePhaseCompatible } = require('../utils/phase');
 const { retryWaitingQueue } = require('../services/dispatch.service');
 
 const AUTO_PICKUP_RADIUS_METERS = 140;
@@ -623,25 +623,34 @@ const listShuttles = async (req, res) => {
       .sort({ updatedAt: -1 });
 
     if (req.user.role === 'passenger') {
-      const passengerSafeShuttles = shuttles.map((doc) => {
-        const shuttle = doc.toObject({ virtuals: true });
-        const driverStatus = shuttle?.driverId && typeof shuttle.driverId === 'object'
-          ? shuttle.driverId.status
-          : null;
+      const passengerHomePhase = normalizePhase(req.user.homePhase);
 
-        if (driverStatus !== 'driving') {
-          shuttle.location = {
-            type: 'Point',
-            coordinates: [],
-          };
-          shuttle.lastLocationUpdate = null;
-          if (shuttle.status !== 'maintenance') {
-            shuttle.status = 'idle';
+      const passengerSafeShuttles = shuttles
+        .filter((doc) => {
+          // Hide shuttles that are phase-restricted to a different area than
+          // the passenger's home phase, so the map only shows relevant shuttles.
+          const shuttlePhase = normalizePhase(doc.assignedPhase);
+          return isShuttlePhaseCompatible({ shuttlePhase, passengerHomePhase });
+        })
+        .map((doc) => {
+          const shuttle = doc.toObject({ virtuals: true });
+          const driverStatus = shuttle?.driverId && typeof shuttle.driverId === 'object'
+            ? shuttle.driverId.status
+            : null;
+
+          if (driverStatus !== 'driving') {
+            shuttle.location = {
+              type: 'Point',
+              coordinates: [],
+            };
+            shuttle.lastLocationUpdate = null;
+            if (shuttle.status !== 'maintenance') {
+              shuttle.status = 'idle';
+            }
           }
-        }
 
-        return shuttle;
-      });
+          return shuttle;
+        });
 
       return res.status(200).json({ count: passengerSafeShuttles.length, shuttles: passengerSafeShuttles });
     }
@@ -932,14 +941,15 @@ const assignShuttleDriver = async (req, res) => {
       return res.status(403).json({ error: 'Access denied. Shuttle is outside your community.' });
     }
 
+    const phaseUpdate = req.body.assignedPhase !== undefined ? { assignedPhase: normalizedAssignedPhase } : {};
+
     if (driverId === null || driverId === '' || driverId === undefined) {
-      shuttle.driverId = null;
-      if (req.body.assignedPhase !== undefined) {
-        shuttle.assignedPhase = normalizedAssignedPhase;
-      }
-      await shuttle.save();
-      await shuttle.populate('driverId', 'firstName lastName status');
-      return res.status(200).json({ message: 'Driver assignment cleared.', shuttle });
+      const cleared = await Shuttle.findByIdAndUpdate(
+        id,
+        { $set: { driverId: null, ...phaseUpdate } },
+        { new: true, runValidators: false }
+      ).populate('driverId', 'firstName lastName status');
+      return res.status(200).json({ message: 'Driver assignment cleared.', shuttle: cleared });
     }
 
     if (!mongoose.Types.ObjectId.isValid(driverId)) {
@@ -955,16 +965,15 @@ const assignShuttleDriver = async (req, res) => {
       return res.status(403).json({ error: 'Driver must belong to the same community as the shuttle.' });
     }
 
-    shuttle.driverId = driver._id;
-    if (req.body.assignedPhase !== undefined) {
-      shuttle.assignedPhase = normalizedAssignedPhase;
-    }
-    await shuttle.save();
-    await shuttle.populate('driverId', 'firstName lastName status');
+    const updated = await Shuttle.findByIdAndUpdate(
+      id,
+      { $set: { driverId: driver._id, ...phaseUpdate } },
+      { new: true, runValidators: false }
+    ).populate('driverId', 'firstName lastName status');
 
     return res.status(200).json({
       message: 'Driver assigned successfully.',
-      shuttle,
+      shuttle: updated,
     });
   } catch (error) {
     console.error('Assign shuttle driver error:', error);

@@ -109,19 +109,33 @@ export const ShuttlesPage = () => {
           return acc;
         }, {})
       );
-      setPhaseAssignmentDrafts(
-        result.reduce<Record<string, string>>((acc, shuttle) => {
-          acc[shuttle._id] = shuttle.assignedPhase || '';
-          return acc;
-        }, {})
-      );
 
       const [driverRows, phaseRows] = await Promise.all([
         fetchUsers({ role: 'driver', active: true }),
         communityId ? fetchPhaseGeofences(communityId) : Promise.resolve([]),
       ]);
       setDrivers(driverRows);
-      setPhaseGeofences(phaseRows.filter((item) => item.isActive !== false));
+      const activePhases = phaseRows.filter((item) => item.isActive !== false);
+      setPhaseGeofences(activePhases);
+
+      // Initialize phase drafts AFTER phases are loaded so we can match the
+      // normalized stored value (e.g. "phase_3b") back to the original geofence
+      // name (e.g. "Phase 3b") that the <select> options use as their value.
+      const normalizeForMatch = (v: string) =>
+        v.trim().toLowerCase().replace(/\s+/g, '_');
+
+      setPhaseAssignmentDrafts(
+        result.reduce<Record<string, string>>((acc, shuttle) => {
+          const storedNormalized = shuttle.assignedPhase
+            ? normalizeForMatch(shuttle.assignedPhase)
+            : '';
+          const match = activePhases.find(
+            (p) => normalizeForMatch(p.name) === storedNormalized
+          );
+          acc[shuttle._id] = match ? match.name : '';
+          return acc;
+        }, {})
+      );
 
       if (communityId) {
         const community = await fetchCommunityById(communityId);
