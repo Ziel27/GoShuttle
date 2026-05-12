@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const mongoose = require('mongoose');
 const validator = require('validator');
 const Trip = require('../models/Trip');
@@ -822,6 +823,9 @@ const createPickupIntent = async (req, res) => {
   try {
     const { latitude, longitude, destination, detectedPhase, pickupLocation, passengerManifest } = req.body;
     const fareType = ['priority', 'standard'].includes(req.body.fareType) ? req.body.fareType : 'standard';
+    const note = req.body.note && typeof req.body.note === 'string'
+      ? req.body.note.trim().slice(0, 300) || null
+      : null;
 
 
     const coords = validateCoordinates(latitude, longitude);
@@ -957,12 +961,18 @@ const createPickupIntent = async (req, res) => {
           location: destinationLocation,
         },
         fareExpected,
+        note,
         status: 'pending',
       };
       rideRequestsToCreate.push(rr);
     }
 
     const createdRideRequests = await RideRequest.create(rideRequestsToCreate);
+
+    const trackingToken = crypto.randomUUID();
+    const trackingMode = Array.isArray(passengerManifest) && passengerManifest.length > 0 ? 'driver' : 'passenger';
+    const webBaseUrl = process.env.WEB_BASE_URL || '';
+    const trackingUrl = webBaseUrl ? `${webBaseUrl}/track/${trackingToken}` : null;
 
     const pickupRequest = await PickupRequest.create({
       communityId: req.user.communityId,
@@ -983,6 +993,9 @@ const createPickupIntent = async (req, res) => {
       destinationLocation,
       passengerHomePhase: passsengerPhaseForDispatch,
       fareType,
+      note,
+      trackingToken,
+      trackingMode,
       status: 'pending',
       expiresAt,
     });
@@ -1036,12 +1049,15 @@ const createPickupIntent = async (req, res) => {
       expiresAt: pickupRequest.expiresAt,
       status: pickupRequest.status,
       passengerManifest: Array.isArray(pickupRequest.passengerManifest) ? pickupRequest.passengerManifest : [],
+      note: pickupRequest.note || null,
+      trackingToken: pickupRequest.trackingToken,
+      trackingUrl,
       assignedShuttleId: dispatchResult.dispatched ? dispatchResult.shuttle?._id : null,
     });
 
     return res.status(201).json({
       message: 'Pickup intent submitted.',
-      request: pickupRequest,
+      request: { ...pickupRequest.toObject(), trackingUrl },
       rideRequestId: Array.isArray(createdRideRequests) && createdRideRequests.length > 0 ? createdRideRequests[0]._id : null,
       rideRequestIds: createdRideRequests.map((r) => r._id),
       fareType,
@@ -1050,6 +1066,8 @@ const createPickupIntent = async (req, res) => {
       assignedShuttle: dispatchResult.dispatched ? dispatchResult.shuttle : null,
       queuePosition: dispatchResult.queuePosition,
       queueReason: dispatchResult.queueReason ?? null,
+      trackingToken: pickupRequest.trackingToken,
+      trackingUrl,
     });
   } catch (error) {
     console.error('Create pickup intent error:', error);
@@ -1270,7 +1288,7 @@ const listPickupIntents = async (req, res) => {
     }
 
     const requests = await PickupRequest.find(query)
-      .select('communityId passengerId location pickupLocation destinationType destinationLabel destinationLocation passengerHomePhase status expiresAt createdAt passengerManifest')
+      .select('communityId passengerId location pickupLocation destinationType destinationLabel destinationLocation passengerHomePhase status expiresAt createdAt passengerManifest note trackingToken')
       .sort({ createdAt: -1 })
       .limit(100);
 
@@ -3031,6 +3049,67 @@ const getMyDispatch = async (req, res) => {
   }
 };
 
+/**
+ * GET /api/track/:token  (public — no auth required)
+ * Returns live tracking data for a pickup request by its tracking token.
+ */
+const getTrackingInfo = async (req, res) => {
+  try {
+    const { token } = req.params;
+    if (!token || typeof token !== 'string' || token.length < 10) {
+      return res.status(400).json({ error: 'Invalid tracking token.' });
+    }
+
+    const pickupRequest = await PickupRequest.findOne({ trackingToken: token })
+      .populate('assignedShuttleId', 'location lastLocationUpdate label plateNumber status')
+      .lean();
+
+    if (!pickupRequest) {
+      return res.status(404).json({ error: 'Tracking link not found or has expired.' });
+    }
+
+    const passengerNames = (pickupRequest.passengerManifest || [])
+      .map((p) => p.name || 'Guest')
+      .filter(Boolean);
+
+    const response = {
+      mode: pickupRequest.trackingMode || 'passenger',
+      status: pickupRequest.status,
+      destinationLabel: pickupRequest.destinationLabel,
+      fareType: pickupRequest.fareType,
+      note: pickupRequest.note || null,
+      expiresAt: pickupRequest.expiresAt,
+      passengerNames,
+      location: null,
+      shuttleLabel: null,
+      shuttlePlate: null,
+      locationUpdatedAt: null,
+    };
+
+    if (pickupRequest.trackingMode === 'driver') {
+      const shuttle = pickupRequest.assignedShuttleId;
+      if (shuttle && shuttle.location && Array.isArray(shuttle.location.coordinates) && shuttle.location.coordinates.length === 2) {
+        const [lng, lat] = shuttle.location.coordinates;
+        response.location = { latitude: lat, longitude: lng };
+        response.shuttleLabel = shuttle.label || null;
+        response.shuttlePlate = shuttle.plateNumber || null;
+        response.locationUpdatedAt = shuttle.lastLocationUpdate || null;
+      }
+    } else {
+      const coords = pickupRequest.location?.coordinates;
+      if (Array.isArray(coords) && coords.length === 2) {
+        const [lng, lat] = coords;
+        response.location = { latitude: lat, longitude: lng };
+      }
+    }
+
+    return res.json(response);
+  } catch (error) {
+    console.error('Get tracking info error:', error);
+    return res.status(500).json({ error: 'Failed to fetch tracking info.' });
+  }
+};
+
 module.exports = {
 
   passengerBoard,
@@ -3055,4 +3134,5 @@ module.exports = {
   listDriverRemittances,
   resolveRideRequest,
   getMyDispatch,
+  getTrackingInfo,
 };

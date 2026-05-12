@@ -92,6 +92,26 @@ const pickupRequestSchema = new mongoose.Schema(
       default: 'standard',
       index: true,
     },
+    note: {
+      type: String,
+      trim: true,
+      maxlength: [300, 'Note cannot exceed 300 characters.'],
+      default: null,
+    },
+
+    trackingToken: {
+      type: String,
+      unique: true,
+      sparse: true,
+      index: true,
+      default: null,
+    },
+
+    trackingMode: {
+      type: String,
+      enum: ['driver', 'passenger'],
+      default: 'passenger',
+    },
 
     assignedShuttleId: {
       type: mongoose.Schema.Types.ObjectId,

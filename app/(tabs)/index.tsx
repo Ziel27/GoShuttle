@@ -60,7 +60,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
 import { type ComponentRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppState, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { AppState, Platform, Pressable, ScrollView, Share, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import MapView, { Callout, Circle, LatLng, Marker, Polygon, Region } from 'react-native-maps';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -80,7 +80,6 @@ const MANUAL_AUTOMATION_COOLDOWN_MS = 15_000;
 type ManifestDraftEntry = {
   id: string;
   name: string;
-  phone: string;
 };
 
 const palette = {
@@ -166,8 +165,10 @@ export default function HomeScreen() {
   const [fixedDestinations, setFixedDestinations] = useState<FixedDestinationOption[]>([]);
   const [pickupOriginContext, setPickupOriginContext] = useState<PickupOriginContext | null>(null);
   const [bookForOthers, setBookForOthers] = useState(false);
+  const [rideNote, setRideNote] = useState('');
+  const [pickupSearchQuery, setPickupSearchQuery] = useState('');
   const [manifestDraft, setManifestDraft] = useState<ManifestDraftEntry[]>([
-    { id: 'guest-1', name: '', phone: '' },
+    { id: 'guest-1', name: '' },
   ]);
   const [guestPickupType, setGuestPickupType] = useState<'fixed' | 'home' | null>(null);
   const [guestPickupFixedId, setGuestPickupFixedId] = useState<string>('');
@@ -359,33 +360,25 @@ export default function HomeScreen() {
     if (manifest.length === 0) return null;
 
     return manifest
-      .map((entry) => [entry.name || 'Guest', entry.phone ? `(${entry.phone})` : null].filter(Boolean).join(' '))
+      .map((entry) => entry.name || 'Guest')
       .join(', ');
   }, [activePassengerPickupIntents]);
 
   const manifestSummary = useMemo(() => {
     const filledEntries = manifestDraft
-      .map((entry) => ({
-        name: entry.name.trim(),
-        phone: entry.phone.trim(),
-      }))
-      .filter((entry) => entry.name.length > 0 || entry.phone.length > 0);
+      .map((entry) => entry.name.trim())
+      .filter((name) => name.length > 0);
 
     if (filledEntries.length === 0) return null;
 
-    return filledEntries
-      .map((entry) => [entry.name || 'Guest', entry.phone ? `(${entry.phone})` : null].filter(Boolean).join(' '))
-      .join(', ');
+    return filledEntries.map((name) => name || 'Guest').join(', ');
   }, [manifestDraft]);
 
   const normalizedPassengerManifest = useMemo(
     () =>
       manifestDraft
-        .map((entry) => ({
-          name: entry.name.trim(),
-          phone: entry.phone.trim(),
-        }))
-        .filter((entry) => entry.name.length > 0 || entry.phone.length > 0),
+        .map((entry) => ({ name: entry.name.trim() }))
+        .filter((entry) => entry.name.length > 0),
     [manifestDraft]
   );
 
@@ -462,6 +455,17 @@ export default function HomeScreen() {
     () => pickupIntents.filter((item) => item.status === 'pending' && !isExpiredIntent(item)),
     [pickupIntents]
   );
+
+  const filteredPickupIntents = useMemo(() => {
+    const q = pickupSearchQuery.trim().toLowerCase();
+    if (!q) return activeCommunityPickupIntents;
+    return activeCommunityPickupIntents.filter((item) => {
+      const names = (item.passengerManifest || []).map((g) => (g.name || '').toLowerCase()).join(' ');
+      const dest = item.destinationLabel.toLowerCase();
+      const note = (item.note || '').toLowerCase();
+      return names.includes(q) || dest.includes(q) || note.includes(q);
+    });
+  }, [activeCommunityPickupIntents, pickupSearchQuery]);
 
   const autoBoardDiagnostic = useMemo<AutomationDiagnostic>(() => {
     if (!isDriverOnShift) {
@@ -1954,13 +1958,15 @@ export default function HomeScreen() {
               ...(explicitPickupLocationForOptions ? { pickupLocation: explicitPickupLocationForOptions } : {}),
               passengerManifest: normalizedPassengerManifest,
             }
-          : selfBookingOptions
+          : selfBookingOptions,
+        rideNote.trim() || null
       );
 
       if (bookForOthers) {
         resetGuestBookingDraft();
       }
       setPassengerCount(1);
+      setRideNote('');
 
       setPickupIntents((items) => upsertPickupIntent(items, result.request));
 
@@ -2057,7 +2063,7 @@ export default function HomeScreen() {
   }, []);
 
   const resetGuestBookingDraft = useCallback(() => {
-    setManifestDraft([{ id: 'guest-1', name: '', phone: '' }]);
+    setManifestDraft([{ id: 'guest-1', name: '' }]);
     setGuestPickupType(null);
     setGuestPickupFixedId('');
     setGuestDropoffType(null);
@@ -2084,21 +2090,21 @@ export default function HomeScreen() {
     });
   }, []);
 
-  const updateManifestEntry = useCallback((id: string, field: 'name' | 'phone', value: string) => {
+  const updateManifestEntry = useCallback((id: string, field: 'name', value: string) => {
     setManifestDraft((current) => current.map((entry) => (entry.id === id ? { ...entry, [field]: value } : entry)));
   }, []);
 
   const addManifestEntry = useCallback(() => {
     setManifestDraft((current) => {
       if (current.length >= 5) return current;
-      return [...current, { id: `guest-${Date.now()}-${current.length}`, name: '', phone: '' }];
+      return [...current, { id: `guest-${Date.now()}-${current.length}`, name: '' }];
     });
   }, []);
 
   const removeManifestEntry = useCallback((id: string) => {
     setManifestDraft((current) => {
       const next = current.filter((entry) => entry.id !== id);
-      return next.length > 0 ? next : [{ id: 'guest-1', name: '', phone: '' }];
+      return next.length > 0 ? next : [{ id: 'guest-1', name: '' }];
     });
   }, []);
 
@@ -2281,6 +2287,16 @@ export default function HomeScreen() {
                                 Passenger waiting
                               </ThemedText>
                             )}
+                            {item.note ? (
+                              <View style={{ marginTop: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: borderColor }}>
+                                <ThemedText type="caption" style={{ color: tint, fontSize: 11, fontWeight: '600', marginBottom: 2 }}>
+                                  Note
+                                </ThemedText>
+                                <ThemedText type="caption" style={{ color: textColor, fontSize: 12 }}>
+                                  {item.note}
+                                </ThemedText>
+                              </View>
+                            ) : null}
                           </View>
                         </Callout>
                       </Marker>,
@@ -2389,6 +2405,82 @@ export default function HomeScreen() {
                       <ThemedText style={[styles.metaText, { color: mutedColor }]}>Pickup Requests</ThemedText>
                       <ThemedText style={[styles.valueSmallText, { color: textColor }]}>{activeCommunityPickupIntents.length} active</ThemedText>
                     </View>
+                    {activeCommunityPickupIntents.length > 0 && (
+                      <>
+                        <View style={[styles.pickupSearchBar, { borderColor, backgroundColor: surfaceColor }]}>
+                          <Ionicons name="search-outline" size={14} color={mutedColor} style={{ marginRight: 6 }} />
+                          <TextInput
+                            value={pickupSearchQuery}
+                            onChangeText={setPickupSearchQuery}
+                            placeholder="Search by name, destination, or note…"
+                            placeholderTextColor={mutedColor}
+                            style={[styles.pickupSearchInput, { color: textColor }]}
+                            clearButtonMode="while-editing"
+                            returnKeyType="search"
+                            accessibilityLabel="Search pickup requests"
+                          />
+                          {pickupSearchQuery.length > 0 && (
+                            <Pressable onPress={() => setPickupSearchQuery('')} hitSlop={8}>
+                              <Ionicons name="close-circle" size={14} color={mutedColor} />
+                            </Pressable>
+                          )}
+                        </View>
+                        {filteredPickupIntents.length === 0 ? (
+                          <ThemedText style={[styles.metaText, { color: mutedColor, marginTop: 6 }]}>No results for "{pickupSearchQuery}"</ThemedText>
+                        ) : (
+                          filteredPickupIntents.map((item, idx) => {
+                            const guestNames = (item.passengerManifest || [])
+                              .map((g) => g.name || 'Guest')
+                              .join(', ');
+                            const displayName = guestNames || 'Passenger';
+                            const isPriority = item.fareType === 'priority';
+                            return (
+                              <View
+                                key={item._id}
+                                style={[
+                                  styles.pickupQueueCard,
+                                  {
+                                    borderColor: isPriority ? '#f59e0b' : borderColor,
+                                    backgroundColor: isPriority
+                                      ? colorScheme === 'dark' ? '#3b2a10' : '#fffbeb'
+                                      : colorScheme === 'dark' ? AppPalette.darkOverlaySoft : bgColor,
+                                  },
+                                  idx > 0 && { marginTop: 8 },
+                                ]}
+                              >
+                                <View style={styles.pickupQueueCardHeader}>
+                                  <View style={{ flex: 1 }}>
+                                    <ThemedText style={[styles.pickupQueueName, { color: textColor }]} numberOfLines={1}>
+                                      {displayName}
+                                    </ThemedText>
+                                    <View style={styles.pickupQueueDestRow}>
+                                      <Ionicons name="location-outline" size={12} color={mutedColor} />
+                                      <ThemedText style={[styles.pickupQueueDest, { color: mutedColor }]} numberOfLines={1}>
+                                        {item.destinationLabel}
+                                      </ThemedText>
+                                    </View>
+                                  </View>
+                                  <View style={[styles.pickupQueueBadge, { backgroundColor: isPriority ? '#f59e0b' : tint }]}>
+                                    <Ionicons name={isPriority ? 'flash' : 'car-outline'} size={10} color={palette.white} />
+                                    <ThemedText style={styles.pickupQueueBadgeText}>
+                                      {isPriority ? 'Priority' : 'Standard'}
+                                    </ThemedText>
+                                  </View>
+                                </View>
+                                {item.note ? (
+                                  <View style={[styles.pickupQueueNote, { borderTopColor: borderColor }]}>
+                                    <Ionicons name="chatbubble-ellipses-outline" size={11} color={tint} style={{ marginRight: 4 }} />
+                                    <ThemedText style={[styles.pickupQueueNoteText, { color: textColor }]} numberOfLines={3}>
+                                      {item.note}
+                                    </ThemedText>
+                                  </View>
+                                ) : null}
+                              </View>
+                            );
+                          })
+                        )}
+                      </>
+                    )}
                     <View style={styles.rowBetween}>
                       <ThemedText style={[styles.metaText, { color: mutedColor }]}>Shift Status</ThemedText>
                       <ThemedText style={[styles.valueSmallText, { color: isDriverOnShift ? successColor : dangerColor }]}>
@@ -2713,6 +2805,16 @@ export default function HomeScreen() {
                                 Passenger waiting
                               </ThemedText>
                             )}
+                            {item.note ? (
+                              <View style={{ marginTop: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: borderColor }}>
+                                <ThemedText type="caption" style={{ color: tint, fontSize: 11, fontWeight: '600', marginBottom: 2 }}>
+                                  Note
+                                </ThemedText>
+                                <ThemedText type="caption" style={{ color: textColor, fontSize: 12 }}>
+                                  {item.note}
+                                </ThemedText>
+                              </View>
+                            ) : null}
                           </View>
                         </Callout>
                       </Marker>,
@@ -2865,17 +2967,6 @@ export default function HomeScreen() {
                                 onChangeText={(value) => updateManifestEntry(entry.id, 'name', value)}
                                 placeholder="Full name"
                                 placeholderTextColor={mutedColor}
-                                style={[styles.manifestInputBare, { color: textColor }]}
-                              />
-                            </View>
-                            <View style={[styles.manifestInputWrapper, { borderColor, backgroundColor: surfaceColor, marginTop: 8 }]}>
-                              <Ionicons name="call-outline" size={14} color={mutedColor} style={styles.manifestInputIcon} />
-                              <TextInput
-                                value={entry.phone}
-                                onChangeText={(value) => updateManifestEntry(entry.id, 'phone', value)}
-                                placeholder="Phone number (optional)"
-                                placeholderTextColor={mutedColor}
-                                keyboardType="phone-pad"
                                 style={[styles.manifestInputBare, { color: textColor }]}
                               />
                             </View>
@@ -3500,6 +3591,27 @@ export default function HomeScreen() {
 
 
 
+              {activePassengerPickupIntents.length === 0 && (
+                <View style={[styles.noteInputCard, { borderColor, backgroundColor: bgColor }]}>
+                  <View style={styles.noteInputRow}>
+                    <Ionicons name="chatbubble-ellipses-outline" size={16} color={mutedColor} style={{ marginRight: 8 }} />
+                    <TextInput
+                      value={rideNote}
+                      onChangeText={(v) => setRideNote(v.slice(0, 300))}
+                      placeholder="Note to driver (optional)"
+                      placeholderTextColor={mutedColor}
+                      multiline
+                      numberOfLines={2}
+                      style={[styles.noteInputBare, { color: textColor }]}
+                      accessibilityLabel="Note to driver"
+                    />
+                  </View>
+                  {rideNote.length > 0 && (
+                    <ThemedText style={[styles.noteCharCount, { color: mutedColor }]}>{rideNote.length}/300</ThemedText>
+                  )}
+                </View>
+              )}
+
               <Pressable
                 style={[
                   styles.passengerPrimaryButton,
@@ -3674,6 +3786,42 @@ export default function HomeScreen() {
                     <ThemedText style={[styles.pickupActiveMessage, { color: mutedColor }]}>
                       Booking for: {activePickupManifestSummary}
                     </ThemedText>
+                  ) : null}
+
+                  {/* ── Share Tracking Link ── */}
+                  {activePassengerPickupIntents[0]?.trackingToken ? (
+                    <Pressable
+                      style={[
+                        styles.shareTrackingBtn,
+                        {
+                          borderColor: colorScheme === 'dark' ? tint : '#2563eb',
+                          backgroundColor: colorScheme === 'dark' ? 'rgba(37,99,235,0.12)' : '#eff6ff',
+                        },
+                      ]}
+                      onPress={async () => {
+                        const intent = activePassengerPickupIntents[0];
+                        if (!intent?.trackingToken) return;
+                        const trackingUrl = intent.trackingUrl;
+                        const isBookForOthers = Array.isArray(intent.passengerManifest) && intent.passengerManifest.length > 0;
+                        const message = isBookForOthers
+                          ? `Track the shuttle on its way to pick up ${activePickupManifestSummary || 'your passengers'}`
+                          : 'Track my shuttle pickup location';
+                        try {
+                          if (trackingUrl) {
+                            await Share.share({ message: `${message}: ${trackingUrl}`, url: trackingUrl });
+                          } else {
+                            await Share.share({ message: `${message} — Tracking ID: ${intent.trackingToken}` });
+                          }
+                        } catch {}
+                      }}
+                      accessibilityRole="button"
+                      accessibilityLabel="Share tracking link"
+                    >
+                      <Ionicons name="share-outline" size={14} color={colorScheme === 'dark' ? tint : '#2563eb'} />
+                      <ThemedText style={[styles.shareTrackingText, { color: colorScheme === 'dark' ? tint : '#2563eb' }]}>
+                        Share Tracking Link
+                      </ThemedText>
+                    </Pressable>
                   ) : null}
 
                   {/* ── Cancel button ── */}
@@ -4303,6 +4451,111 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
+  },
+  pickupSearchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.sm,
+    paddingHorizontal: DesignTokens.spacing.xs,
+    paddingVertical: 6,
+    marginTop: 8,
+  },
+  pickupSearchInput: {
+    flex: 1,
+    fontFamily: OutfitFonts.regular,
+    fontSize: 13,
+    paddingVertical: 0,
+  },
+  pickupQueueCard: {
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.md,
+    paddingHorizontal: DesignTokens.spacing.sm,
+    paddingVertical: DesignTokens.spacing.xs,
+    marginTop: 6,
+  },
+  pickupQueueCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: DesignTokens.spacing.xs,
+  },
+  pickupQueueName: {
+    fontFamily: OutfitFonts.semiBold,
+    fontSize: 13,
+  },
+  pickupQueueDestRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    marginTop: 2,
+  },
+  pickupQueueDest: {
+    fontFamily: OutfitFonts.regular,
+    fontSize: 12,
+    flex: 1,
+  },
+  pickupQueueBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    borderRadius: 99,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+  },
+  pickupQueueBadgeText: {
+    fontFamily: OutfitFonts.semiBold,
+    fontSize: 10,
+    color: '#fff',
+  },
+  pickupQueueNote: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginTop: 6,
+    paddingTop: 6,
+    borderTopWidth: 1,
+  },
+  pickupQueueNoteText: {
+    fontFamily: OutfitFonts.regular,
+    fontSize: 12,
+    flex: 1,
+  },
+  shareTrackingBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.sm,
+    paddingVertical: 8,
+    marginTop: 10,
+  },
+  shareTrackingText: {
+    fontFamily: OutfitFonts.semiBold,
+    fontSize: 13,
+  },
+  noteInputCard: {
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.md,
+    paddingHorizontal: DesignTokens.spacing.sm,
+    paddingTop: DesignTokens.spacing.sm,
+    paddingBottom: 6,
+    marginTop: DesignTokens.spacing.xs,
+  },
+  noteInputRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  noteInputBare: {
+    flex: 1,
+    fontFamily: OutfitFonts.regular,
+    fontSize: 14,
+    minHeight: 44,
+    textAlignVertical: 'top',
+  },
+  noteCharCount: {
+    fontSize: 11,
+    textAlign: 'right',
+    marginTop: 2,
   },
   passengerPrimaryButton: {
     marginTop: DesignTokens.spacing.xs,

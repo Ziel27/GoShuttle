@@ -24,6 +24,9 @@ export type PickupIntentEventPayload = {
   };
   status?: PickupIntent['status'];
   expiresAt?: string;
+  note?: string | null;
+  trackingToken?: string | null;
+  trackingUrl?: string | null;
 };
 
 export const toShuttleCoordinate = (shuttle: Shuttle): LatLng | null => {
@@ -157,6 +160,9 @@ export const toPickupIntent = (payload: PickupIntentEventPayload): PickupIntent 
     fareType: 'standard',
     status: payload.status || 'pending',
     expiresAt: payload.expiresAt || new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+    note: payload.note || null,
+    trackingToken: payload.trackingToken || null,
+    trackingUrl: payload.trackingUrl || null,
   };
 };
 
