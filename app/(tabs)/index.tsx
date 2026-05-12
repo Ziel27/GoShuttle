@@ -358,6 +358,76 @@ export default function HomeScreen() {
     checkHowToBook();
   }, [user?.role]);
 
+  const activePassengerPickupIntents = useMemo(
+    () =>
+      pickupIntents.filter(
+        (item) =>
+          item.passengerId === user?._id &&
+          ['pending', 'claimed', 'queued', 'dispatched'].includes(item.status)
+      ),
+    [pickupIntents, user?._id]
+  );
+
+  const activePassengerPickupRequest = activePassengerPickupIntents[0] ?? null;
+  const activePassengerPickupRequestCount = Math.max(
+    1,
+    activePassengerPickupRequest?.passengerManifest?.length || 1
+  );
+  const activePassengerPickupCoordinate = activePassengerPickupRequest
+    ? getPickupIntentCoordinate(activePassengerPickupRequest)
+    : null;
+  const activePassengerDropoffCoordinate = activePassengerPickupRequest?.destinationLocation?.coordinates?.length === 2
+    ? {
+        latitude: activePassengerPickupRequest.destinationLocation.coordinates[1],
+        longitude: activePassengerPickupRequest.destinationLocation.coordinates[0],
+      }
+    : null;
+  const assignedShuttleCoordinate = assignedShuttle?.location?.coordinates?.length === 2
+    ? {
+        latitude: assignedShuttle.location.coordinates[1],
+        longitude: assignedShuttle.location.coordinates[0],
+      }
+    : null;
+  const activePassengerPickupDistanceMeters = assignedShuttleCoordinate && activePassengerPickupCoordinate
+    ? getDistanceMeters(assignedShuttleCoordinate, activePassengerPickupCoordinate)
+    : null;
+  const activePassengerDropoffDistanceMeters = assignedShuttleCoordinate && activePassengerDropoffCoordinate
+    ? getDistanceMeters(assignedShuttleCoordinate, activePassengerDropoffCoordinate)
+    : null;
+  const isWithinPickupRadius =
+    activePassengerPickupDistanceMeters !== null && activePassengerPickupDistanceMeters <= DRIVER_PICKUP_RADIUS_METERS;
+  const isWithinDropoffRadius =
+    activePassengerDropoffDistanceMeters !== null && activePassengerDropoffDistanceMeters <= DRIVER_DROPOFF_RADIUS_METERS;
+  const remainingManualPickupSlots = Math.max(0, activePassengerPickupRequestCount - activePassengerManualBoardCount);
+  const activePassengerPickupFitsCapacity = Boolean(
+    assignedShuttle && assignedShuttle.currentCapacity + activePassengerPickupRequestCount <= assignedShuttle.maxCapacity
+  );
+  const activePassengerPickupVisible = Boolean(
+    activePassengerPickupRequest && remainingManualPickupSlots > 0 && activePassengerPickupFitsCapacity
+  );
+  const activeDropoffPassengers = useMemo(
+    () =>
+      assignedShuttleCoordinate
+        ? onboardDestinations.filter((item) => {
+            const destinationCoordinates = item.destinationLocation?.coordinates;
+            if (!destinationCoordinates || destinationCoordinates.length !== 2) return false;
+
+            const destinationPoint = {
+              latitude: destinationCoordinates[1],
+              longitude: destinationCoordinates[0],
+            };
+
+            return getDistanceMeters(assignedShuttleCoordinate, destinationPoint) <= DRIVER_DROPOFF_RADIUS_METERS;
+          })
+        : [],
+    [assignedShuttleCoordinate, onboardDestinations]
+  );
+  const activeDropoffPassengerCount = activeDropoffPassengers.length;
+
+  useEffect(() => {
+    setActivePassengerManualBoardCount(0);
+  }, [activePassengerPickupRequest?._id]);
+
   const activePickupDestinationSummary = useMemo(() => {
     const activeIntent = activePassengerPickupIntents[0];
     if (!activeIntent) return null;
@@ -572,66 +642,6 @@ export default function HomeScreen() {
       ),
     [pickupIntents, user?._id]
   );
-
-  const activePassengerPickupRequest = activePassengerPickupIntents[0] ?? null;
-  const activePassengerPickupRequestCount = Math.max(
-    1,
-    activePassengerPickupRequest?.passengerManifest?.length || 1
-  );
-  const activePassengerPickupCoordinate = activePassengerPickupRequest
-    ? getPickupIntentCoordinate(activePassengerPickupRequest)
-    : null;
-  const activePassengerDropoffCoordinate = activePassengerPickupRequest?.destinationLocation?.coordinates?.length === 2
-    ? {
-        latitude: activePassengerPickupRequest.destinationLocation.coordinates[1],
-        longitude: activePassengerPickupRequest.destinationLocation.coordinates[0],
-      }
-    : null;
-  const assignedShuttleCoordinate = assignedShuttle?.location?.coordinates?.length === 2
-    ? {
-        latitude: assignedShuttle.location.coordinates[1],
-        longitude: assignedShuttle.location.coordinates[0],
-      }
-    : null;
-  const activePassengerPickupDistanceMeters = assignedShuttleCoordinate && activePassengerPickupCoordinate
-    ? getDistanceMeters(assignedShuttleCoordinate, activePassengerPickupCoordinate)
-    : null;
-  const activePassengerDropoffDistanceMeters = assignedShuttleCoordinate && activePassengerDropoffCoordinate
-    ? getDistanceMeters(assignedShuttleCoordinate, activePassengerDropoffCoordinate)
-    : null;
-  const isWithinPickupRadius =
-    activePassengerPickupDistanceMeters !== null && activePassengerPickupDistanceMeters <= DRIVER_PICKUP_RADIUS_METERS;
-  const isWithinDropoffRadius =
-    activePassengerDropoffDistanceMeters !== null && activePassengerDropoffDistanceMeters <= DRIVER_DROPOFF_RADIUS_METERS;
-  const remainingManualPickupSlots = Math.max(0, activePassengerPickupRequestCount - activePassengerManualBoardCount);
-  const activePassengerPickupFitsCapacity = Boolean(
-    assignedShuttle && assignedShuttle.currentCapacity + activePassengerPickupRequestCount <= assignedShuttle.maxCapacity
-  );
-  const activePassengerPickupVisible = Boolean(
-    activePassengerPickupRequest && remainingManualPickupSlots > 0 && activePassengerPickupFitsCapacity
-  );
-  const activeDropoffPassengers = useMemo(
-    () =>
-      assignedShuttleCoordinate
-        ? onboardDestinations.filter((item) => {
-            const destinationCoordinates = item.destinationLocation?.coordinates;
-            if (!destinationCoordinates || destinationCoordinates.length !== 2) return false;
-
-            const destinationPoint = {
-              latitude: destinationCoordinates[1],
-              longitude: destinationCoordinates[0],
-            };
-
-            return getDistanceMeters(assignedShuttleCoordinate, destinationPoint) <= DRIVER_DROPOFF_RADIUS_METERS;
-          })
-        : [],
-    [assignedShuttleCoordinate, onboardDestinations]
-  );
-  const activeDropoffPassengerCount = activeDropoffPassengers.length;
-
-  useEffect(() => {
-    setActivePassengerManualBoardCount(0);
-  }, [activePassengerPickupRequest?._id]);
 
   const filteredPickupIntents = useMemo(() => {
     const q = pickupSearchQuery.trim().toLowerCase();
