@@ -107,7 +107,7 @@ const configuredOrigins = process.env.CORS_ORIGIN
 
 const hasWildcardOrigin = configuredOrigins.includes('*');
 const defaultDevOrigins = ['http://localhost:5173', 'http://127.0.0.1:5173'];
-const defaultProdOrigins = ['https://admin.goshuttle.app', 'https://api.goshuttle.app'];
+const defaultProdOrigins = ['https://admin.goshuttle.app', 'https://api.goshuttle.app', 'https://track.goshuttle.app'];
 
 const allowlistOrigins = configuredOrigins.length
   ? configuredOrigins.filter((origin) => origin !== '*')
