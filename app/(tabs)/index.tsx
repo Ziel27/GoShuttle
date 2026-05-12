@@ -80,6 +80,7 @@ const MANUAL_AUTOMATION_COOLDOWN_MS = 15_000;
 type ManifestDraftEntry = {
   id: string;
   name: string;
+  discountType: 'student' | 'pwd' | 'senior' | 'none';
 };
 
 const palette = {
@@ -168,11 +169,9 @@ export default function HomeScreen() {
   const [rideNote, setRideNote] = useState('');
   const [pickupSearchQuery, setPickupSearchQuery] = useState('');
   const [manifestDraft, setManifestDraft] = useState<ManifestDraftEntry[]>([
-    { id: 'guest-1', name: '' },
+    { id: 'guest-1', name: '', discountType: 'none' },
   ]);
   const [guestPickupType, setGuestPickupType] = useState<'fixed' | 'home' | null>(null);
-  const [guestDiscountType, setGuestDiscountType] = useState<'student' | 'pwd' | 'senior' | null>(null);
-  const [guestDiscountCount, setGuestDiscountCount] = useState<number>(0);
   const [guestPickupFixedId, setGuestPickupFixedId] = useState<string>('');
   const [guestDropoffType, setGuestDropoffType] = useState<'fixed' | 'home' | null>(null);
   const [guestDropoffFixedId, setGuestDropoffFixedId] = useState<string>('');
@@ -265,95 +264,67 @@ export default function HomeScreen() {
   }, [dismissedWarningIds]);
 
   useEffect(() => {
-    async function checkHowToBook() {
-      if (user?.role === 'passenger') {
-        const seen = await AsyncStorage.getItem('@how_to_book_seen');
-        if (!seen) {
-          setShowHowToBookModal(true);
-        }
-      }
-    }
-    checkHowToBook();
-  }, [user?.role]);
+                      {/* Per-Guest Discount Selection */}
+                      {manifestDraft.map((guest, idx) => (
+                        <View key={guest.id} style={[styles.manifestSection, { borderColor, backgroundColor: surfaceColor, marginTop: idx === 0 ? 12 : 8 }]}>
+                          <View style={styles.manifestSectionHeader}>
+                            <View style={[styles.manifestIconBadge, { backgroundColor: colorScheme === 'dark' ? AppPalette.darkOverlaySoft : palette.slateBg }]}>
+                              <Ionicons name="pricetag" size={16} color={tint} />
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <ThemedText style={[styles.manifestRowLabel, { color: textColor }]}>
+                                {guest.name || `Guest ${idx + 1}`} - Discount (Optional)
+                              </ThemedText>
+                              <ThemedText style={[styles.manifestCaption, { color: mutedColor }]}>
+                                Select if this guest qualifies for a discount
+                              </ThemedText>
+                            </View>
+                          </View>
 
+                          <View style={styles.manifestActionRow}>
+                            {([
+                              { key: 'none', label: 'None' },
+                              { key: 'student', label: 'Student' },
+                              { key: 'pwd', label: 'PWD' },
+                              { key: 'senior', label: 'Senior' },
+                            ] as const).map(({ key, label }) => (
+                              <Pressable
+                                key={key}
+                                accessibilityRole="radio"
+                                accessibilityState={{ checked: guest.discountType === key }}
+                                onPress={() => {
+                                  setManifestDraft((draft) =>
+                                    draft.map((entry) =>
+                                      entry.id === guest.id ? { ...entry, discountType: key } : entry
+                                    )
+                                  );
+                                }}
+                                style={({ pressed }) => [
+                                  styles.manifestActionButton,
+                                  {
+                                    borderColor: guest.discountType === key ? tint : borderColor,
+                                    backgroundColor: guest.discountType === key ? tint : bgColor,
+                                  },
+                                  pressed && styles.manifestTogglePressed,
+                                ]}
+                              >
+                                <ThemedText style={[styles.manifestActionText, { color: guest.discountType === key ? palette.white : tint }]}>
+                                  {label}
+                                </ThemedText>
+                              </Pressable>
+                            ))}
+                          </View>
 
-  const getDriverId = (driverId: Shuttle['driverId']): string | null => {
-    if (typeof driverId === 'string') return driverId;
-    if (driverId && typeof driverId === 'object' && typeof driverId._id === 'string') return driverId._id;
-    return null;
-  };
-
-  const getShuttleDriverStatus = useCallback((driverId: Shuttle['driverId']) => {
-    if (driverId && typeof driverId === 'object') {
-      return driverId.status || 'offline';
-    }
-    return 'offline';
-  }, []);
-
-  const isDriverOnShift = user?.role === 'driver' && user?.status === 'driving';
-  const hasSavedHomeDestination = (user?.homeDestination?.location?.coordinates || []).length === 2;
-  const activeCommunityId = useMemo(() => toCommunityIdString(user?.communityId), [user?.communityId]);
-
-  const allowedPickupDestinationTypes = useMemo(() => {
-    const hasFixedDestinations = fixedDestinations.length > 0;
-    const hasHomeDestination = hasSavedHomeDestination;
-
-    if (pickupOriginContext?.type === 'home') {
-      if (hasFixedDestinations) return ['fixed'] as const;
-      if (hasHomeDestination) return ['home'] as const;
-    }
-
-    if (pickupOriginContext?.type === 'fixed') {
-      if (hasHomeDestination) return ['home'] as const;
-      if (hasFixedDestinations) return ['fixed'] as const;
-    }
-
-    const options: Array<'fixed' | 'home'> = [];
-    if (hasFixedDestinations) options.push('fixed');
-    if (hasHomeDestination) options.push('home');
-    return options;
-  }, [fixedDestinations.length, hasSavedHomeDestination, pickupOriginContext?.type]);
-
-  const assignedShuttle = useMemo(() => {
-    if (!user) return null;
-    if (user.role !== 'driver') return null;
-    return shuttles.find((item) => getDriverId(item.driverId) === user._id) || null;
-  }, [shuttles, user]);
-  const assignedShuttleId = assignedShuttle?._id || null;
-
-  const activePassengerPickupIntents = useMemo(() => {
-    const myId = user?._id;
-    if (!myId) return [];
-
-    return pickupIntents
-      .filter((item) => item.passengerId === myId && item.status === 'pending' && !isExpiredIntent(item))
-      .sort((a, b) => new Date(a.expiresAt).getTime() - new Date(b.expiresAt).getTime());
-  }, [pickupIntents, user?._id]);
-
-  const selectedFixedDestination = useMemo(
-    () => fixedDestinations.find((item) => item._id === selectedFixedDestinationId) || null,
-    [fixedDestinations, selectedFixedDestinationId]
-  );
-
-  const selectedDestinationSummary = useMemo(() => {
-    if (!selectedDestinationType) {
-      return 'Choose a destination type first';
-    }
-
-    if (selectedDestinationType === 'home') {
-      if (!hasSavedHomeDestination) {
-        return 'Home pickup - not set yet (set it in Settings)';
-      }
-      return `Home pickup - ${user?.homeDestination?.label || 'Home'}`;
-    }
-
-    if (!selectedFixedDestination) {
-      return 'Fixed destination - no destination selected';
-    }
-
-    return `Fixed destination - ${selectedFixedDestination.name}`;
-  }, [hasSavedHomeDestination, selectedDestinationType, selectedFixedDestination, user?.homeDestination?.label]);
-
+                          {guest.discountType !== 'none' && (
+                            <View style={[styles.manifestHomeNotice, { backgroundColor: colorScheme === 'dark' ? AppPalette.darkSkyBg : AppPalette.sky, borderColor: tint }]}>
+                              <Ionicons name="id-card-outline" size={14} color={tint} />
+                              <ThemedText style={[styles.manifestCaption, { color: tint, flex: 1 }]}>
+                                Remind this guest to show a valid {guest.discountType.toUpperCase()} ID to the driver.
+                              </ThemedText>
+                            </View>
+                          )}
+                        </View>
+                      ))}
   const activePickupDestinationSummary = useMemo(() => {
     const activeIntent = activePassengerPickupIntents[0];
     if (!activeIntent) return null;
@@ -1978,9 +1949,10 @@ export default function HomeScreen() {
         bookForOthers && normalizedPassengerManifest.length > 0
           ? {
               ...(explicitPickupLocationForOptions ? { pickupLocation: explicitPickupLocationForOptions } : {}),
-              passengerManifest: normalizedPassengerManifest,
-              ...(guestDiscountType ? { discountType: guestDiscountType } : {}),
-              ...(guestDiscountType && guestDiscountCount > 0 ? { discountCount: guestDiscountCount } : {}),
+              passengerManifest: manifestDraft.map(guest => ({
+                name: guest.name,
+                ...(guest.discountType !== 'none' ? { discountType: guest.discountType } : {}),
+              })),
             }
           : selfBookingOptions,
         rideNote.trim() || null
@@ -2087,13 +2059,11 @@ export default function HomeScreen() {
   }, []);
 
   const resetGuestBookingDraft = useCallback(() => {
-    setManifestDraft([{ id: 'guest-1', name: '' }]);
+    setManifestDraft([{ id: 'guest-1', name: '', discountType: 'none' }]);
     setGuestPickupType(null);
     setGuestPickupFixedId('');
     setGuestDropoffType(null);
     setGuestDropoffFixedId('');
-    setGuestDiscountType(null);
-    setGuestDiscountCount(0);
   }, []);
 
   const toggleBookForOthers = useCallback(() => {
@@ -2123,14 +2093,14 @@ export default function HomeScreen() {
   const addManifestEntry = useCallback(() => {
     setManifestDraft((current) => {
       if (current.length >= 5) return current;
-      return [...current, { id: `guest-${Date.now()}-${current.length}`, name: '' }];
+      return [...current, { id: `guest-${Date.now()}-${current.length}`, name: '', discountType: 'none' }];
     });
   }, []);
 
   const removeManifestEntry = useCallback((id: string) => {
     setManifestDraft((current) => {
       const next = current.filter((entry) => entry.id !== id);
-      return next.length > 0 ? next : [{ id: 'guest-1', name: '' }];
+      return next.length > 0 ? next : [{ id: 'guest-1', name: '', discountType: 'none' }];
     });
   }, []);
 

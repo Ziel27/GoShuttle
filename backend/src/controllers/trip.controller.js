@@ -835,11 +835,6 @@ const createPickupIntent = async (req, res) => {
       : null;
 
     const VALID_DISCOUNT_TYPES = ['student', 'pwd', 'senior'];
-    const rawDiscountType = req.body.discountType;
-    const bookingDiscountType = VALID_DISCOUNT_TYPES.includes(rawDiscountType) ? rawDiscountType : null;
-    const bookingDiscountCount = bookingDiscountType
-      ? Math.max(1, Math.min(5, parseInt(req.body.discountCount, 10) || 1))
-      : 0;
 
 
     const coords = validateCoordinates(latitude, longitude);
@@ -979,7 +974,6 @@ const createPickupIntent = async (req, res) => {
     // Support passengerManifest for delegated/group bookings. If no manifest is provided,
     // we default it to the primary passenger, making sure their name and optional phone
     // are visible to the driver.
-
     const MAX_PASSENGERS_PER_BOOKING = 5;
 
     let finalPassengerManifest = passengerManifest;
@@ -988,6 +982,7 @@ const createPickupIntent = async (req, res) => {
         passengerId: req.user._id,
         name: `${req.user.firstName} ${req.user.lastName}`.trim(),
         phone: req.user.phone || null,
+        discountType: 'none',
       }];
     }
 
@@ -997,19 +992,47 @@ const createPickupIntent = async (req, res) => {
       });
     }
 
-    // Append ID-presentation note when discount is active so driver sees it
+    // Validate and normalize discount types in manifest
+    const normalizedManifest = finalPassengerManifest.map((entry) => ({
+      ...entry,
+      discountType: VALID_DISCOUNT_TYPES.includes(entry.discountType) ? entry.discountType : 'none',
+    }));
+
+    // Build discount notes for passengers with active discounts
     let finalNote = note;
-    if (resolvedDiscountType && resolvedDiscountCount > 0 && discountPct > 0) {
-      const discountLabel = { student: 'Student', pwd: 'PWD', senior: 'Senior Citizen' }[resolvedDiscountType] || resolvedDiscountType;
-      const idNote = `[${discountLabel} Discount x${resolvedDiscountCount}] Please present a valid ${discountLabel} ID upon boarding.`;
+    const discountNotes = normalizedManifest
+      .map((entry, idx) => {
+        if (entry.discountType === 'none' || entry.discountType === 'student' && discountPct < 1) {
+          return null;
+        }
+        const discountLabel = { student: 'Student', pwd: 'PWD', senior: 'Senior Citizen' }[entry.discountType] || entry.discountType;
+        const guestName = entry.name || `Guest ${idx + 1}`;
+        return `${guestName}: ${discountLabel} ID required`;
+      })
+      .filter(Boolean);
+
+    if (discountNotes.length > 0) {
+      const idNote = `[Discounts] ${discountNotes.join(' | ')}`;
       finalNote = note ? `${note} | ${idNote}` : idNote;
       finalNote = finalNote.slice(0, 500);
     }
-
     const rideRequestsToCreate = [];
-    for (let i = 0; i < finalPassengerManifest.length; i++) {
-      const entry = finalPassengerManifest[i];
-      const isDiscounted = resolvedDiscountType && i < resolvedDiscountCount && discountPct > 0;
+    for (let i = 0; i < normalizedManifest.length; i++) {
+      const entry = normalizedManifest[i];
+      const passengerDiscountType = entry.discountType;
+      const getPassengerDiscountPct = (dtype) => {
+        if (!dtype || dtype === 'none') return 0;
+        const ds = community.discountSettings || {};
+        if (dtype === 'student') return ds.studentDiscount || 0;
+        if (dtype === 'pwd') return ds.pwdDiscount || 0;
+        if (dtype === 'senior') return ds.seniorDiscount || 0;
+        return 0;
+      };
+      const passengerDiscountPct = getPassengerDiscountPct(passengerDiscountType);
+      const passengerDiscountedFare = passengerDiscountPct > 0
+        ? Number((baseFareForType * (1 - passengerDiscountPct / 100)).toFixed(2))
+        : baseFareForType;
+      const isDiscounted = passengerDiscountType && passengerDiscountType !== 'none' && passengerDiscountPct > 0;
       const rr = {
         communityId: req.user.communityId,
         passengerId: entry.passengerId && mongoose.Types.ObjectId.isValid(String(entry.passengerId)) ? entry.passengerId : null,
@@ -1023,9 +1046,9 @@ const createPickupIntent = async (req, res) => {
           label: destinationLabel,
           location: destinationLocation,
         },
-        fareExpected: isDiscounted ? discountedFare : baseFareForType,
+        fareExpected: isDiscounted ? passengerDiscountedFare : baseFareForType,
         originalFare: isDiscounted ? baseFareForType : null,
-        discountType: isDiscounted ? resolvedDiscountType : 'none',
+        discountType: passengerDiscountType || 'none',
         note: finalNote,
         status: 'pending',
       };
@@ -1043,10 +1066,11 @@ const createPickupIntent = async (req, res) => {
       communityId: req.user.communityId,
       passengerId: req.user._id,
       bookingOwner: req.user._id,
-      passengerManifest: finalPassengerManifest.map((p) => ({
+      passengerManifest: normalizedManifest.map((p) => ({
         passengerId: p.passengerId && mongoose.Types.ObjectId.isValid(String(p.passengerId)) ? p.passengerId : null,
         name: p.name || null,
         phone: p.phone || null,
+        discountType: p.discountType || 'none',
       })),
       location: explicitPickupPoint || {
         type: 'Point',
