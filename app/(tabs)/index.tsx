@@ -83,6 +83,14 @@ type ManifestDraftEntry = {
   discountType: 'student' | 'pwd' | 'senior' | 'none';
 };
 
+type SelfPassengerEntry = {
+  id: string;
+  name: string;
+  passengerId?: string;
+  discountType: 'student' | 'pwd' | 'senior' | 'none';
+  isOwner: boolean;
+};
+
 const palette = {
   navy: AppPalette.navy,
   emerald: AppPalette.success,
@@ -208,6 +216,7 @@ export default function HomeScreen() {
   // ── Dispatch state (passenger-only) ───────────────────────────────────────
   const [fareType, setFareType] = useState<'standard' | 'priority'>('standard');
   const [passengerCount, setPassengerCount] = useState(1);
+  const [selfPassengerDraft, setSelfPassengerDraft] = useState<SelfPassengerEntry[]>([]);
   const [dispatchedShuttle, setDispatchedShuttle] = useState<AssignedShuttle | null>(null);
   const [queueNotice, setQueueNotice] = useState<{
     position: number | null;
@@ -243,6 +252,38 @@ export default function HomeScreen() {
   const [opsBypassMode, setOpsBypassMode] = useState(false);
   const [showHowToBookModal, setShowHowToBookModal] = useState(false);
   const [dismissedWarningIds, setDismissedWarningIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!user || bookForOthers) return;
+
+    setSelfPassengerDraft((current) => {
+      const ownerName = `${user.firstName || ''} ${user.lastName || ''}`.trim() || 'Me';
+      const next: SelfPassengerEntry[] = [];
+
+      for (let i = 0; i < passengerCount; i += 1) {
+        if (i === 0) {
+          next.push({
+            id: 'self-owner',
+            name: ownerName,
+            passengerId: user._id,
+            discountType: current[0]?.discountType || 'none',
+            isOwner: true,
+          });
+          continue;
+        }
+
+        const existing = current[i];
+        next.push({
+          id: existing?.id || `self-companion-${i}`,
+          name: existing?.name || `Companion ${i}`,
+          discountType: existing?.discountType || 'none',
+          isOwner: false,
+        });
+      }
+
+      return next;
+    });
+  }, [user, passengerCount, bookForOthers]);
 
   useEffect(() => {
     async function loadDismissedWarnings() {
@@ -1928,15 +1969,15 @@ export default function HomeScreen() {
         }
       }
 
-      // Build manifest for self-booking with companions
-      let selfBookingOptions: { passengerManifest?: { name?: string; phone?: string }[] } | undefined = undefined;
-      if (!bookForOthers && passengerCount > 1 && user) {
-        const ownerName = `${user.firstName} ${user.lastName}`.trim();
+      // Build manifest for self-booking including per-passenger discount selections.
+      let selfBookingOptions: { passengerManifest?: { name?: string; phone?: string; passengerId?: string; discountType?: 'student' | 'pwd' | 'senior' }[] } | undefined = undefined;
+      if (!bookForOthers && selfPassengerDraft.length > 0 && user) {
         const ownerPhone = user.phone || undefined;
-        const manifest: { name: string; phone?: string }[] = [
-          { name: ownerName, phone: ownerPhone },
-          ...Array.from({ length: passengerCount - 1 }, (_, i) => ({ name: `Companion ${i + 1}` })),
-        ];
+        const manifest = selfPassengerDraft.map((entry, idx) => ({
+          name: entry.name,
+          ...(idx === 0 ? { passengerId: user._id, phone: ownerPhone } : {}),
+          ...(entry.discountType !== 'none' ? { discountType: entry.discountType } : {}),
+        }));
         selfBookingOptions = { passengerManifest: manifest };
       }
 
@@ -1962,6 +2003,7 @@ export default function HomeScreen() {
         resetGuestBookingDraft();
       }
       setPassengerCount(1);
+      setSelfPassengerDraft([]);
       setRideNote('');
 
       setPickupIntents((items) => upsertPickupIntent(items, result.request));
@@ -3168,94 +3210,52 @@ export default function HomeScreen() {
                         )}
                       </View>
 
-                      {/* Discount for Guests */}
-                      <View style={[styles.manifestSection, { borderColor, backgroundColor: surfaceColor }]}>
-                        <View style={styles.manifestSectionHeader}>
-                          <View style={[styles.manifestIconBadge, { backgroundColor: colorScheme === 'dark' ? AppPalette.darkOverlaySoft : palette.slateBg }]}>
-                            <Ionicons name="pricetag" size={16} color={tint} />
-                          </View>
-                          <View>
-                            <ThemedText style={[styles.manifestRowLabel, { color: textColor }]}>Guest Discount (Optional)</ThemedText>
-                            <ThemedText style={[styles.manifestCaption, { color: mutedColor }]}>Select discount type if any guests qualify. Present their ID to the driver.</ThemedText>
-                          </View>
-                        </View>
-
-                        <View style={styles.manifestActionRow}>
-                          {([
-                            { key: 'student', label: 'Student' },
-                            { key: 'pwd', label: 'PWD' },
-                            { key: 'senior', label: 'Senior' },
-                          ] as const).map(({ key, label }) => (
-                            <Pressable
-                              key={key}
-                              accessibilityRole="button"
-                              accessibilityLabel={`${label} discount`}
-                              onPress={() => {
-                                if (guestDiscountType === key) {
-                                  setGuestDiscountType(null);
-                                  setGuestDiscountCount(0);
-                                } else {
-                                  setGuestDiscountType(key);
-                                  setGuestDiscountCount(1);
-                                }
-                              }}
-                              style={({ pressed }) => [
-                                styles.manifestActionButton,
-                                {
-                                  borderColor: guestDiscountType === key ? tint : borderColor,
-                                  backgroundColor: guestDiscountType === key ? tint : bgColor,
-                                },
-                                pressed && styles.manifestTogglePressed,
-                              ]}
-                            >
-                              <ThemedText style={[styles.manifestActionText, { color: guestDiscountType === key ? palette.white : tint }]}>{label}</ThemedText>
-                            </Pressable>
-                          ))}
-                        </View>
-
-                        {guestDiscountType ? (
-                          <View style={{ gap: 8, marginTop: 4 }}>
-                            <ThemedText style={[styles.manifestCaption, { color: mutedColor }]}>
-                              How many guests have this discount?
-                            </ThemedText>
-                            <View style={styles.passengerCountStepper}>
-                              <Pressable
-                                accessibilityRole="button"
-                                accessibilityLabel="Decrease discount count"
-                                disabled={guestDiscountCount <= 1}
-                                onPress={() => setGuestDiscountCount((c) => Math.max(1, c - 1))}
-                                style={({ pressed }) => [
-                                  styles.passengerCountBtn,
-                                  { borderColor: guestDiscountCount <= 1 ? borderColor : tint, backgroundColor: bgColor },
-                                  pressed && { opacity: 0.7 },
-                                ]}
-                              >
-                                <Ionicons name="remove" size={16} color={guestDiscountCount <= 1 ? mutedColor : tint} />
-                              </Pressable>
-                              <ThemedText style={[styles.passengerCountValue, { color: textColor }]}>{guestDiscountCount}</ThemedText>
-                              <Pressable
-                                accessibilityRole="button"
-                                accessibilityLabel="Increase discount count"
-                                disabled={guestDiscountCount >= normalizedPassengerManifest.length}
-                                onPress={() => setGuestDiscountCount((c) => Math.min(normalizedPassengerManifest.length, c + 1))}
-                                style={({ pressed }) => [
-                                  styles.passengerCountBtn,
-                                  { borderColor: guestDiscountCount >= normalizedPassengerManifest.length ? borderColor : tint, backgroundColor: bgColor },
-                                  pressed && { opacity: 0.7 },
-                                ]}
-                              >
-                                <Ionicons name="add" size={16} color={guestDiscountCount >= normalizedPassengerManifest.length ? mutedColor : tint} />
-                              </Pressable>
+                      {/* Per-Guest Discounts */}
+                      {manifestDraft.map((guest, idx) => (
+                        <View key={guest.id} style={[styles.manifestSection, { borderColor, backgroundColor: surfaceColor, marginTop: idx === 0 ? 0 : 8 }]}> 
+                          <View style={styles.manifestSectionHeader}>
+                            <View style={[styles.manifestIconBadge, { backgroundColor: colorScheme === 'dark' ? AppPalette.darkOverlaySoft : palette.slateBg }]}> 
+                              <Ionicons name="pricetag" size={16} color={tint} />
                             </View>
-                            <View style={[styles.manifestHomeNotice, { backgroundColor: colorScheme === 'dark' ? AppPalette.darkSkyBg : AppPalette.sky, borderColor: tint }]}>
-                              <Ionicons name="id-card-outline" size={14} color={tint} />
-                              <ThemedText style={[styles.manifestCaption, { color: tint, flex: 1 }]}>
-                                Remind guests to show a valid government-issued ID to the driver for discount verification.
-                              </ThemedText>
+                            <View style={{ flex: 1 }}>
+                              <ThemedText style={[styles.manifestRowLabel, { color: textColor }]}>{guest.name || `Guest ${idx + 1}`} - Discount</ThemedText>
+                              <ThemedText style={[styles.manifestCaption, { color: mutedColor }]}>Select if this guest qualifies for a discount.</ThemedText>
                             </View>
                           </View>
-                        ) : null}
-                      </View>
+
+                          <View style={styles.manifestActionRow}>
+                            {([
+                              { key: 'none', label: 'None' },
+                              { key: 'student', label: 'Student' },
+                              { key: 'pwd', label: 'PWD' },
+                              { key: 'senior', label: 'Senior' },
+                            ] as const).map(({ key, label }) => (
+                              <Pressable
+                                key={`${guest.id}-${key}`}
+                                accessibilityRole="radio"
+                                accessibilityState={{ checked: guest.discountType === key }}
+                                onPress={() => {
+                                  setManifestDraft((draft) =>
+                                    draft.map((entry) =>
+                                      entry.id === guest.id ? { ...entry, discountType: key } : entry
+                                    )
+                                  );
+                                }}
+                                style={({ pressed }) => [
+                                  styles.manifestActionButton,
+                                  {
+                                    borderColor: guest.discountType === key ? tint : borderColor,
+                                    backgroundColor: guest.discountType === key ? tint : bgColor,
+                                  },
+                                  pressed && styles.manifestTogglePressed,
+                                ]}
+                              >
+                                <ThemedText style={[styles.manifestActionText, { color: guest.discountType === key ? palette.white : tint }]}>{label}</ThemedText>
+                              </Pressable>
+                            ))}
+                          </View>
+                        </View>
+                      ))}
                     </View>
                   ) : (
                     <ThemedText style={[styles.manifestCaption, { color: mutedColor }]}>Keep this off to book only for yourself.</ThemedText>
@@ -3557,6 +3557,74 @@ export default function HomeScreen() {
                       Max 5 passengers (shuttle capacity reached)
                     </ThemedText>
                   )}
+
+                  <View style={[styles.manifestSection, { borderColor, backgroundColor: surfaceColor, marginTop: 10 }]}> 
+                    <View style={styles.manifestSectionHeader}>
+                      <View style={[styles.manifestIconBadge, { backgroundColor: colorScheme === 'dark' ? AppPalette.darkOverlaySoft : palette.slateBg }]}> 
+                        <Ionicons name="pricetag" size={16} color={tint} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <ThemedText style={[styles.manifestRowLabel, { color: textColor }]}>Passenger Discounts</ThemedText>
+                        <ThemedText style={[styles.manifestCaption, { color: mutedColor }]}>Set discount per passenger. Your account discount is validated automatically.</ThemedText>
+                      </View>
+                    </View>
+
+                    {selfPassengerDraft.map((entry, idx) => (
+                      <View
+                        key={entry.id}
+                        style={{
+                          marginTop: idx === 0 ? 8 : 10,
+                          paddingTop: idx === 0 ? 0 : 10,
+                          borderTopWidth: idx === 0 ? 0 : 1,
+                          borderTopColor: borderColor,
+                        }}
+                      >
+                        <ThemedText style={[styles.manifestCaption, { color: textColor, marginBottom: 6 }]}> 
+                          {entry.isOwner ? `${entry.name} (You)` : entry.name}
+                        </ThemedText>
+
+                        <View style={styles.manifestActionRow}>
+                          {([
+                            { key: 'none', label: 'None' },
+                            { key: 'student', label: 'Student' },
+                            { key: 'pwd', label: 'PWD' },
+                            { key: 'senior', label: 'Senior' },
+                          ] as const).map(({ key, label }) => (
+                            <Pressable
+                              key={`${entry.id}-${key}`}
+                              accessibilityRole="radio"
+                              accessibilityState={{ checked: entry.discountType === key }}
+                              disabled={entry.isOwner}
+                              onPress={() => {
+                                setSelfPassengerDraft((draft) =>
+                                  draft.map((p) =>
+                                    p.id === entry.id ? { ...p, discountType: key } : p
+                                  )
+                                );
+                              }}
+                              style={({ pressed }) => [
+                                styles.manifestActionButton,
+                                {
+                                  borderColor: entry.discountType === key ? tint : borderColor,
+                                  backgroundColor: entry.discountType === key ? tint : bgColor,
+                                  opacity: entry.isOwner ? 0.65 : 1,
+                                },
+                                pressed && !entry.isOwner && styles.manifestTogglePressed,
+                              ]}
+                            >
+                              <ThemedText style={[styles.manifestActionText, { color: entry.discountType === key ? palette.white : tint }]}>{label}</ThemedText>
+                            </Pressable>
+                          ))}
+                        </View>
+
+                        {entry.isOwner ? (
+                          <ThemedText style={[styles.manifestCaption, { color: mutedColor, marginTop: 6 }]}> 
+                            Owner discount depends on your account verification status.
+                          </ThemedText>
+                        ) : null}
+                      </View>
+                    ))}
+                  </View>
                 </>
               )}
 

@@ -933,26 +933,6 @@ const createPickupIntent = async (req, res) => {
       : community.baseFare;
 
     // ── Discount resolution ───────────────────────────────────────────────────
-    // For self-bookings (no passengerManifest), auto-apply verified discount.
-    // For group bookings, use the explicit discountType/discountCount from the request.
-    const isSelfBooking = !Array.isArray(passengerManifest) || passengerManifest.length === 0;
-
-    let resolvedDiscountType = null;
-    let resolvedDiscountCount = 0;
-
-    if (isSelfBooking) {
-      // Auto-detect: apply verified discount for the booking passenger
-      const freshUser = await User.findById(req.user._id).select('discountVerification').lean();
-      const dv = freshUser?.discountVerification;
-      if (dv && dv.status === 'verified') {
-        resolvedDiscountType = dv.type;
-        resolvedDiscountCount = 1;
-      }
-    } else if (bookingDiscountType) {
-      resolvedDiscountType = bookingDiscountType;
-      resolvedDiscountCount = bookingDiscountCount;
-    }
-
     const getDiscountPct = (dtype) => {
       if (!dtype) return 0;
       const ds = community.discountSettings || {};
@@ -961,11 +941,6 @@ const createPickupIntent = async (req, res) => {
       if (dtype === 'senior') return ds.seniorDiscount || 0;
       return 0;
     };
-
-    const discountPct = getDiscountPct(resolvedDiscountType);
-    const discountedFare = discountPct > 0
-      ? Number((baseFareForType * (1 - discountPct / 100)).toFixed(2))
-      : baseFareForType;
 
     // fareExpected is the total for the first passenger (for backward compat, keep it per-seat)
     const fareExpected = baseFareForType;
@@ -992,21 +967,40 @@ const createPickupIntent = async (req, res) => {
       });
     }
 
-    // Validate and normalize discount types in manifest
-    const normalizedManifest = finalPassengerManifest.map((entry) => ({
-      ...entry,
-      discountType: VALID_DISCOUNT_TYPES.includes(entry.discountType) ? entry.discountType : 'none',
-    }));
+    const freshUser = await User.findById(req.user._id).select('discountVerification').lean();
+    const ownerVerification = freshUser?.discountVerification;
+    const isOwnerVerificationApproved = ownerVerification
+      && ['approved', 'verified'].includes(ownerVerification.status)
+      && (!ownerVerification.validUntil || new Date(ownerVerification.validUntil) > new Date())
+      && VALID_DISCOUNT_TYPES.includes(ownerVerification.type);
+    const ownerVerifiedDiscountType = isOwnerVerificationApproved ? ownerVerification.type : 'none';
+
+    // Validate and normalize discount types in manifest.
+    // Owner discount is always derived from account verification state.
+    const normalizedManifest = finalPassengerManifest.map((entry, idx) => {
+      const isOwnerEntry = String(entry.passengerId || '') === String(req.user._id)
+        || (idx === 0 && (!entry.passengerId || String(entry.passengerId) === String(req.user._id)));
+
+      return {
+        ...entry,
+        passengerId: isOwnerEntry ? req.user._id : entry.passengerId,
+        discountType: isOwnerEntry
+          ? ownerVerifiedDiscountType
+          : (VALID_DISCOUNT_TYPES.includes(entry.discountType) ? entry.discountType : 'none'),
+      };
+    });
 
     // Build discount notes for passengers with active discounts
     let finalNote = note;
     const discountNotes = normalizedManifest
       .map((entry, idx) => {
-        if (entry.discountType === 'none' || entry.discountType === 'student' && discountPct < 1) {
+        if (entry.discountType === 'none') {
           return null;
         }
+        const entryDiscountPct = getDiscountPct(entry.discountType);
+        if (entryDiscountPct <= 0) return null;
         const discountLabel = { student: 'Student', pwd: 'PWD', senior: 'Senior Citizen' }[entry.discountType] || entry.discountType;
-        const guestName = entry.name || `Guest ${idx + 1}`;
+        const guestName = entry.name || (String(entry.passengerId || '') === String(req.user._id) ? 'Account Owner' : `Guest ${idx + 1}`);
         return `${guestName}: ${discountLabel} ID required`;
       })
       .filter(Boolean);
