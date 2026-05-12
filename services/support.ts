@@ -14,6 +14,6 @@ export const submitSupportMessage = async (subject: string, message: string): Pr
 };
 
 export const getMyTickets = async (): Promise<SupportTicket[]> => {
-  const data = await api('/support/tickets');
-  return data as SupportTicket[];
+  const response = await api.get('/support/tickets');
+  return response.data as SupportTicket[];
 };
