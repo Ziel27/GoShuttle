@@ -787,6 +787,25 @@ export default function SettingsTabScreen() {
                 </View>
                 <Ionicons name="chevron-forward" size={16} color={mutedColor} />
               </Pressable>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.controlRow,
+                  { borderColor },
+                  pressed && { opacity: 0.7 }
+                ]}
+                onPress={() => router.push(ROUTES.ticketHistory)}
+              >
+                <View style={styles.controlCopy}>
+                  <View style={styles.controlTitleRow}>
+                    <Ionicons name="time-outline" size={16} color={tint} />
+                    <ThemedText type="defaultSemiBold" style={{ color: textColor }}>My Support Tickets</ThemedText>
+                  </View>
+                  <ThemedText type="caption" style={{ color: mutedColor }}>
+                    View your past messages and their status.
+                  </ThemedText>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={mutedColor} />
+              </Pressable>
             </View>
           </>
         )}
@@ -811,6 +830,25 @@ export default function SettingsTabScreen() {
                   </View>
                   <ThemedText type="caption" style={{ color: mutedColor }}>
                     Report an issue or send an inquiry to our team.
+                  </ThemedText>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={mutedColor} />
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.controlRow,
+                  { borderColor },
+                  pressed && { opacity: 0.7 }
+                ]}
+                onPress={() => router.push(ROUTES.ticketHistory)}
+              >
+                <View style={styles.controlCopy}>
+                  <View style={styles.controlTitleRow}>
+                    <Ionicons name="time-outline" size={16} color={tint} />
+                    <ThemedText type="defaultSemiBold" style={{ color: textColor }}>My Support Tickets</ThemedText>
+                  </View>
+                  <ThemedText type="caption" style={{ color: mutedColor }}>
+                    View your past messages and their status.
                   </ThemedText>
                 </View>
                 <Ionicons name="chevron-forward" size={16} color={mutedColor} />
