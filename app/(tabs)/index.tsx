@@ -460,6 +460,17 @@ export default function HomeScreen() {
     return `${activeIntent.destinationType === 'home' ? 'Home' : 'Fixed'} - ${activeIntent.destinationLabel}`;
   }, [activePassengerPickupIntents]);
 
+  const selectedDestinationSummary = useMemo(() => {
+    if (selectedDestinationType === 'home') {
+      return user?.homeDestination?.label || 'Saved Home';
+    }
+    if (selectedDestinationType === 'fixed') {
+      const found = fixedDestinations.find((d) => d._id === selectedFixedDestinationId);
+      return found?.name || '';
+    }
+    return '';
+  }, [fixedDestinations, selectedDestinationType, selectedFixedDestinationId, user?.homeDestination?.label]);
+
   const selectedDestinationAccentColor =
     selectedDestinationType === 'home' ? successColor :
       selectedDestinationType === 'fixed' ? tint :
