@@ -243,6 +243,9 @@ export default function HomeScreen() {
     if (reason === 'all_shuttles_full') {
       return 'All shuttles are full. You’ll be notified and auto-dispatched when a seat opens.';
     }
+    if (reason === 'no_shuttle_for_phase') {
+      return 'No shuttle is assigned to your area yet. You’ll be auto-dispatched when one becomes available.';
+    }
     return 'You are in the queue and will be dispatched when a shuttle is available.';
   }, []);
 
@@ -4481,7 +4484,9 @@ export default function HomeScreen() {
                             ? 'moon-outline'
                             : queueNotice.reason === 'dispatch_race'
                               ? 'refresh-outline'
-                              : 'hourglass-outline'
+                              : queueNotice.reason === 'no_shuttle_for_phase'
+                                ? 'navigate-circle-outline'
+                                : 'hourglass-outline'
                         }
                         size={16}
                         color="#f59e0b"
@@ -4498,7 +4503,9 @@ export default function HomeScreen() {
                           ? 'No Shuttles On Duty'
                           : queueNotice.reason === 'dispatch_race'
                             ? 'Seat Taken — Retrying'
-                            : 'Waiting in Queue'}
+                            : queueNotice.reason === 'no_shuttle_for_phase'
+                              ? 'No Shuttle For Your Area'
+                              : 'Waiting in Queue'}
                       </ThemedText>
                     </View>
                     {queueNotice.position !== null && (

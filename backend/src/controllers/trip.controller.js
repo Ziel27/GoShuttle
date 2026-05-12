@@ -1344,7 +1344,7 @@ const listPickupIntents = async (req, res) => {
     const now = new Date();
     const query = {
       communityId: req.user.communityId,
-      status: 'pending',
+      status: { $in: ['pending', 'queued'] },
       expiresAt: { $gt: now },
     };
 

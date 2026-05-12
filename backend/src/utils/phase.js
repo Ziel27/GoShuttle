@@ -20,16 +20,24 @@ const isShuttlePhaseCompatible = ({ shuttlePhase, passengerHomePhase }) => {
     return true;
   }
 
+  // Passengers with no detected/saved phase can be served by any shuttle.
+  if (!normalizedPassengerPhase) return true;
+
   // Phase-assigned shuttles can only serve matching passenger phases.
-  return Boolean(normalizedPassengerPhase) && normalizedShuttlePhase === normalizedPassengerPhase;
+  return normalizedShuttlePhase === normalizedPassengerPhase;
 };
 
 const buildPhaseAwareRequestQuery = ({ shuttlePhase, passengerPhaseField = 'passengerHomePhase' }) => {
   const normalizedShuttlePhase = normalizePhase(shuttlePhase);
   if (!normalizedShuttlePhase) return {};
 
+  // Include requests with matching phase AND requests with no phase set
+  // (null-phase passengers can be served by any shuttle).
   return {
-    [passengerPhaseField]: normalizedShuttlePhase,
+    $or: [
+      { [passengerPhaseField]: normalizedShuttlePhase },
+      { [passengerPhaseField]: null },
+    ],
   };
 };
 

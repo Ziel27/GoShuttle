@@ -57,13 +57,15 @@ const loadOnDutyShuttles = async (communityId) => {
       .populate('driverId', '_id status')
       .lean(),
 
-    // Count actual dispatched-but-not-yet-boarded requests per shuttle
+    // Count actual dispatched-but-not-yet-boarded requests per shuttle.
+    // Exclude expired requests so stale records don't inflate the count.
     PickupRequest.aggregate([
       {
         $match: {
           communityId: communityOid,
           status: 'dispatched',
           assignedShuttleId: { $ne: null },
+          expiresAt: { $gt: new Date() },
         },
       },
       { $group: { _id: '$assignedShuttleId', count: { $sum: 1 } } },
@@ -170,6 +172,8 @@ const queueReasonMessage = (reason) => {
       return 'No shuttles are currently on duty. You will be dispatched automatically when a driver starts their shift.';
     case 'all_shuttles_full':
       return 'All shuttles are currently full. You are in the queue and will be dispatched when a seat opens.';
+    case 'no_shuttle_for_phase':
+      return 'No shuttle is currently assigned to your area. You will be dispatched automatically when one becomes available.';
     case 'dispatch_race':
       return 'A seat was taken just as we tried to assign you. You are in the queue and will be dispatched shortly.';
     default:
@@ -298,10 +302,16 @@ const findAndDispatch = async ({
     .sort((a, b) => a.distanceMeters - b.distanceMeters);
 
   if (candidateShuttles.length === 0) {
-    // Determine the accurate reason: if no shuttle has a driver currently on shift,
-    // it is a duty issue — not a capacity issue.
     const anyDriverOnShift = shuttles.some((s) => s.driverId?.status === 'driving');
-    const queueReason = anyDriverOnShift ? 'all_shuttles_full' : 'no_shuttles_on_duty';
+    if (!anyDriverOnShift) {
+      return enqueueRequest({ pickupRequest, fareExpected, io, position: 0, queueReason: 'no_shuttles_on_duty' });
+    }
+    // Distinguish: did shuttles fail phase check, or fail capacity check?
+    const phaseCompatible = shuttles.filter((s) =>
+      s.driverId?.status === 'driving' &&
+      isShuttlePhaseCompatible({ shuttlePhase: s.assignedPhase, passengerHomePhase: normalizedPassengerHomePhase })
+    );
+    const queueReason = phaseCompatible.length === 0 ? 'no_shuttle_for_phase' : 'all_shuttles_full';
     return enqueueRequest({ pickupRequest, fareExpected, io, position: 0, queueReason });
   }
 

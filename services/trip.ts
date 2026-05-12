@@ -189,7 +189,7 @@ export type PickupLocationInput = {
   longitude: number;
 };
 
-export type QueueReason = 'no_shuttles_on_duty' | 'all_shuttles_full' | 'dispatch_race' | null;
+export type QueueReason = 'no_shuttles_on_duty' | 'all_shuttles_full' | 'no_shuttle_for_phase' | 'dispatch_race' | null;
 
 /**
  * Creates a pickup intent for the current passenger.
