@@ -453,6 +453,49 @@ export default function HomeScreen() {
     };
   }, [bookForOthers, communityDiscounts, communityFares, fareType, selfPassengerDraft]);
 
+  const guestBookingFareBreakdown = useMemo(() => {
+    if (!bookForOthers || !communityFares || normalizedPassengerManifest.length === 0) {
+      return null;
+    }
+
+    const perSeatBase = fareType === 'priority'
+      ? communityFares.base * communityFares.priorityMultiplier
+      : communityFares.base;
+
+    const discountPctFor = (discountType: ManifestDraftEntry['discountType']) => {
+      if (discountType === 'student') return communityDiscounts.studentDiscount;
+      if (discountType === 'pwd') return communityDiscounts.pwdDiscount;
+      if (discountType === 'senior') return communityDiscounts.seniorDiscount;
+      return 0;
+    };
+
+    const rows = manifestDraft
+      .filter((entry) => entry.name.trim().length > 0)
+      .map((entry, idx) => {
+        const discountPct = discountPctFor(entry.discountType);
+        const finalFare = discountPct > 0
+          ? Number((perSeatBase * (1 - discountPct / 100)).toFixed(2))
+          : Number(perSeatBase.toFixed(2));
+
+        return {
+          id: entry.id,
+          label: entry.name.trim() || `Guest ${idx + 1}`,
+          discountType: entry.discountType,
+          discountPct,
+          finalFare,
+        };
+      });
+
+    if (rows.length === 0) return null;
+
+    const total = Number(rows.reduce((sum, row) => sum + row.finalFare, 0).toFixed(2));
+
+    return {
+      rows,
+      total,
+    };
+  }, [bookForOthers, communityDiscounts, communityFares, fareType, manifestDraft, normalizedPassengerManifest.length]);
+
   // When booking for others, ensure the guest pickup/dropoff types are opposite
   useEffect(() => {
     if (!bookForOthers) return;
@@ -3293,6 +3336,36 @@ export default function HomeScreen() {
                           </View>
                         </View>
                       ))}
+
+                      {guestBookingFareBreakdown ? (
+                        <View style={[styles.manifestSection, { borderColor, backgroundColor: bgColor }]}> 
+                          <View style={styles.manifestSectionHeader}>
+                            <View style={[styles.manifestIconBadge, { backgroundColor: colorScheme === 'dark' ? AppPalette.darkOverlaySoft : palette.slateBg }]}> 
+                              <Ionicons name="receipt-outline" size={16} color={tint} />
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <ThemedText style={[styles.manifestRowLabel, { color: textColor }]}>Estimated Fare Breakdown</ThemedText>
+                              <ThemedText style={[styles.manifestCaption, { color: mutedColor }]}>Per guest estimate before driver boarding confirmation.</ThemedText>
+                            </View>
+                          </View>
+
+                          {guestBookingFareBreakdown.rows.map((row) => (
+                            <View key={row.id} style={styles.rowBetween}>
+                              <ThemedText style={[styles.manifestCaption, { color: textColor }]}>
+                                {row.label}{row.discountType !== 'none' ? ` · ${row.discountType.toUpperCase()} ${row.discountPct}%` : ''}
+                              </ThemedText>
+                              <ThemedText style={[styles.manifestCaption, { color: row.discountType !== 'none' ? tint : textColor, fontFamily: OutfitFonts.bold }]}>
+                                ₱{row.finalFare.toFixed(2)}
+                              </ThemedText>
+                            </View>
+                          ))}
+
+                          <View style={[styles.rowBetween, { marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: borderColor }]}> 
+                            <ThemedText style={[styles.manifestRowLabel, { color: textColor }]}>Estimated Total</ThemedText>
+                            <ThemedText style={[styles.manifestRowLabel, { color: tint }]}>₱{guestBookingFareBreakdown.total.toFixed(2)}</ThemedText>
+                          </View>
+                        </View>
+                      ) : null}
                     </View>
                   ) : (
                     <ThemedText style={[styles.manifestCaption, { color: mutedColor }]}>Keep this off to book only for yourself.</ThemedText>
