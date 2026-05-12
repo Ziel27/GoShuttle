@@ -8,6 +8,7 @@ const {
   syncOfflineTrips,
   createPickupIntent,
   cancelPickupIntent,
+  claimPickupIntent,
   listPickupIntents,
   listPassengerRecentRides,
   getAnalytics,
@@ -39,6 +40,7 @@ router.post('/shift-end', authorize('driver'), endShift);
 router.post('/sync-offline', authorize('driver'), syncOfflineTrips);
 router.post('/pickup-intent', authorize('passenger', 'admin'), createPickupIntent);
 router.delete('/pickup-intent/:intentId', authorize('passenger', 'admin'), cancelPickupIntent);
+router.post('/pickup-intent/:requestId/claim', authorize('driver'), claimPickupIntent);
 router.get('/pickup-intents', authorize('admin', 'driver'), listPickupIntents);
 router.get('/my-dispatch', authorize('passenger'), getMyDispatch);
 router.delete('/my-pickup-intents', authorize('passenger'), cancelMyPickupIntents);

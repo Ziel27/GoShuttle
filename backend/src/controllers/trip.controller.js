@@ -3173,6 +3173,149 @@ const getMyDispatch = async (req, res) => {
 };
 
 /**
+ * POST /api/trips/pickup-intent/:requestId/claim
+ * Driver manually claims a pending or queued pickup request for their shuttle.
+ */
+const claimPickupIntent = async (req, res) => {
+  try {
+    const { requestId } = req.params;
+    const io = req.app.get('io');
+    const driverId = req.user._id;
+    const communityId = req.user.communityId;
+
+    if (req.user.status !== 'driving') {
+      return res.status(409).json({ error: 'Start your shift before claiming a pickup.' });
+    }
+
+    const shuttle = await Shuttle.findOne({
+      communityId,
+      driverId,
+      isActive: true,
+      status: { $in: ['idle', 'en_route'] },
+    }).select('_id plateNumber label assignedPhase currentCapacity maxCapacity pendingPickupCount location status').lean();
+
+    if (!shuttle) {
+      return res.status(404).json({ error: 'No active shuttle found for your account.' });
+    }
+
+    const communityOid = mongoose.Types.ObjectId.isValid(String(communityId))
+      ? new mongoose.Types.ObjectId(String(communityId))
+      : communityId;
+
+    const pendingAgg = await PickupRequest.aggregate([
+      {
+        $match: {
+          communityId: communityOid,
+          status: 'dispatched',
+          assignedShuttleId: shuttle._id,
+          expiresAt: { $gt: new Date() },
+        },
+      },
+      { $count: 'count' },
+    ]);
+    const actualPendingCount = pendingAgg[0]?.count ?? 0;
+
+    if (shuttle.currentCapacity + actualPendingCount >= shuttle.maxCapacity) {
+      return res.status(409).json({ error: 'Your shuttle is at full capacity.' });
+    }
+
+    const now = new Date();
+    const pickupRequest = await PickupRequest.findOne({
+      _id: requestId,
+      communityId,
+      status: { $in: ['pending', 'queued'] },
+      expiresAt: { $gt: now },
+    });
+
+    if (!pickupRequest) {
+      return res.status(404).json({ error: 'Request not found, already claimed, or expired.' });
+    }
+
+    if (!isShuttlePhaseCompatible({ shuttlePhase: shuttle.assignedPhase, passengerHomePhase: pickupRequest.passengerHomePhase })) {
+      return res.status(409).json({ error: 'This passenger is not in your assigned phase area.' });
+    }
+
+    const updatedShuttle = await Shuttle.findByIdAndUpdate(
+      shuttle._id,
+      { $inc: { pendingPickupCount: 1 } },
+      { new: true, select: '_id plateNumber label currentCapacity maxCapacity pendingPickupCount location' }
+    );
+
+    if (!updatedShuttle) {
+      return res.status(500).json({ error: 'Failed to reserve shuttle slot.' });
+    }
+
+    if (updatedShuttle.currentCapacity + updatedShuttle.pendingPickupCount > updatedShuttle.maxCapacity) {
+      await Shuttle.findOneAndUpdate(
+        { _id: shuttle._id, pendingPickupCount: { $gt: 0 } },
+        { $inc: { pendingPickupCount: -1 } }
+      );
+      return res.status(409).json({ error: 'Shuttle became full while claiming. Please try again.' });
+    }
+
+    await PickupRequest.findByIdAndUpdate(requestId, {
+      $set: {
+        status: 'dispatched',
+        assignedShuttleId: shuttle._id,
+        assignedDriverId: driverId,
+        dispatchedAt: now,
+        queuePosition: null,
+      },
+    });
+
+    const community = await Community.findById(communityId).select('baseFare priorityFareMultiplier').lean();
+    const fareExpected = pickupRequest.fareType === 'priority'
+      ? Number(((community?.baseFare ?? 0) * (community?.priorityFareMultiplier ?? 1.5)).toFixed(2))
+      : (community?.baseFare ?? 0);
+
+    const communityRoom = `community:${String(communityId)}`;
+    const passengerRoom = `user:${String(pickupRequest.passengerId)}`;
+    const driverRoom = `user:${String(driverId)}`;
+
+    const sharedPayload = {
+      requestId: pickupRequest._id,
+      passengerId: pickupRequest.passengerId,
+      fareType: pickupRequest.fareType,
+      fareExpected,
+      pickupLocation: pickupRequest.pickupLocation || null,
+      location: pickupRequest.location,
+      destinationType: pickupRequest.destinationType,
+      destinationLabel: pickupRequest.destinationLabel,
+      destinationLocation: pickupRequest.destinationLocation,
+      expiresAt: pickupRequest.expiresAt,
+      dispatchedAt: now,
+    };
+
+    const shuttlePayload = {
+      shuttleId: updatedShuttle._id,
+      plateNumber: updatedShuttle.plateNumber || '',
+      label: updatedShuttle.label || '',
+      location: updatedShuttle.location,
+      currentCapacity: updatedShuttle.currentCapacity,
+      maxCapacity: updatedShuttle.maxCapacity,
+      pendingPickupCount: updatedShuttle.pendingPickupCount,
+    };
+
+    io.to(passengerRoom).emit('dispatch:passenger-assigned', { ...sharedPayload, shuttle: shuttlePayload });
+    io.to(driverRoom).emit('dispatch:assigned', { ...sharedPayload, shuttle: shuttlePayload });
+    io.to(communityRoom).emit('dispatch:shuttle-pending-updated', {
+      shuttleId: updatedShuttle._id,
+      pendingPickupCount: updatedShuttle.pendingPickupCount,
+    });
+    io.to(communityRoom).emit('pickup-intent:cancelled', { requestId: String(pickupRequest._id) });
+    io.to(communityRoom).emit('trip:pickup-intent-cancelled', { requestId: String(pickupRequest._id) });
+
+    return res.status(200).json({
+      message: 'Pickup request claimed successfully.',
+      shuttle: shuttlePayload,
+    });
+  } catch (error) {
+    console.error('Claim pickup intent error:', error);
+    return res.status(500).json({ error: 'Failed to claim pickup request.' });
+  }
+};
+
+/**
  * GET /api/track/:token  (public — no auth required)
  * Returns live tracking data for a pickup request by its tracking token.
  */
@@ -3289,5 +3432,6 @@ module.exports = {
   listDriverRemittances,
   resolveRideRequest,
   getMyDispatch,
+  claimPickupIntent,
   getTrackingInfo,
 };

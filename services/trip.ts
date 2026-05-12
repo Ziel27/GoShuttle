@@ -288,6 +288,15 @@ export const listPickupIntents = async (): Promise<PickupIntent[]> => {
 };
 
 /**
+ * Driver manually claims a pending or queued pickup request for their shuttle.
+ * @throws {Error} When the API request fails.
+ */
+export const claimPickupIntent = async (requestId: string): Promise<{ message: string; shuttle: AssignedShuttle }> => {
+  const response = await api.post(`/trips/pickup-intent/${requestId}/claim`);
+  return response.data as { message: string; shuttle: AssignedShuttle };
+};
+
+/**
  * Lists a passenger's recent rides.
  * @throws {Error} When the API request fails.
  */
