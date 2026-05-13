@@ -1271,9 +1271,22 @@ export default function HomeScreen() {
     socket.on('socket:error', onSocketError);
     socket.on('community:settings-updated', onCommunitySettingsUpdated);
     socket.on('announcement:new', onAnnouncementNew);
+    const onDispatchTimeout = (payload: { requestId?: string; message?: string }) => {
+      if (user?.role !== 'driver') return;
+      if (payload.requestId) {
+        setDriverAssignedPickupRequest((current) =>
+          current && String(current._id) === String(payload.requestId) ? null : current
+        );
+        setPickupIntents((items) => items.filter((item) => item._id !== String(payload.requestId)));
+      }
+      const msg = payload.message || 'A pickup assignment has timed out and been re-queued.';
+      setPreferenceAwareFeedback(msg, 'service');
+    };
+
     socket.on('dispatch:passenger-assigned', onDispatchPassengerAssigned);
     socket.on('dispatch:queued', onDispatchQueued);
     socket.on('dispatch:shuttle-pending-updated', onDispatchShuttlePendingUpdated);
+    socket.on('dispatch:timeout', onDispatchTimeout);
 
     return () => {
       socket.off('shuttle:location-updated', onLocationUpdated);
@@ -1290,6 +1303,7 @@ export default function HomeScreen() {
       socket.off('dispatch:passenger-assigned', onDispatchPassengerAssigned);
       socket.off('dispatch:queued', onDispatchQueued);
       socket.off('dispatch:shuttle-pending-updated', onDispatchShuttlePendingUpdated);
+      socket.off('dispatch:timeout', onDispatchTimeout);
     };
   }, [activeCommunityId, dispatchedShuttle, loadShuttles, refreshPassengerDispatch, setPreferenceAwareFeedback, token, user?._id, user?.role]);
 

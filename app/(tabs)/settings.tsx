@@ -595,18 +595,7 @@ export default function SettingsTabScreen() {
       setLogoutGuardVisible(true);
       return;
     }
-    // Passenger guard: warn about active pickup requests
-    if (isPassenger) {
-      try {
-        const { getMyDispatch } = await import('@/services/trip');
-        const dispatch = await getMyDispatch();
-        const hasActive = !!dispatch && ['dispatched', 'queued', 'pending'].includes(dispatch.status);
-        if (hasActive) {
-          setPassengerLogoutGuardVisible(true);
-          return;
-        }
-      } catch { /* silent — proceed to logout */ }
-    }
+    // NOTE (testing): passenger requests intentionally survive logout — no guard or cancellation.
     await logout();
     router.replace(ROUTES.authLogin);
   };
