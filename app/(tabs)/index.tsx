@@ -520,6 +520,29 @@ export default function HomeScreen() {
         : surfaceColor;
   const activePickupDestinationType = activePassengerPickupRequest?.destinationType || selectedDestinationType || 'fixed';
   const activePickupDestinationAccent = activePickupDestinationType === 'home' ? successColor : tint;
+  const activePickupLifecycleStatus = useMemo(() => {
+    const status = String(activePassengerPickupRequest?.status || '');
+    if (!status) return null;
+    switch (status) {
+      case 'pending':
+      case 'queued':
+        return 'Waiting';
+      case 'claimed':
+        return 'Claimed';
+      case 'dispatched':
+        return 'Assigned';
+      default:
+        return status.charAt(0).toUpperCase() + status.slice(1);
+    }
+  }, [activePassengerPickupRequest?.status]);
+
+  const activePickupLifecycleAccent = useMemo(() => {
+    const status = String(activePassengerPickupRequest?.status || '');
+    if (status === 'claimed' || status === 'dispatched') return successColor;
+    if (status === 'pending' || status === 'queued') return tint;
+    return mutedColor;
+  }, [activePassengerPickupRequest?.status, mutedColor, successColor, tint]);
+
   const activePickupManifestSummary = useMemo(() => {
     const manifest = activePassengerPickupRequest?.passengerManifest || [];
     if (manifest.length === 0) return null;
@@ -893,7 +916,7 @@ export default function HomeScreen() {
       return `Manual boarding is ready for ${remainingManualPickupSlots} remaining passenger${remainingManualPickupSlots === 1 ? '' : 's'}.`;
     }
 
-    if (!isWithinDropoffRadius) {
+    if (activeDropoffPassengerCount === 0) {
       return 'All requested passengers are onboard. Move into drop-off radius to unboard them manually.';
     }
 
@@ -902,7 +925,7 @@ export default function HomeScreen() {
     activePassengerPickupRequest,
     activePassengerManualBoardCount,
     isManualAutomationCooldownActive,
-    isWithinDropoffRadius,
+    activeDropoffPassengerCount,
     isWithinPickupRadius,
     remainingManualPickupSlots,
   ]);
@@ -1083,6 +1106,20 @@ export default function HomeScreen() {
     const onPickupIntent = (payload: PickupIntentEventPayload) => {
       const intent = toPickupIntent(payload);
       if (!intent || (intent.status !== 'pending' && intent.status !== 'queued') || isExpiredIntent(intent)) return;
+
+      // Determine passenger count for this intent (fallback to 1)
+      const passengerCount = Array.isArray((payload as any).passengerManifest)
+        ? (payload as any).passengerManifest.length
+        : 1;
+
+      // For drivers: only show pickup intents that this driver's assigned shuttle
+      // can fully accommodate (require space for all passengers in the request).
+      if (user?.role === 'driver') {
+        if (!assignedShuttle) return;
+        const availableSeats = assignedShuttle.maxCapacity - (assignedShuttle.currentCapacity ?? 0);
+        if (availableSeats < passengerCount) return;
+      }
+
       setPickupIntents((items) => upsertPickupIntent(items, intent));
     };
 
@@ -1107,7 +1144,8 @@ export default function HomeScreen() {
         });
       }
 
-      if (payload.passengerId && payload.passengerId === user?._id) {
+      const owningPassengerId = String((payload as any)?.bookingOwner || payload.passengerId || '');
+      if (owningPassengerId && owningPassengerId === user?._id) {
         setPreferenceAwareFeedback('Pickup successful. You have boarded.', 'ride');
         void refreshPassengerDispatch();
       }
@@ -1119,6 +1157,7 @@ export default function HomeScreen() {
       maxCapacity?: number;
     }) => {
       if (!payload.shuttleId || payload.currentCapacity === undefined) return;
+
       setShuttles((current) =>
         current.map((item) =>
           item._id === payload.shuttleId
@@ -1130,6 +1169,33 @@ export default function HomeScreen() {
             : item
         )
       );
+
+      if (user?.role === 'passenger' && dispatchedShuttle?.shuttleId && String(dispatchedShuttle.shuttleId) === String(payload.shuttleId)) {
+        setDispatchedShuttle((current) =>
+          current
+            ? {
+                ...current,
+                currentCapacity: payload.currentCapacity!,
+                ...(payload.maxCapacity !== undefined ? { maxCapacity: payload.maxCapacity } : {}),
+              }
+            : current
+        );
+      }
+
+      // If this boarding event was for our assigned shuttle, refresh the onboard list
+      // so the driver UI shows newly boarded passengers immediately.
+      (async () => {
+        try {
+          if (user?.role === 'driver' && assignedShuttle?._id && String(assignedShuttle._id) === String(payload.shuttleId)) {
+            if (!isAppActive()) return;
+            const passengers = await listOnboardDestinations(assignedShuttle._id);
+            setOnboardDestinations(passengers);
+          }
+        } catch (err) {
+          // non-fatal: polling will refresh onboard list shortly
+          console.error('Failed to refresh onboard destinations after boarding event:', err);
+        }
+      })();
     };
 
     const onPassengerAutoUnboarded = (payload: PassengerAutoUnboardedPayload) => {
@@ -1145,6 +1211,18 @@ export default function HomeScreen() {
               : item
           )
         );
+
+        if (user?.role === 'passenger' && dispatchedShuttle?.shuttleId && String(dispatchedShuttle.shuttleId) === String(payload.shuttleId)) {
+          setDispatchedShuttle((current) =>
+            current
+              ? {
+                  ...current,
+                  currentCapacity: payload.currentCapacity!,
+                  ...(payload.maxCapacity !== undefined ? { maxCapacity: payload.maxCapacity } : {}),
+                }
+              : current
+          );
+        }
       }
       if (!payload.rideIds || payload.rideIds.length === 0) return;
       setOnboardDestinations((items) => items.filter((item) => !payload.rideIds!.includes(item.rideId)));
@@ -1211,7 +1289,8 @@ export default function HomeScreen() {
       const shuttle = payload?.shuttle as AssignedShuttle | undefined;
       if (user?.role === 'passenger') {
         if (!user?._id) return;
-        if (String(payload?.passengerId) !== user._id) return;
+        const owningPassengerId = String(payload?.bookingOwner || payload?.passengerId || '');
+        if (owningPassengerId !== user._id) return;
 
         if (shuttle) {
           setDispatchedShuttle(shuttle);
@@ -1829,7 +1908,7 @@ export default function HomeScreen() {
       return;
     }
 
-    if (!isWithinDropoffRadius) {
+    if (activeDropoffPassengerCount === 0) {
       setPreferenceAwareFeedback('Move the shuttle into the drop-off radius before unboarding.', 'critical');
       return;
     }
@@ -3153,10 +3232,10 @@ export default function HomeScreen() {
                     styles.driverActionButton,
                     styles.driverUnboardButton,
                     { backgroundColor: surfaceColor, borderColor: dangerColor },
-                    (unboardingSubmitting || assignedShuttle.currentCapacity === 0 || !isDriverOnShift || activeDropoffPassengerCount === 0 || !isWithinDropoffRadius) && styles.driverActionButtonDisabled,
+                    (unboardingSubmitting || assignedShuttle.currentCapacity === 0 || !isDriverOnShift || activeDropoffPassengerCount === 0) && styles.driverActionButtonDisabled,
                   ]}
                   onPress={onDriverUnboard}
-                  disabled={unboardingSubmitting || assignedShuttle.currentCapacity === 0 || !isDriverOnShift || activeDropoffPassengerCount === 0 || !isWithinDropoffRadius}
+                  disabled={unboardingSubmitting || assignedShuttle.currentCapacity === 0 || !isDriverOnShift || activeDropoffPassengerCount === 0}
                   accessibilityRole="button"
                   accessibilityLabel="Unboard one passenger manually"
                 >
@@ -4603,6 +4682,19 @@ export default function HomeScreen() {
                     </View>
                   </View>
 
+                  {activePickupLifecycleStatus ? (
+                    <View style={[styles.pickupActiveLifecycleChip, { borderColor: activePickupLifecycleAccent, backgroundColor: `${activePickupLifecycleAccent}14` }]}> 
+                      <Ionicons
+                        name={activePickupLifecycleStatus === 'Claimed' || activePickupLifecycleStatus === 'Assigned' ? 'checkmark-circle-outline' : 'time-outline'}
+                        size={12}
+                        color={activePickupLifecycleAccent}
+                      />
+                      <ThemedText style={[styles.pickupActiveLifecycleText, { color: activePickupLifecycleAccent }]}> 
+                        {activePickupLifecycleStatus}
+                      </ThemedText>
+                    </View>
+                  ) : null}
+
                   {/* ── Status message ── */}
                   <ThemedText
                     style={[
@@ -4610,11 +4702,13 @@ export default function HomeScreen() {
                       { color: colorScheme === 'dark' ? 'rgba(255,106,118,0.8)' : '#991B1B' },
                     ]}
                   >
-                    {dispatchedShuttle
-                      ? 'A shuttle has been assigned — stay near your pickup location.'
-                      : queueNotice
-                        ? 'You are in the waiting queue. We will dispatch you automatically.'
-                        : 'Waiting for a shuttle to be assigned to you...'}
+                    {activePickupLifecycleStatus === 'Claimed'
+                      ? 'Your pickup has been claimed. The driver is on the way to you.'
+                      : activePickupLifecycleStatus === 'Assigned'
+                        ? 'A shuttle has been assigned — stay near your pickup location.'
+                        : queueNotice
+                          ? 'You are in the waiting queue. We will dispatch you automatically.'
+                          : 'Waiting for a shuttle to be assigned to you...'}
                   </ThemedText>
 
                   {activePickupManifestSummary ? (
@@ -5913,6 +6007,22 @@ const styles = StyleSheet.create({
     fontFamily: OutfitFonts.semiBold,
     fontSize: 11,
     flexShrink: 1,
+  },
+  pickupActiveLifecycleChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    borderWidth: 1,
+    borderRadius: DesignTokens.radius.pill,
+    paddingHorizontal: DesignTokens.spacing.sm,
+    paddingVertical: 5,
+    gap: 5,
+    marginTop: DesignTokens.spacing.xs,
+  },
+  pickupActiveLifecycleText: {
+    fontFamily: OutfitFonts.bold,
+    fontSize: 11,
+    letterSpacing: 0.2,
   },
   pickupActiveMessage: {
     fontFamily: OutfitFonts.medium,

@@ -1116,13 +1116,63 @@ const createPickupIntent = async (req, res) => {
       });
     }
 
-    // Broadcast the pickup intent to the community (drivers still see it on map)
-    io.to(`community:${String(req.user.communityId)}`).emit('trip:pickup-intent', {
+    // Server-side: Emit pickup intents only to drivers whose shuttle can fully
+    // accommodate every passenger in the request. This avoids showing requests
+    // to shuttles that don't have enough available seats.
+    const passengerCount = Array.isArray(pickupRequest.passengerManifest) && pickupRequest.passengerManifest.length > 0
+      ? pickupRequest.passengerManifest.length
+      : 1;
+
+    // Load on-duty shuttles and their pending pickup counts to compute effective
+    // available seats (currentCapacity + pendingPickupCount).
+    const Shuttle = require('../models/Shuttle');
+    const PickupRequest = require('../models/PickupRequest');
+
+    const communityOid = pickupRequest.communityId;
+
+    const [shuttles, pendingAgg] = await Promise.all([
+      Shuttle.find({
+        communityId: communityOid,
+        isActive: true,
+        status: { $in: ['idle', 'en_route'] },
+        driverId: { $ne: null },
+      })
+        .select('_id driverId plateNumber label assignedPhase currentCapacity maxCapacity')
+        .populate('driverId', '_id status')
+        .lean(),
+
+      PickupRequest.aggregate([
+        {
+          $match: {
+            communityId: communityOid,
+            status: 'dispatched',
+            assignedShuttleId: { $ne: null },
+            expiresAt: { $gt: new Date() },
+          },
+        },
+        { $group: { _id: '$assignedShuttleId', count: { $sum: 1 } } },
+      ]),
+    ]);
+
+    const actualPending = {};
+    for (const { _id, count } of pendingAgg) {
+      actualPending[String(_id)] = count;
+    }
+
+    const passengerFares = Array.isArray(createdRideRequests) ? createdRideRequests.map((r) => ({
+      rideRequestId: r._id,
+      passengerId: r.passengerId || null,
+      passengerName: r.passengerName || null,
+      discountType: r.discountType || 'none',
+      fareExpected: r.fareExpected ?? null,
+      originalFare: r.originalFare ?? null,
+    })) : [];
+
+    const payload = {
       requestId: pickupRequest._id,
       communityId: pickupRequest.communityId,
       passengerId: pickupRequest.passengerId,
       bookingOwner: pickupRequest.bookingOwner || pickupRequest.passengerId,
-      // Expose explicit pickupLocation when present so drivers can use authoritative coords
       pickupLocation: pickupRequest.pickupLocation || null,
       location: pickupRequest.location,
       destinationType: pickupRequest.destinationType,
@@ -1134,11 +1184,20 @@ const createPickupIntent = async (req, res) => {
       expiresAt: pickupRequest.expiresAt,
       status: pickupRequest.status,
       passengerManifest: Array.isArray(pickupRequest.passengerManifest) ? pickupRequest.passengerManifest : [],
+      passengerFares,
       note: pickupRequest.note || null,
       trackingToken: pickupRequest.trackingToken,
       trackingUrl,
       assignedShuttleId: dispatchResult.dispatched ? dispatchResult.shuttle?._id : null,
-    });
+    };
+
+    const { computeEligibleDriverIds } = require('../services/dispatch-utils');
+    const eligibleDriverIds = computeEligibleDriverIds({ shuttles, pendingAgg, pickupRequest });
+
+    for (const did of eligibleDriverIds) {
+      const driverRoom = `user:${String(did)}`;
+      io.to(driverRoom).emit('trip:pickup-intent', payload);
+    }
 
     return res.status(201).json({
       message: 'Pickup intent submitted.',
@@ -2708,6 +2767,28 @@ const passengerUnboard = async (req, res) => {
       timestamp: now,
     });
 
+    // Notify individual passengers who were unboarded so their apps update immediately
+    try {
+      const perPassengerMap = {};
+      for (const p of passengersToUnboard) {
+        if (p.passengerId) {
+          const pid = String(p.passengerId);
+          perPassengerMap[pid] = perPassengerMap[pid] || [];
+          perPassengerMap[pid].push(String(p._id));
+        }
+      }
+      for (const [pid, rideIds] of Object.entries(perPassengerMap)) {
+        io.to(`user:${pid}`).emit('trip:passenger-unboarded', {
+          rideIds,
+          tripId: activeTrip._id,
+          shuttleId: shuttle._id,
+          unboardedAt: now,
+        });
+      }
+    } catch (err) {
+      console.error('Failed to emit per-passenger unboard notifications:', err);
+    }
+
     // DISPATCH: Retry waiting queue — freed seats should be offered to queued passengers
     setImmediate(() => {
       retryWaitingQueue(shuttle.communityId, io).catch((err) =>
@@ -3334,8 +3415,10 @@ const claimPickupIntent = async (req, res) => {
     const sharedPayload = {
       requestId: pickupRequest._id,
       passengerId: pickupRequest.passengerId,
+      bookingOwner: pickupRequest.bookingOwner || pickupRequest.passengerId,
       fareType: pickupRequest.fareType,
       fareExpected,
+      passengerFares: [],
       pickupLocation: pickupRequest.pickupLocation || null,
       location: pickupRequest.location,
       destinationType: pickupRequest.destinationType,
@@ -3344,6 +3427,23 @@ const claimPickupIntent = async (req, res) => {
       expiresAt: pickupRequest.expiresAt,
       dispatchedAt: now,
     };
+
+    try {
+      const linkedRrs = await RideRequest.find({ pickupRequestId: pickupRequest._id }).lean();
+      if (Array.isArray(linkedRrs) && linkedRrs.length > 0) {
+        sharedPayload.passengerFares = linkedRrs.map((r) => ({
+          rideRequestId: r._id,
+          passengerId: r.passengerId || null,
+          passengerName: r.passengerName || null,
+          discountType: r.discountType || 'none',
+          fareExpected: r.fareExpected ?? null,
+          originalFare: r.originalFare ?? null,
+        }));
+      }
+    } catch (err) {
+      // non-fatal: leave passengerFares empty if lookup fails
+      console.error('Failed to load linked ride requests for claim payload:', err);
+    }
 
     const shuttlePayload = {
       shuttleId: updatedShuttle._id,

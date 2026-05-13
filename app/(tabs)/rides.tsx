@@ -9,10 +9,11 @@ import { DesignTokens, OutfitFonts } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { getCommunityById } from '@/services/community';
+import { connectCommunitySocket } from '@/services/socket';
 import { listPassengerRecentRides, PassengerRecentRide } from '@/services/trip';
 import { useAuthStore } from '@/store/auth';
 import { usePreferencesStore } from '@/store/preferences';
-import { formatMoney, formatShuttleLabel } from '@/utils/format';
+import { formatMoney } from '@/utils/format';
 import { Ionicons } from '@expo/vector-icons';
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { FlatList, Modal, Pressable, StyleSheet, TextInput, View } from 'react-native';
@@ -168,6 +169,36 @@ export default function RidesScreen() {
   useEffect(() => {
     loadRides();
   }, [loadRides]);
+
+  useEffect(() => {
+    if (user?.role !== 'passenger' || !user?.communityId) return;
+    const token = useAuthStore.getState().token;
+    const socket = connectCommunitySocket(user.communityId, token);
+    const onPassengerUnboard = (payload: any) => {
+      // If rideIds present, refresh recent rides so history updates immediately
+      if (payload?.rideIds && Array.isArray(payload.rideIds) && payload.rideIds.length > 0) {
+        void loadRides();
+      }
+    };
+    const refreshRecentRides = () => {
+      void loadRides();
+    };
+
+    socket.on('dispatch:passenger-assigned', refreshRecentRides);
+    socket.on('trip:pickup-claimed', refreshRecentRides);
+    socket.on('trip:passenger-boarded', refreshRecentRides);
+    socket.on('trip:passenger-unboarded', onPassengerUnboard);
+    socket.on('trip:passenger-auto-unboarded', onPassengerUnboard);
+
+    return () => {
+      socket.off('dispatch:passenger-assigned', refreshRecentRides);
+      socket.off('trip:pickup-claimed', refreshRecentRides);
+      socket.off('trip:passenger-boarded', refreshRecentRides);
+      socket.off('trip:passenger-unboarded', onPassengerUnboard);
+      socket.off('trip:passenger-auto-unboarded', onPassengerUnboard);
+      socket.disconnect?.();
+    };
+  }, [user?.communityId, user?.role, loadRides]);
 
   useEffect(() => {
     if (user?.role !== 'passenger' || !user?.communityId) {
