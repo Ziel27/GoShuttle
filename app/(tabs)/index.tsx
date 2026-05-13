@@ -121,6 +121,9 @@ type PickupClaimedEventPayload = {
 
 type PassengerAutoUnboardedPayload = {
   rideIds?: string[];
+  shuttleId?: string;
+  currentCapacity?: number;
+  maxCapacity?: number;
 };
 
 type PickupCancelledEventPayload = {
@@ -1104,7 +1107,39 @@ export default function HomeScreen() {
       }
     };
 
+    const onPassengerBoarded = (payload: {
+      shuttleId?: string;
+      currentCapacity?: number;
+      maxCapacity?: number;
+    }) => {
+      if (!payload.shuttleId || payload.currentCapacity === undefined) return;
+      setShuttles((current) =>
+        current.map((item) =>
+          item._id === payload.shuttleId
+            ? {
+                ...item,
+                currentCapacity: payload.currentCapacity!,
+                ...(payload.maxCapacity !== undefined ? { maxCapacity: payload.maxCapacity } : {}),
+              }
+            : item
+        )
+      );
+    };
+
     const onPassengerAutoUnboarded = (payload: PassengerAutoUnboardedPayload) => {
+      if (payload.shuttleId && payload.currentCapacity !== undefined) {
+        setShuttles((current) =>
+          current.map((item) =>
+            item._id === payload.shuttleId
+              ? {
+                  ...item,
+                  currentCapacity: payload.currentCapacity!,
+                  ...(payload.maxCapacity !== undefined ? { maxCapacity: payload.maxCapacity } : {}),
+                }
+              : item
+          )
+        );
+      }
       if (!payload.rideIds || payload.rideIds.length === 0) return;
       setOnboardDestinations((items) => items.filter((item) => !payload.rideIds!.includes(item.rideId)));
       if (user?.role === 'passenger') {
@@ -1262,6 +1297,7 @@ export default function HomeScreen() {
 
     socket.on('shuttle:location-updated', onLocationUpdated);
     socket.on('shuttle:capacity-updated', onCapacityUpdated);
+    socket.on('trip:passenger-boarded', onPassengerBoarded);
     socket.on('trip:pickup-intent', onPickupIntent);
     socket.on('trip:pickup-claimed', onPickupClaimed);
     socket.on('trip:passenger-auto-unboarded', onPassengerAutoUnboarded);
@@ -1291,6 +1327,7 @@ export default function HomeScreen() {
     return () => {
       socket.off('shuttle:location-updated', onLocationUpdated);
       socket.off('shuttle:capacity-updated', onCapacityUpdated);
+      socket.off('trip:passenger-boarded', onPassengerBoarded);
       socket.off('trip:pickup-intent', onPickupIntent);
       socket.off('trip:pickup-claimed', onPickupClaimed);
       socket.off('trip:passenger-auto-unboarded', onPassengerAutoUnboarded);

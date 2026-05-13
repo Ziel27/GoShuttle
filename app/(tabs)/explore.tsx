@@ -743,12 +743,56 @@ export default function FleetScreen() {
       );
     };
 
+    const onPassengerBoarded = (payload: {
+      shuttleId?: string;
+      currentCapacity?: number;
+      maxCapacity?: number;
+    }) => {
+      if (!payload.shuttleId || payload.currentCapacity === undefined) return;
+      setShuttles((items) =>
+        items.map((item) =>
+          item._id === payload.shuttleId
+            ? {
+                ...item,
+                currentCapacity: payload.currentCapacity!,
+                ...(payload.maxCapacity !== undefined ? { maxCapacity: payload.maxCapacity } : {}),
+              }
+            : item
+        )
+      );
+    };
+
+    const onPassengerUnboarded = (payload: {
+      shuttleId?: string;
+      currentCapacity?: number;
+      maxCapacity?: number;
+    }) => {
+      if (!payload.shuttleId || payload.currentCapacity === undefined) return;
+      setShuttles((items) =>
+        items.map((item) =>
+          item._id === payload.shuttleId
+            ? {
+                ...item,
+                currentCapacity: payload.currentCapacity!,
+                ...(payload.maxCapacity !== undefined ? { maxCapacity: payload.maxCapacity } : {}),
+              }
+            : item
+        )
+      );
+    };
+
     socket.on('shuttle:location-updated', onLocationUpdated);
     socket.on('shuttle:capacity-updated', onCapacityUpdated);
+    socket.on('trip:passenger-boarded', onPassengerBoarded);
+    socket.on('trip:passenger-auto-unboarded', onPassengerUnboarded);
+    socket.on('trip:passenger-unboarded', onPassengerUnboarded);
 
     return () => {
       socket.off('shuttle:location-updated', onLocationUpdated);
       socket.off('shuttle:capacity-updated', onCapacityUpdated);
+      socket.off('trip:passenger-boarded', onPassengerBoarded);
+      socket.off('trip:passenger-auto-unboarded', onPassengerUnboarded);
+      socket.off('trip:passenger-unboarded', onPassengerUnboarded);
     };
   }, [refreshFleet, refreshTrips, token, user?.communityId, isDriver]);
 
