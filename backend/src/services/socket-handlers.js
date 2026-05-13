@@ -46,6 +46,13 @@ const registerSocketHandlers = (io) => {
       capacityUpdate: 0,
     };
 
+    // Auto-join the user's personal room immediately on connect so direct
+    // messages (dispatch:assigned, etc.) can be delivered without a separate
+    // join handshake from the client.
+    if (socket.data.user?._id) {
+      socket.join(`user:${String(socket.data.user._id)}`);
+    }
+
     socket.on('join-community', ({ communityId }) => {
       const userCommunityId = socket.data?.user?.communityId?.toString();
       if (!userCommunityId) return;
