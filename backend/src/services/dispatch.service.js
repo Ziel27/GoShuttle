@@ -133,8 +133,9 @@ const emitDispatchEvents = (io, { communityId, pickupRequest, shuttle, driverId,
     pendingPickupCount: shuttle.pendingPickupCount,
   };
 
-  // Driver sees the new pickup job
-  io.to(driverRoom).emit('dispatch:assigned', {
+  // Driver sees the new pickup job — same event name as passenger so the mobile
+  // app's unified onDispatchPassengerAssigned handler fires for both roles.
+  io.to(driverRoom).emit('dispatch:passenger-assigned', {
     ...sharedPayload,
     shuttle: shuttlePayload,
   });

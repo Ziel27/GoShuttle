@@ -121,6 +121,9 @@ type PickupClaimedEventPayload = {
 
 type PassengerAutoUnboardedPayload = {
   rideIds?: string[];
+  shuttleId?: string;
+  currentCapacity?: number;
+  maxCapacity?: number;
 };
 
 type PickupCancelledEventPayload = {
@@ -1110,7 +1113,39 @@ export default function HomeScreen() {
       }
     };
 
+    const onPassengerBoarded = (payload: {
+      shuttleId?: string;
+      currentCapacity?: number;
+      maxCapacity?: number;
+    }) => {
+      if (!payload.shuttleId || payload.currentCapacity === undefined) return;
+      setShuttles((current) =>
+        current.map((item) =>
+          item._id === payload.shuttleId
+            ? {
+                ...item,
+                currentCapacity: payload.currentCapacity!,
+                ...(payload.maxCapacity !== undefined ? { maxCapacity: payload.maxCapacity } : {}),
+              }
+            : item
+        )
+      );
+    };
+
     const onPassengerAutoUnboarded = (payload: PassengerAutoUnboardedPayload) => {
+      if (payload.shuttleId && payload.currentCapacity !== undefined) {
+        setShuttles((current) =>
+          current.map((item) =>
+            item._id === payload.shuttleId
+              ? {
+                  ...item,
+                  currentCapacity: payload.currentCapacity!,
+                  ...(payload.maxCapacity !== undefined ? { maxCapacity: payload.maxCapacity } : {}),
+                }
+              : item
+          )
+        );
+      }
       if (!payload.rideIds || payload.rideIds.length === 0) return;
       setOnboardDestinations((items) => items.filter((item) => !payload.rideIds!.includes(item.rideId)));
       if (user?.role === 'passenger') {
@@ -1268,6 +1303,7 @@ export default function HomeScreen() {
 
     socket.on('shuttle:location-updated', onLocationUpdated);
     socket.on('shuttle:capacity-updated', onCapacityUpdated);
+    socket.on('trip:passenger-boarded', onPassengerBoarded);
     socket.on('trip:pickup-intent', onPickupIntent);
     socket.on('trip:pickup-claimed', onPickupClaimed);
     socket.on('trip:passenger-auto-unboarded', onPassengerAutoUnboarded);
@@ -1277,13 +1313,27 @@ export default function HomeScreen() {
     socket.on('socket:error', onSocketError);
     socket.on('community:settings-updated', onCommunitySettingsUpdated);
     socket.on('announcement:new', onAnnouncementNew);
+    const onDispatchTimeout = (payload: { requestId?: string; message?: string }) => {
+      if (user?.role !== 'driver') return;
+      if (payload.requestId) {
+        setDriverAssignedPickupRequest((current) =>
+          current && String(current._id) === String(payload.requestId) ? null : current
+        );
+        setPickupIntents((items) => items.filter((item) => item._id !== String(payload.requestId)));
+      }
+      const msg = payload.message || 'A pickup assignment has timed out and been re-queued.';
+      setPreferenceAwareFeedback(msg, 'service');
+    };
+
     socket.on('dispatch:passenger-assigned', onDispatchPassengerAssigned);
     socket.on('dispatch:queued', onDispatchQueued);
     socket.on('dispatch:shuttle-pending-updated', onDispatchShuttlePendingUpdated);
+    socket.on('dispatch:timeout', onDispatchTimeout);
 
     return () => {
       socket.off('shuttle:location-updated', onLocationUpdated);
       socket.off('shuttle:capacity-updated', onCapacityUpdated);
+      socket.off('trip:passenger-boarded', onPassengerBoarded);
       socket.off('trip:pickup-intent', onPickupIntent);
       socket.off('trip:pickup-claimed', onPickupClaimed);
       socket.off('trip:passenger-auto-unboarded', onPassengerAutoUnboarded);
@@ -1296,6 +1346,7 @@ export default function HomeScreen() {
       socket.off('dispatch:passenger-assigned', onDispatchPassengerAssigned);
       socket.off('dispatch:queued', onDispatchQueued);
       socket.off('dispatch:shuttle-pending-updated', onDispatchShuttlePendingUpdated);
+      socket.off('dispatch:timeout', onDispatchTimeout);
     };
   }, [activeCommunityId, dispatchedShuttle, loadShuttles, refreshPassengerDispatch, setPreferenceAwareFeedback, token, user?._id, user?.role]);
 
@@ -2663,6 +2714,30 @@ export default function HomeScreen() {
                     <MapIndicator iconName="bus" />
                   </Marker>
                 ) : null}
+
+                {activeCommunityPickupIntents.map((item) => {
+                  const coordinate = getPickupIntentCoordinate(item);
+                  if (!coordinate) return null;
+                  return [
+                    <Circle
+                      key={`driver-pickup-circle-${item._id}`}
+                      center={coordinate}
+                      radius={45}
+                      fillColor={AppPalette.dangerOverlaySoft}
+                      strokeColor={AppPalette.dangerOverlayMedium}
+                      strokeWidth={1}
+                    />,
+                    <Marker
+                      key={`driver-pickup-pin-${item._id}`}
+                      coordinate={coordinate}
+                      anchor={{ x: 0.5, y: 0.5 }}
+                      accessible
+                      accessibilityLabel="Passenger pickup request"
+                    >
+                      <MapIndicator iconName="person" />
+                    </Marker>,
+                  ];
+                })}
 
                 {activePassengerPickupVisible && activePassengerPickupRequest ? (() => {
                   const item = activePassengerPickupRequest;

@@ -17,6 +17,7 @@ const PickupRequest = require('./models/PickupRequest');
 const { registerSocketHandlers } = require('./services/socket-handlers');
 const { startRemittanceEnforcementJob } = require('./services/remittance-enforcement');
 const { startIdVerificationExpirationJob } = require('./services/id-verification-expiration');
+const { startDispatchTimeoutJob } = require('./services/dispatch-timeout');
 
 // ─── Environment Validation ───────────────────────────────────────
 const validateEnvironment = () => {
@@ -216,6 +217,7 @@ registerSocketHandlers(io);
 if (process.env.NODE_ENV !== 'test') {
   startRemittanceEnforcementJob(io);
   startIdVerificationExpirationJob();
+  startDispatchTimeoutJob(io);
 }
 
 // ─── Global Middleware ───────────────────────────────────────────

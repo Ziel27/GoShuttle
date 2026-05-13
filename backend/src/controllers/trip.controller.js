@@ -1199,10 +1199,10 @@ const cancelPickupIntent = async (req, res) => {
       return res.status(409).json({ error: 'Only pending requests can be cancelled.' });
     }
 
-    // DISPATCH: Release the reserved slot FIRST (before status changes, so condition in releaseAndRetry works)
-    if (request.assignedShuttleId && request.status === 'dispatched') {
-      const { releasePendingSlot } = require('../services/dispatch.service');
-      await releasePendingSlot(request.assignedShuttleId).catch((err) =>
+    // DISPATCH: Release the reserved slot FIRST (before status changes)
+    const shuttleToHeal = request.assignedShuttleId;
+    if (shuttleToHeal && request.status === 'dispatched') {
+      await releasePendingSlot(shuttleToHeal).catch((err) =>
         console.error('[cancelPickupIntent] releasePendingSlot error:', err)
       );
     }
@@ -1222,6 +1222,23 @@ const cancelPickupIntent = async (req, res) => {
         },
       }
     );
+
+    // SELF-HEAL: Recompute and reset the stored pendingPickupCount to match reality,
+    // preventing any drift from accumulating regardless of which code path ran.
+    if (shuttleToHeal) {
+      setImmediate(async () => {
+        try {
+          const liveCount = await PickupRequest.countDocuments({
+            assignedShuttleId: shuttleToHeal,
+            status: 'dispatched',
+            expiresAt: { $gt: new Date() },
+          });
+          await Shuttle.updateOne({ _id: shuttleToHeal }, { $set: { pendingPickupCount: liveCount } });
+        } catch (err) {
+          console.error('[cancelPickupIntent] self-heal pendingPickupCount error:', err);
+        }
+      });
+    }
 
     // DISPATCH: Retry waiting queue with the freed slot
     setImmediate(() => {
@@ -1301,6 +1318,9 @@ const cancelMyPickupIntents = async (req, res) => {
     // Broadcast cancellation and release slots — one per request, non-blocking
     const communityRoom = `community:${String(communityId)}`;
     setImmediate(async () => {
+      // Collect unique shuttle IDs that had dispatched slots so we can self-heal them
+      const shuttleIdsToHeal = new Set();
+
       for (const req of activeRequests) {
         const payload = {
           requestId: req._id,
@@ -1313,17 +1333,31 @@ const cancelMyPickupIntents = async (req, res) => {
         io.to(communityRoom).emit('pickup-intent:cancelled', payload);
         io.to(communityRoom).emit('trip:pickup-intent-cancelled', payload);
 
-        // Release slot if it had a reserved pending slot
+        // Release slot directly using the lean snapshot (status/assignedShuttleId captured
+        // BEFORE updateMany ran). Do NOT call releaseAndRetry — it re-reads from DB and
+        // would find status='cancelled', skipping the release entirely.
         if (req.status === 'dispatched' && req.assignedShuttleId) {
           try {
-            await releaseAndRetry({
-              pickupRequestId: req._id,
-              communityId: req.communityId,
-              io,
-            });
+            await releasePendingSlot(req.assignedShuttleId);
+            shuttleIdsToHeal.add(String(req.assignedShuttleId));
           } catch (err) {
-            console.error('[cancelMyPickupIntents] releaseAndRetry error:', err);
+            console.error('[cancelMyPickupIntents] releasePendingSlot error:', err);
           }
+        }
+      }
+
+      // SELF-HEAL: Reset stored pendingPickupCount to the live reality for every
+      // affected shuttle so drift cannot accumulate.
+      for (const shuttleId of shuttleIdsToHeal) {
+        try {
+          const liveCount = await PickupRequest.countDocuments({
+            assignedShuttleId: shuttleId,
+            status: 'dispatched',
+            expiresAt: { $gt: new Date() },
+          });
+          await Shuttle.updateOne({ _id: shuttleId }, { $set: { pendingPickupCount: liveCount } });
+        } catch (err) {
+          console.error('[cancelMyPickupIntents] self-heal pendingPickupCount error:', err);
         }
       }
 
@@ -3154,6 +3188,17 @@ const getMyDispatch = async (req, res) => {
       ? `${webBaseUrl}/track/${request.trackingToken}`
       : null;
 
+    // Compute live pendingPickupCount so the "pickups ahead" display is always accurate
+    // and never shows a stale stored value from the Shuttle document.
+    let livePendingPickupCount = 0;
+    if (request.assignedShuttleId) {
+      livePendingPickupCount = await PickupRequest.countDocuments({
+        assignedShuttleId: request.assignedShuttleId._id,
+        status: 'dispatched',
+        expiresAt: { $gt: new Date() },
+      });
+    }
+
     return res.status(200).json({
       dispatch: {
         requestId: request._id,
@@ -3174,7 +3219,7 @@ const getMyDispatch = async (req, res) => {
               location: request.assignedShuttleId.location,
               currentCapacity: request.assignedShuttleId.currentCapacity,
               maxCapacity: request.assignedShuttleId.maxCapacity,
-              pendingPickupCount: request.assignedShuttleId.pendingPickupCount,
+              pendingPickupCount: livePendingPickupCount,
               status: request.assignedShuttleId.status,
             }
           : null,
@@ -3249,9 +3294,11 @@ const claimPickupIntent = async (req, res) => {
       return res.status(409).json({ error: 'This passenger is not in your assigned phase area.' });
     }
 
+    // Use $set to actualPendingCount + 1 instead of $inc so we never inherit a
+    // drifted stored counter. actualPendingCount is the live aggregate from DB.
     const updatedShuttle = await Shuttle.findByIdAndUpdate(
       shuttle._id,
-      { $inc: { pendingPickupCount: 1 } },
+      { $set: { pendingPickupCount: actualPendingCount + 1 } },
       { new: true, select: '_id plateNumber label currentCapacity maxCapacity pendingPickupCount location' }
     );
 
@@ -3259,11 +3306,9 @@ const claimPickupIntent = async (req, res) => {
       return res.status(500).json({ error: 'Failed to reserve shuttle slot.' });
     }
 
-    if (updatedShuttle.currentCapacity + updatedShuttle.pendingPickupCount > updatedShuttle.maxCapacity) {
-      await Shuttle.findOneAndUpdate(
-        { _id: shuttle._id, pendingPickupCount: { $gt: 0 } },
-        { $inc: { pendingPickupCount: -1 } }
-      );
+    // Check with the accurate count (currentCapacity + live pending + 1 for this claim)
+    if (shuttle.currentCapacity + actualPendingCount + 1 > shuttle.maxCapacity) {
+      await Shuttle.updateOne({ _id: shuttle._id }, { $set: { pendingPickupCount: actualPendingCount } });
       return res.status(409).json({ error: 'Shuttle became full while claiming. Please try again.' });
     }
 
