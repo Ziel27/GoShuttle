@@ -3294,9 +3294,11 @@ const claimPickupIntent = async (req, res) => {
       return res.status(409).json({ error: 'This passenger is not in your assigned phase area.' });
     }
 
+    // Use $set to actualPendingCount + 1 instead of $inc so we never inherit a
+    // drifted stored counter. actualPendingCount is the live aggregate from DB.
     const updatedShuttle = await Shuttle.findByIdAndUpdate(
       shuttle._id,
-      { $inc: { pendingPickupCount: 1 } },
+      { $set: { pendingPickupCount: actualPendingCount + 1 } },
       { new: true, select: '_id plateNumber label currentCapacity maxCapacity pendingPickupCount location' }
     );
 
@@ -3304,11 +3306,9 @@ const claimPickupIntent = async (req, res) => {
       return res.status(500).json({ error: 'Failed to reserve shuttle slot.' });
     }
 
-    if (updatedShuttle.currentCapacity + updatedShuttle.pendingPickupCount > updatedShuttle.maxCapacity) {
-      await Shuttle.findOneAndUpdate(
-        { _id: shuttle._id, pendingPickupCount: { $gt: 0 } },
-        { $inc: { pendingPickupCount: -1 } }
-      );
+    // Check with the accurate count (currentCapacity + live pending + 1 for this claim)
+    if (shuttle.currentCapacity + actualPendingCount + 1 > shuttle.maxCapacity) {
+      await Shuttle.updateOne({ _id: shuttle._id }, { $set: { pendingPickupCount: actualPendingCount } });
       return res.status(409).json({ error: 'Shuttle became full while claiming. Please try again.' });
     }
 

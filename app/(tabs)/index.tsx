@@ -2672,6 +2672,30 @@ export default function HomeScreen() {
                   </Marker>
                 ) : null}
 
+                {activeCommunityPickupIntents.map((item) => {
+                  const coordinate = getPickupIntentCoordinate(item);
+                  if (!coordinate) return null;
+                  return [
+                    <Circle
+                      key={`driver-pickup-circle-${item._id}`}
+                      center={coordinate}
+                      radius={45}
+                      fillColor={AppPalette.dangerOverlaySoft}
+                      strokeColor={AppPalette.dangerOverlayMedium}
+                      strokeWidth={1}
+                    />,
+                    <Marker
+                      key={`driver-pickup-pin-${item._id}`}
+                      coordinate={coordinate}
+                      anchor={{ x: 0.5, y: 0.5 }}
+                      accessible
+                      accessibilityLabel="Passenger pickup request"
+                    >
+                      <MapIndicator iconName="person" />
+                    </Marker>,
+                  ];
+                })}
+
                 {activePassengerPickupVisible && activePassengerPickupRequest ? (() => {
                   const item = activePassengerPickupRequest;
                   const coordinate = activePassengerPickupCoordinate;
