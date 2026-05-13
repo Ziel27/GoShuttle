@@ -1125,9 +1125,6 @@ const createPickupIntent = async (req, res) => {
 
     // Load on-duty shuttles and their pending pickup counts to compute effective
     // available seats (currentCapacity + pendingPickupCount).
-    const Shuttle = require('../models/Shuttle');
-    const PickupRequest = require('../models/PickupRequest');
-
     const communityOid = pickupRequest.communityId;
 
     const [shuttles, pendingAgg] = await Promise.all([
@@ -3360,12 +3357,21 @@ const claimPickupIntent = async (req, res) => {
     }
 
     const now = new Date();
-    const pickupRequest = await PickupRequest.findOne({
-      _id: requestId,
-      communityId,
-      status: { $in: ['pending', 'queued'] },
-      expiresAt: { $gt: now },
-    });
+    const requestFilter = mongoose.Types.ObjectId.isValid(String(requestId))
+      ? {
+        _id: requestId,
+        communityId,
+        status: { $in: ['pending', 'queued'] },
+        expiresAt: { $gt: now },
+      }
+      : {
+        trackingToken: requestId,
+        communityId,
+        status: { $in: ['pending', 'queued'] },
+        expiresAt: { $gt: now },
+      };
+
+    const pickupRequest = await PickupRequest.findOne(requestFilter);
 
     if (!pickupRequest) {
       return res.status(404).json({ error: 'Request not found, already claimed, or expired.' });
