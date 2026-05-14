@@ -5,7 +5,6 @@ import {
   FixedDestinationChip,
   type FixedDestinationOption,
 } from '@/components/ui/home-screen-primitives';
-import { PremiumButton } from '@/components/ui/premium-button';
 import { SectionHeader } from '@/components/ui/section-header';
 import { StatusBanner } from '@/components/ui/status-banner';
 import { AppPalette, getCapacityColor } from '@/constants/app-ui';
@@ -456,7 +455,23 @@ export default function HomeScreen() {
     activePassengerPickupDistanceMeters !== null && activePassengerPickupDistanceMeters <= DRIVER_PICKUP_RADIUS_METERS;
   const isWithinDropoffRadius =
     activePassengerDropoffDistanceMeters !== null && activePassengerDropoffDistanceMeters <= DRIVER_DROPOFF_RADIUS_METERS;
-  const remainingManualPickupSlots = Math.max(0, activePassengerPickupRequestCount - activePassengerManualBoardCount);
+
+  // Calculate how many passengers from the current request have been boarded
+  // by matching passenger IDs from the manifest with onboard destinations
+  const requestBoardedPassengerCount = useMemo(() => {
+    if (!activePassengerPickupRequest?.passengerManifest || onboardDestinations.length === 0) {
+      return 0;
+    }
+    const manifestPassengerIds = (activePassengerPickupRequest.passengerManifest || [])
+      .map(p => p.passengerId)
+      .filter((id): id is string => !!id);
+    
+    return onboardDestinations.filter(onboard => 
+      onboard.passengerId && manifestPassengerIds.includes(onboard.passengerId)
+    ).length;
+  }, [activePassengerPickupRequest?.passengerManifest, onboardDestinations]);
+
+  const remainingManualPickupSlots = Math.max(0, activePassengerPickupRequestCount - requestBoardedPassengerCount);
   const activePassengerPickupFitsCapacity = Boolean(
     assignedShuttle && assignedShuttle.currentCapacity + activePassengerPickupRequestCount <= assignedShuttle.maxCapacity
   );
@@ -551,6 +566,24 @@ export default function HomeScreen() {
       .map((entry) => entry.name || 'Guest')
       .join(', ');
   }, [activePassengerPickupRequest]);
+
+  const activePickupMarkerLabel = useMemo(() => {
+    const manifest = activePassengerPickupRequest?.passengerManifest || [];
+    const names = manifest
+      .map((entry) => entry.name?.trim())
+      .filter((name): name is string => Boolean(name));
+
+    if (names.length === 0) {
+      return 'Passenger';
+    }
+
+    if (names.length === 1) {
+      return names[0];
+    }
+
+    const [firstName, ...otherNames] = names;
+    return `${firstName} + ${otherNames.length}`;
+  }, [activePassengerPickupRequest?.passengerManifest]);
 
   const manifestSummary = useMemo(() => {
     const filledEntries = manifestDraft
@@ -923,7 +956,6 @@ export default function HomeScreen() {
     return 'Manual unboarding is ready for the active request.';
   }, [
     activePassengerPickupRequest,
-    activePassengerManualBoardCount,
     isManualAutomationCooldownActive,
     activeDropoffPassengerCount,
     isWithinPickupRadius,
@@ -1974,11 +2006,10 @@ export default function HomeScreen() {
       await boardPassenger(assignedShuttle._id, 1);
       startManualAutomationCooldown();
       await loadShuttles();
-      const nextCount = Math.min(activePassengerPickupRequestCount, activePassengerManualBoardCount + 1);
-      setActivePassengerManualBoardCount(nextCount);
-      if (activePassengerPickupRequest && nextCount >= activePassengerPickupRequestCount) {
-        setPickupIntents((items) => items.filter((item) => item._id !== activePassengerPickupRequest._id));
-        setActivePassengerManualBoardCount(0);
+      // Refresh onboard destinations to get the server's updated state
+      if (assignedShuttle) {
+        const passengers = await listOnboardDestinations(assignedShuttle._id);
+        setOnboardDestinations(passengers);
       }
       setPreferenceAwareFeedback('Passenger boarding recorded manually.', 'ride');
     } catch (error) {
@@ -2653,31 +2684,6 @@ export default function HomeScreen() {
 
   return (
     <SafeAreaView style={[styles.root, { backgroundColor: bgColor }]} edges={['top', 'left', 'right']}>
-      <View style={[styles.topBar, { borderColor, backgroundColor: surfaceColor }]}>
-        <SectionHeader
-          title={`Welcome, ${user?.firstName || 'Member'}`}
-          subtitle={`${user?.role === 'driver' ? 'Driver Console' : 'Ride Dashboard'} · ${user?.lastName || 'GoShuttle'}`}
-          titleColor={textColor}
-          subtitleColor={mutedColor}
-          rightAction={
-            <Pressable
-              onPress={loadShuttles}
-              style={[styles.avatarBadge, { backgroundColor: tint }]}
-              accessibilityRole="button"
-              accessibilityLabel="Refresh fleet and map data"
-            >
-              <Ionicons name="refresh" size={18} color={palette.white} />
-            </Pressable>
-          }
-        />
-      </View>
-
-      <View style={[styles.locationPill, { backgroundColor: surfaceColor, borderColor }]}> 
-        <Ionicons name="location-outline" size={14} color={tint} />
-        <ThemedText style={[styles.locationPillText, { color: textColor }]}>
-          {activeCommunityId ? 'Community route active' : 'Locating community route'}
-        </ThemedText>
-      </View>
 
       {(user?.warnings ?? []).filter((w) => !dismissedWarningIds.has(w._id)).map((w, i) => (
         <View key={w._id} style={[styles.warningCard, { borderColor: '#fde68a', backgroundColor: '#fefce8' }]}>
@@ -2846,9 +2852,16 @@ export default function HomeScreen() {
                       coordinate={coordinate}
                       anchor={{ x: 0.5, y: 0.5 }}
                       accessible
-                      accessibilityLabel="Active pickup request marker"
+                      accessibilityLabel={`Active pickup request marker for ${activePickupMarkerLabel}`}
                     >
-                      <MapIndicator iconName="person" />
+                      <View style={styles.pickupMarkerStack}>
+                        <View style={[styles.pickupMarkerLabelPill, { backgroundColor: bgColor, borderColor }]}> 
+                          <ThemedText numberOfLines={1} style={[styles.pickupMarkerLabelText, { color: textColor }]}>
+                            {activePickupMarkerLabel}
+                          </ThemedText>
+                        </View>
+                        <MapIndicator iconName="person" />
+                      </View>
                       <Callout tooltip>
                         <View style={[styles.calloutContainer, { backgroundColor: bgColor, borderColor }]}> 
                           <ThemedText type="defaultSemiBold" style={{ color: textColor, fontSize: 14 }}>
@@ -2894,15 +2907,18 @@ export default function HomeScreen() {
                 {onboardDestinations.map((item) => {
                   const [longitude, latitude] = item.destinationLocation.coordinates;
                   if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+                  const onboardDisplayName = item.passengerName && item.passengerName !== 'Passenger'
+                    ? item.passengerName
+                    : item.destinationLabel;
                   return (
                     <Marker
                       key={`destination-${item.rideId}`}
                       coordinate={{ latitude, longitude }}
                       title={item.destinationLabel}
-                      description={`${item.passengerName} destination`}
+                      description={`${onboardDisplayName} destination`}
                       pinColor={palette.emerald}
                       accessible
-                      accessibilityLabel={`Destination marker for ${item.passengerName} to ${item.destinationLabel}`}
+                      accessibilityLabel={`Destination marker for ${onboardDisplayName} to ${item.destinationLabel}`}
                     />
                   );
                 })}
@@ -3015,7 +3031,7 @@ export default function HomeScreen() {
                           )}
                         </View>
                         {filteredPickupIntents.length === 0 ? (
-                          <ThemedText style={[styles.metaText, { color: mutedColor, marginTop: 6 }]}>No results for "{pickupSearchQuery}"</ThemedText>
+                          <ThemedText style={[styles.metaText, { color: mutedColor, marginTop: 6 }]}>No results for &quot;{pickupSearchQuery}&quot;</ThemedText>
                         ) : (
                           filteredPickupIntents.map((item, idx) => {
                             const guestNames = (item.passengerManifest || [])
@@ -3121,32 +3137,8 @@ export default function HomeScreen() {
                         {isDriverOnShift ? 'On Shift' : 'Off Shift'}
                       </ThemedText>
                     </View>
-                    <View style={styles.rowBetween}>
-                      <ThemedText style={[styles.metaText, { color: mutedColor }]}>Auto Sync</ThemedText>
-                      <ThemedText style={[styles.valueSmallText, { color: textColor }]}>
-                        {!isDriverOnShift
-                          ? 'Paused (Off Shift)'
-                          : autoSyncStatus === 'syncing'
-                            ? 'Syncing...'
-                            : autoSyncStatus === 'error'
-                              ? 'Retrying'
-                              : lastAutoSyncAt
-                                ? `Last ${lastAutoSyncAt.toLocaleTimeString()}`
-                                : 'Waiting'}
-                      </ThemedText>
-                    </View>
                   </View>
 
-                  <View style={styles.quickActionRow}>
-                    <PremiumButton
-                      style={styles.quickActionBtn}
-                      onPress={handleSyncLocation}
-                      variant="secondary"
-                      disabled={!isDriverOnShift}>
-                      <Ionicons name="locate-outline" size={16} color={tint} />
-                      <ThemedText style={[styles.quickActionTxt, { color: tint }]}>Sync Now</ThemedText>
-                    </PremiumButton>
-                  </View>
                   <View style={styles.statusSection}>
                     {activePassengerPickupVisible && activePassengerPickupRequest ? (
                       <View style={[styles.pickupRequestCard, { borderColor, backgroundColor: surfaceColor }]}>
@@ -3168,14 +3160,22 @@ export default function HomeScreen() {
                     {onboardDestinations.length === 0 ? (
                       <ThemedText style={[styles.metaText, { color: mutedColor }]}>No onboard passengers.</ThemedText>
                     ) : onboardDestinations.map((item) => {
+                      const onboardDisplayName = item.passengerName && item.passengerName !== 'Passenger'
+                        ? item.passengerName
+                        : item.destinationLabel;
+                      const showDestinationLabel = onboardDisplayName !== item.destinationLabel;
                       const hasActiveDiscount = item.discountType !== 'none' && !item.discountRevoked;
                       const discountLabel = item.discountType === 'student' ? 'Student' : item.discountType === 'pwd' ? 'PWD' : item.discountType === 'senior' ? 'Senior' : null;
                       const isRevoking = revokingDiscountId === item.rideId;
                       return (
                         <View key={item.rideId} style={{ marginBottom: 6 }}>
                           <View style={styles.rowBetween}>
-                            <ThemedText style={[styles.metaText, { color: textColor }]}>{item.passengerName}</ThemedText>
-                            <ThemedText style={[styles.metaText, { color: mutedColor }]}>{item.destinationLabel}</ThemedText>
+                            <ThemedText style={[styles.metaText, { color: textColor }]}>{onboardDisplayName}</ThemedText>
+                            {showDestinationLabel ? (
+                              <ThemedText style={[styles.metaText, { color: mutedColor }]}>{item.destinationLabel}</ThemedText>
+                            ) : (
+                              <View />
+                            )}
                           </View>
                           {hasActiveDiscount && discountLabel ? (
                             <View style={[styles.rowBetween, { marginTop: 2 }]}>
@@ -3221,10 +3221,10 @@ export default function HomeScreen() {
                     styles.driverActionButton,
                     styles.driverBoardButton,
                     { backgroundColor: tint, borderColor: tint },
-                    (boardingSubmitting || assignedShuttle.currentCapacity >= assignedShuttle.maxCapacity || !isDriverOnShift || !activePassengerPickupRequest || !isWithinPickupRadius || !activePassengerPickupFitsCapacity || remainingManualPickupSlots === 0) && styles.driverActionButtonDisabled,
+                    (boardingSubmitting || assignedShuttle.currentCapacity >= assignedShuttle.maxCapacity || !isDriverOnShift || !activePassengerPickupRequest || !isWithinPickupRadius || !activePassengerPickupFitsCapacity || remainingManualPickupSlots === 0 || (isWithinDropoffRadius && activeDropoffPassengerCount > 0)) && styles.driverActionButtonDisabled,
                   ]}
                   onPress={onDriverBoard}
-                  disabled={boardingSubmitting || assignedShuttle.currentCapacity >= assignedShuttle.maxCapacity || !isDriverOnShift || !activePassengerPickupRequest || !isWithinPickupRadius || !activePassengerPickupFitsCapacity || remainingManualPickupSlots === 0}
+                  disabled={boardingSubmitting || assignedShuttle.currentCapacity >= assignedShuttle.maxCapacity || !isDriverOnShift || !activePassengerPickupRequest || !isWithinPickupRadius || !activePassengerPickupFitsCapacity || remainingManualPickupSlots === 0 || (isWithinDropoffRadius && activeDropoffPassengerCount > 0)}
                   accessibilityRole="button"
                   accessibilityLabel="Board one passenger manually"
                 >
@@ -3711,7 +3711,7 @@ export default function HomeScreen() {
                         ) : (
                           <View style={[styles.manifestHomeNotice, { backgroundColor: colorScheme === 'dark' ? AppPalette.darkMintBg : AppPalette.mint, borderColor: successColor }]}>
                             <Ionicons name="information-circle" size={16} color={successColor} />
-                            <ThemedText style={[styles.manifestCaption, { color: successColor, flex: 1 }]}>Uses the passenger's home GPS coordinate.</ThemedText>
+                            <ThemedText style={[styles.manifestCaption, { color: successColor, flex: 1 }]}>Uses the passenger&apos;s home GPS coordinate.</ThemedText>
                           </View>
                         )}
                       </View>
@@ -3791,7 +3791,7 @@ export default function HomeScreen() {
                         ) : (
                           <View style={[styles.manifestHomeNotice, { backgroundColor: colorScheme === 'dark' ? AppPalette.darkMintBg : AppPalette.mint, borderColor: successColor }]}>
                             <Ionicons name="information-circle" size={16} color={successColor} />
-                            <ThemedText style={[styles.manifestCaption, { color: successColor, flex: 1 }]}>Uses the passenger's home GPS coordinate.</ThemedText>
+                            <ThemedText style={[styles.manifestCaption, { color: successColor, flex: 1 }]}>Uses the passenger&apos;s home GPS coordinate.</ThemedText>
                           </View>
                         )}
                       </View>
@@ -4924,7 +4924,7 @@ export default function HomeScreen() {
                     <ThemedText
                       style={[styles.queueNoticeFooterText, { color: colorScheme === 'dark' ? 'rgba(252,211,77,0.7)' : '#b45309' }]}
                     >
-                      You'll receive a notification when dispatched
+                      You&apos;ll receive a notification when dispatched
                     </ThemedText>
                   </View>
                 </View>
@@ -6013,6 +6013,28 @@ const styles = StyleSheet.create({
   calloutSeparator: {
     height: 1,
     marginVertical: DesignTokens.spacing.xs,
+  },
+  pickupMarkerStack: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pickupMarkerLabelPill: {
+    maxWidth: 120,
+    marginBottom: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    borderWidth: 1,
+    shadowColor: '#000',
+    shadowOpacity: 0.12,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 2,
+  },
+  pickupMarkerLabelText: {
+    fontSize: 11,
+    fontFamily: OutfitFonts.semiBold,
+    textAlign: 'center',
   },
   mapIndicatorWrapper: {
     width: 22,

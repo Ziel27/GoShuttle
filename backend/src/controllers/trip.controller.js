@@ -3011,16 +3011,17 @@ const listOnboardDestinations = async (req, res) => {
       status: 'boarded',
     })
       .populate('passengerId', 'firstName lastName')
-      .select('passengerId boardedAt destinationType destinationLabel destinationLocation discountType fareAtBoarding originalFare discountRevoked')
+      .select('passengerId passengerName boardedAt destinationType destinationLabel destinationLocation discountType fareAtBoarding originalFare discountRevoked')
       .sort({ boardedAt: 1 })
       .lean();
 
     const passengers = rides.map((ride) => ({
       rideId: String(ride._id),
       passengerId: ride.passengerId?._id || null,
-      passengerName: ride.passengerId
-        ? `${ride.passengerId.firstName} ${ride.passengerId.lastName}`.trim()
-        : 'Passenger',
+      passengerName: ride.passengerName
+        || (ride.passengerId ? `${ride.passengerId.firstName} ${ride.passengerId.lastName}`.trim() : null)
+        || ride.destinationLabel
+        || 'Passenger',
       boardedAt: ride.boardedAt,
       destinationType: ride.destinationType,
       destinationLabel: ride.destinationLabel,
@@ -3241,6 +3242,8 @@ const resolveRideRequest = async (req, res) => {
       [{
         communityId: shuttle.communityId,
         passengerId: rideRequest.passengerId,
+        passengerName: rideRequest.passengerName || null,
+        passengerPhone: rideRequest.passengerPhone || null,
         shuttleId: shuttle._id,
         driverId: req.user._id,
         tripId: activeTrip._id,
