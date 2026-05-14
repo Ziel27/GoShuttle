@@ -215,6 +215,7 @@ const autoBoardNearbyPickups = async ({ session, shuttle, driverId }) => {
         const rrDiscountType = rr.discountType && rr.discountType !== 'none' ? rr.discountType : 'none';
         const rrOriginalFare = rr.originalFare || null;
         const rrFareAtBoarding = rrDiscountType !== 'none' && rr.fareExpected ? rr.fareExpected : activeTrip.fareAtTime;
+        const destLocation = rr.destination?.location || request.destinationLocation || request.pickupLocation || request.location;
         passengerRidesToInsert.push({
           communityId: shuttle.communityId,
           passengerId: rr.passengerId || null,
@@ -230,7 +231,7 @@ const autoBoardNearbyPickups = async ({ session, shuttle, driverId }) => {
           pickupLocation: rr.pickupLocation || request.pickupLocation || request.location,
           destinationType: rr.destination?.type || request.destinationType || 'fixed',
           destinationLabel: rr.destination?.label || request.destinationLabel || 'Destination',
-          destinationLocation: rr.destination?.location || request.destinationLocation,
+          destinationLocation: destLocation,
           requestedAt: rr.createdAt || request.createdAt,
           boardedAt,
           status: 'boarded',
@@ -238,6 +239,7 @@ const autoBoardNearbyPickups = async ({ session, shuttle, driverId }) => {
       }
     } else if (Array.isArray(request.passengerManifest) && request.passengerManifest.length > 0) {
       for (const entry of request.passengerManifest) {
+        const destLocation = request.destinationLocation || request.pickupLocation || request.location;
         passengerRidesToInsert.push({
           communityId: shuttle.communityId,
           passengerId: entry.passengerId || null,
@@ -251,13 +253,14 @@ const autoBoardNearbyPickups = async ({ session, shuttle, driverId }) => {
           pickupLocation: request.pickupLocation || request.location,
           destinationType: request.destinationType || 'fixed',
           destinationLabel: request.destinationLabel || 'Destination',
-          destinationLocation: request.destinationLocation,
+          destinationLocation: destLocation,
           requestedAt: request.createdAt,
           boardedAt,
           status: 'boarded',
         });
       }
     } else {
+      const destLocation = request.destinationLocation || request.pickupLocation || request.location;
       passengerRidesToInsert.push({
         communityId: shuttle.communityId,
         passengerId: request.passengerId,
@@ -269,7 +272,7 @@ const autoBoardNearbyPickups = async ({ session, shuttle, driverId }) => {
         pickupLocation: request.pickupLocation || request.location,
         destinationType: request.destinationType || 'fixed',
         destinationLabel: request.destinationLabel || 'Destination',
-        destinationLocation: request.destinationLocation,
+        destinationLocation: destLocation,
         requestedAt: request.createdAt,
         boardedAt,
         status: 'boarded',

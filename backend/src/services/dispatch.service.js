@@ -121,6 +121,8 @@ const emitDispatchEvents = (io, { communityId, pickupRequest, shuttle, driverId,
     destinationLocation: pickupRequest.destinationLocation,
     expiresAt: pickupRequest.expiresAt,
     dispatchedAt: pickupRequest.dispatchedAt,
+    passengerManifest: pickupRequest.passengerManifest || [],
+    note: pickupRequest.note || null,
   };
 
   const shuttlePayload = {
