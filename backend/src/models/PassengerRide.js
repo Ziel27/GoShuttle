@@ -90,6 +90,14 @@ const passengerRideSchema = new mongoose.Schema(
         required: true,
       },
     },
+    // Whether the stored destination is a fallback (e.g. copied from pickup/shuttle
+    // location because a proper destination was not available). Clients may hide
+    // or de-emphasize markers where this is true.
+    destinationIsFallback: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
     requestedAt: {
       type: Date,
       required: true,

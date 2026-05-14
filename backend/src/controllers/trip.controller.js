@@ -410,14 +410,38 @@ const passengerBoard = async (req, res) => {
       });
     }
 
-    // Enforce boarded seats against active pickup intents so driver actions are auditable.
-    const pendingRequests = await resolveBoardablePickupRequests({
-      session,
-      communityId: shuttle.communityId,
-      maxCount: boardedCount,
-      shuttlePhase: shuttle.assignedPhase,
-      shuttleLocation: shuttle.location,
-    });
+    // Allow driver to explicitly provide request IDs to board (safer linkage),
+    // otherwise resolve nearby boardable pickup requests automatically.
+    let pendingRequests = [];
+    const explicitRequestIds = Array.isArray(req.body.requestIds) ? req.body.requestIds.filter(Boolean) : [];
+    if (explicitRequestIds.length > 0) {
+      // Validate and load the explicitly provided PickupRequest documents.
+      const objectIds = explicitRequestIds.filter((id) => validator.isMongoId(String(id))).map((id) => mongoose.Types.ObjectId(id));
+      if (objectIds.length === 0) {
+        if (session) await session.abortTransaction();
+        return res.status(400).json({ error: 'Invalid requestIds provided.' });
+      }
+      pendingRequests = await PickupRequest.find({ _id: { $in: objectIds }, communityId: shuttle.communityId }).session(session).lean();
+      // Trim to requested boardedCount if more were provided
+      pendingRequests = pendingRequests.slice(0, boardedCount);
+    } else {
+      // Enforce boarded seats against active pickup intents so driver actions are auditable.
+      pendingRequests = await resolveBoardablePickupRequests({
+        session,
+        communityId: shuttle.communityId,
+        maxCount: boardedCount,
+        shuttlePhase: shuttle.assignedPhase,
+        shuttleLocation: shuttle.location,
+      });
+    }
+
+    // If there are no pending requests to link, require an explicit confirmation (force)
+    // to allow anonymous/manual boarding. This prevents accidental anonymous rides.
+    const forceManualBoard = Boolean(req.body.force === true || String(req.body.force) === 'true');
+    if ((!pendingRequests || pendingRequests.length === 0) && !forceManualBoard) {
+      if (session) await session.abortTransaction();
+      return res.status(409).json({ error: 'No matching pickup requests found. Provide `requestIds` or set `force=true` to confirm anonymous boarding.' });
+    }
 
     // DISPATCH: Decrement pendingPickupCount for each dispatched PickupRequest that is now physically boarding
     const dispatchedClaimedIds = pendingRequests
@@ -486,6 +510,9 @@ const passengerBoard = async (req, res) => {
             const rrOriginalFare = rr.originalFare || null;
             const rrFareAtBoarding = rrDiscountType !== 'none' && rr.fareExpected ? rr.fareExpected : activeTrip.fareAtTime;
             const destLocation = rr.destination?.location || request.destinationLocation || request.pickupLocation || request.location;
+            const destCoords = destLocation && destLocation.coordinates ? destLocation.coordinates : null;
+            const pickupCoords = request.pickupLocation && request.pickupLocation.coordinates ? request.pickupLocation.coordinates : null;
+            const isFallback = !!(destCoords && pickupCoords && destCoords.length === 2 && pickupCoords.length === 2 && destCoords[0] === pickupCoords[0] && destCoords[1] === pickupCoords[1]);
             passengerRidesToInsert.push({
               communityId: shuttle.communityId,
               passengerId: rr.passengerId || null,
@@ -502,6 +529,7 @@ const passengerBoard = async (req, res) => {
               destinationType: rr.destination?.type || request.destinationType || 'fixed',
               destinationLabel: rr.destination?.label || request.destinationLabel || 'Destination',
               destinationLocation: destLocation,
+              destinationIsFallback: isFallback,
               requestedAt: rr.createdAt || request.createdAt,
               boardedAt,
               status: 'boarded',
@@ -510,6 +538,9 @@ const passengerBoard = async (req, res) => {
         } else if (Array.isArray(request.passengerManifest) && request.passengerManifest.length > 0) {
           for (const entry of request.passengerManifest) {
             const destLocation = request.destinationLocation || request.pickupLocation || request.location;
+            const destCoords = destLocation && destLocation.coordinates ? destLocation.coordinates : null;
+            const pickupCoords = request.pickupLocation && request.pickupLocation.coordinates ? request.pickupLocation.coordinates : null;
+            const isFallback = !!(destCoords && pickupCoords && destCoords.length === 2 && pickupCoords.length === 2 && destCoords[0] === pickupCoords[0] && destCoords[1] === pickupCoords[1]);
             passengerRidesToInsert.push({
               communityId: shuttle.communityId,
               passengerId: entry.passengerId || null,
@@ -524,6 +555,7 @@ const passengerBoard = async (req, res) => {
               destinationType: request.destinationType || 'fixed',
               destinationLabel: request.destinationLabel || 'Destination',
               destinationLocation: destLocation,
+              destinationIsFallback: isFallback,
               requestedAt: request.createdAt,
               boardedAt,
               status: 'boarded',
@@ -531,6 +563,10 @@ const passengerBoard = async (req, res) => {
           }
         } else {
           const destLocation = request.destinationLocation || request.pickupLocation || request.location;
+          // Determine whether this destination is simply a fallback copied from pickup/shuttle.
+          const destCoords = destLocation && destLocation.coordinates ? destLocation.coordinates : null;
+          const pickupCoords = request.pickupLocation && request.pickupLocation.coordinates ? request.pickupLocation.coordinates : null;
+          const isFallback = !!(destCoords && pickupCoords && destCoords.length === 2 && pickupCoords.length === 2 && destCoords[0] === pickupCoords[0] && destCoords[1] === pickupCoords[1]);
           passengerRidesToInsert.push({
             communityId: shuttle.communityId,
             passengerId: request.passengerId,
@@ -543,6 +579,7 @@ const passengerBoard = async (req, res) => {
             destinationType: request.destinationType || 'fixed',
             destinationLabel: request.destinationLabel || 'Destination',
             destinationLocation: destLocation,
+            destinationIsFallback: isFallback,
             requestedAt: request.createdAt,
             boardedAt,
             status: 'boarded',
@@ -551,6 +588,22 @@ const passengerBoard = async (req, res) => {
       }
 
       if (passengerRidesToInsert.length > 0) {
+        // Disallow creating rides where destination == pickup unless driver explicitly
+        // confirmed (force=true). This avoids storing bogus drop-offs copied from pickup.
+        const fallbackExists = passengerRidesToInsert.some((r) => {
+          try {
+            const dest = r.destinationLocation && r.destinationLocation.coordinates;
+            const pickup = r.pickupLocation && r.pickupLocation.coordinates;
+            return !!(dest && pickup && dest.length === 2 && pickup.length === 2 && dest[0] === pickup[0] && dest[1] === pickup[1] && !r.destinationIsFallback);
+          } catch (e) {
+            return false;
+          }
+        });
+        if (fallbackExists && !forceManualBoard) {
+          if (session) await session.abortTransaction();
+          return res.status(409).json({ error: 'Detected ride(s) whose destination equals pickup location. Provide `force=true` to confirm creating fallback destinations.' });
+        }
+
         await PassengerRide.insertMany(passengerRidesToInsert, { session });
       }
 
@@ -581,7 +634,10 @@ const passengerBoard = async (req, res) => {
         pickupLocation: shuttle.location,
         destinationType: 'fixed',
         destinationLabel: 'Unknown',
+        // For anonymous/manual boards we cannot invent a real drop-off. Mark
+        // this destination as a fallback so clients can hide the misleading pin.
         destinationLocation: shuttle.location,
+        destinationIsFallback: true,
         requestedAt: boardedAt,
         boardedAt,
         status: 'boarded',
@@ -3011,11 +3067,12 @@ const listOnboardDestinations = async (req, res) => {
       status: 'boarded',
     })
       .populate('passengerId', 'firstName lastName')
-      .select('passengerId passengerName boardedAt destinationType destinationLabel destinationLocation discountType fareAtBoarding originalFare discountRevoked')
+      .select('passengerId passengerName boardedAt destinationType destinationLabel destinationLocation destinationIsFallback discountType fareAtBoarding originalFare discountRevoked')
       .sort({ boardedAt: 1 })
       .lean();
 
     const passengers = rides.map((ride) => ({
+      destinationIsFallback: ride.destinationIsFallback || false,
       rideId: String(ride._id),
       passengerId: ride.passengerId?._id || null,
       passengerName: ride.passengerName

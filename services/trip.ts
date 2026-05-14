@@ -139,11 +139,16 @@ export type ShiftRemittance = {
  * Records passenger boarding against a shuttle and active trip.
  * @throws {Error} When the API request fails.
  */
-export const boardPassenger = async (shuttleId: string, boardedCount = 1): Promise<TripMutationResponse> => {
-  const response = await api.post('/trips/passenger-board', {
-    shuttleId,
-    boardedCount,
-  });
+export const boardPassenger = async (
+  shuttleId: string,
+  boardedCount = 1,
+  options?: { requestIds?: string[]; force?: boolean }
+): Promise<TripMutationResponse> => {
+  const payload: Record<string, unknown> = { shuttleId, boardedCount };
+  if (options?.requestIds && options.requestIds.length > 0) payload.requestIds = options.requestIds;
+  if (options?.force) payload.force = true;
+
+  const response = await api.post('/trips/passenger-board', payload);
 
   return {
     trip: (response.data?.trip as Record<string, unknown>) || null,

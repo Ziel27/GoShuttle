@@ -2,8 +2,8 @@ import { HowToBookModal } from '@/components/HowToBookModal';
 import { ThemedText } from '@/components/themed-text';
 import { MapIndicator, MapLoadingPlaceholder } from '@/components/ui/home-map-primitives';
 import {
-  FixedDestinationChip,
-  type FixedDestinationOption,
+    FixedDestinationChip,
+    type FixedDestinationOption,
 } from '@/components/ui/home-screen-primitives';
 import { SectionHeader } from '@/components/ui/section-header';
 import { StatusBanner } from '@/components/ui/status-banner';
@@ -14,26 +14,26 @@ import { useThemeColor } from '@/hooks/use-theme-color';
 import { getCommunityById, getPhaseGeofences, type PhaseGeofence } from '@/services/community';
 import { syncOfflineBoardings } from '@/services/offline-boarding-queue';
 import {
-  AutomationDiagnostics,
-  listShuttles,
-  Shuttle,
-  updateShuttleLocation,
+    AutomationDiagnostics,
+    listShuttles,
+    Shuttle,
+    updateShuttleLocation,
 } from '@/services/shuttle';
 import { connectCommunitySocket } from '@/services/socket';
 import {
-  AssignedShuttle,
-  boardPassenger,
-  cancelPickupIntent,
-  claimPickupIntent,
-  createPickupIntent,
-  getMyDispatch,
-  listOnboardDestinations,
-  listPickupIntents,
-  OnboardDestinationPassenger,
-  PickupIntent,
-  QueueReason,
-  revokePassengerDiscount,
-  unboardPassenger
+    AssignedShuttle,
+    boardPassenger,
+    cancelPickupIntent,
+    claimPickupIntent,
+    createPickupIntent,
+    getMyDispatch,
+    listOnboardDestinations,
+    listPickupIntents,
+    OnboardDestinationPassenger,
+    PickupIntent,
+    QueueReason,
+    revokePassengerDiscount,
+    unboardPassenger
 } from '@/services/trip';
 import { getMyDiscountVerification } from '@/services/user';
 import { formatPhaseLabel, formatShuttleLabel } from '@/utils/format';
@@ -42,20 +42,20 @@ import { formatPhaseLabel, formatShuttleLabel } from '@/utils/format';
 import { useAuthStore } from '@/store/auth';
 import { usePreferencesStore } from '@/store/preferences';
 import {
-  describeBoardingReason,
-  describeUnboardingReason,
-  detectPhaseFromCoordinates,
-  detectPickupOrigin,
-  getDistanceMeters,
-  getPickupIntentCoordinate,
-  isExpiredIntent,
-  type PickupIntentEventPayload,
-  type PickupOriginContext,
-  toMaxZoomOutRegionFromBoundary,
-  toPickupIntent,
-  toRegionFromBoundary,
-  toShuttleCoordinate,
-  upsertPickupIntent
+    describeBoardingReason,
+    describeUnboardingReason,
+    detectPhaseFromCoordinates,
+    detectPickupOrigin,
+    getDistanceMeters,
+    getPickupIntentCoordinate,
+    isExpiredIntent,
+    type PickupIntentEventPayload,
+    type PickupOriginContext,
+    toMaxZoomOutRegionFromBoundary,
+    toPickupIntent,
+    toRegionFromBoundary,
+    toShuttleCoordinate,
+    upsertPickupIntent
 } from '@/utils/home-screen';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -465,9 +465,13 @@ export default function HomeScreen() {
     const manifestPassengerIds = (activePassengerPickupRequest.passengerManifest || [])
       .map(p => p.passengerId)
       .filter((id): id is string => !!id);
-    
-    return onboardDestinations.filter(onboard => 
-      onboard.passengerId && manifestPassengerIds.includes(onboard.passengerId)
+    const manifestPassengerNames = (activePassengerPickupRequest.passengerManifest || [])
+      .map(p => (p.name || '').trim())
+      .filter((n) => n.length > 0);
+
+    return onboardDestinations.filter(onboard =>
+      (onboard.passengerId && manifestPassengerIds.includes(onboard.passengerId)) ||
+      (onboard.passengerName && manifestPassengerNames.includes(onboard.passengerName))
     ).length;
   }, [activePassengerPickupRequest?.passengerManifest, onboardDestinations]);
 
@@ -476,7 +480,9 @@ export default function HomeScreen() {
     assignedShuttle && assignedShuttle.currentCapacity + activePassengerPickupRequestCount <= assignedShuttle.maxCapacity
   );
   const activePassengerPickupVisible = Boolean(
-    activePassengerPickupRequest && remainingManualPickupSlots > 0 && activePassengerPickupFitsCapacity
+    activePassengerPickupRequest &&
+    remainingManualPickupSlots > 0 &&
+    (user?.role === 'passenger' || activePassengerPickupFitsCapacity)
   );
   const activeDropoffPassengers = useMemo(
     () =>
@@ -1212,6 +1218,8 @@ export default function HomeScreen() {
               }
             : current
         );
+        // Boarding occurred on our assigned shuttle — refresh dispatch to pick up updated status
+        void refreshPassengerDispatch();
       }
 
       // If this boarding event was for our assigned shuttle, refresh the onboard list
@@ -2003,7 +2011,7 @@ export default function HomeScreen() {
 
     try {
       setBoardingSubmitting(true);
-      await boardPassenger(assignedShuttle._id, 1);
+      await boardPassenger(assignedShuttle._id, 1, { requestIds: [activePassengerPickupRequest._id] });
       startManualAutomationCooldown();
       await loadShuttles();
       // Refresh onboard destinations to get the server's updated state
@@ -2905,20 +2913,27 @@ export default function HomeScreen() {
                   ];
                 })() : null}
                 {onboardDestinations.map((item) => {
-                  const [longitude, latitude] = item.destinationLocation.coordinates;
+                  if (item.destinationIsFallback) return null;
+                  const coords = item.destinationLocation?.coordinates;
+                  if (!coords || coords.length !== 2) return null;
+                  const [longitude, latitude] = coords;
                   if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
-                  const onboardDisplayName = item.passengerName && item.passengerName !== 'Passenger'
-                    ? item.passengerName
-                    : item.destinationLabel;
+                    if (item.destinationIsFallback) {
+                      // Skip rendering ambiguous entries where destination was a server-side fallback
+                      return null;
+                    }
+                    const onboardDisplayName = item.passengerName && item.passengerName !== 'Passenger'
+                      ? item.passengerName
+                      : (item.destinationLabel || 'Unknown');
                   return (
                     <Marker
                       key={`destination-${item.rideId}`}
                       coordinate={{ latitude, longitude }}
-                      title={item.destinationLabel}
+                      title={item.destinationLabel || 'Unknown destination'}
                       description={`${onboardDisplayName} destination`}
                       pinColor={palette.emerald}
                       accessible
-                      accessibilityLabel={`Destination marker for ${onboardDisplayName} to ${item.destinationLabel}`}
+                      accessibilityLabel={`Destination marker for ${onboardDisplayName} to ${item.destinationLabel || 'Unknown destination'}`}
                     />
                   );
                 })}
@@ -3162,8 +3177,8 @@ export default function HomeScreen() {
                     ) : onboardDestinations.map((item) => {
                       const onboardDisplayName = item.passengerName && item.passengerName !== 'Passenger'
                         ? item.passengerName
-                        : item.destinationLabel;
-                      const showDestinationLabel = onboardDisplayName !== item.destinationLabel;
+                        : (item.destinationLabel || 'Unknown');
+                    const showDestinationLabel = Boolean(item.destinationLabel && onboardDisplayName !== item.destinationLabel);
                       const hasActiveDiscount = item.discountType !== 'none' && !item.discountRevoked;
                       const discountLabel = item.discountType === 'student' ? 'Student' : item.discountType === 'pwd' ? 'PWD' : item.discountType === 'senior' ? 'Senior' : null;
                       const isRevoking = revokingDiscountId === item.rideId;
@@ -3172,7 +3187,7 @@ export default function HomeScreen() {
                           <View style={styles.rowBetween}>
                             <ThemedText style={[styles.metaText, { color: textColor }]}>{onboardDisplayName}</ThemedText>
                             {showDestinationLabel ? (
-                              <ThemedText style={[styles.metaText, { color: mutedColor }]}>{item.destinationLabel}</ThemedText>
+                              <ThemedText style={[styles.metaText, { color: mutedColor }]}>{item.destinationLabel || 'Unknown destination'}</ThemedText>
                             ) : (
                               <View />
                             )}
@@ -3221,10 +3236,10 @@ export default function HomeScreen() {
                     styles.driverActionButton,
                     styles.driverBoardButton,
                     { backgroundColor: tint, borderColor: tint },
-                    (boardingSubmitting || assignedShuttle.currentCapacity >= assignedShuttle.maxCapacity || !isDriverOnShift || !activePassengerPickupRequest || !isWithinPickupRadius || !activePassengerPickupFitsCapacity || remainingManualPickupSlots === 0 || (isWithinDropoffRadius && activeDropoffPassengerCount > 0)) && styles.driverActionButtonDisabled,
+                    (boardingSubmitting || assignedShuttle.currentCapacity >= assignedShuttle.maxCapacity || !isDriverOnShift || (!activePassengerPickupRequest && !driverAssignedPickupRequest) || !isWithinPickupRadius || !activePassengerPickupFitsCapacity || remainingManualPickupSlots === 0 || (isWithinDropoffRadius && activeDropoffPassengerCount > 0)) && styles.driverActionButtonDisabled,
                   ]}
                   onPress={onDriverBoard}
-                  disabled={boardingSubmitting || assignedShuttle.currentCapacity >= assignedShuttle.maxCapacity || !isDriverOnShift || !activePassengerPickupRequest || !isWithinPickupRadius || !activePassengerPickupFitsCapacity || remainingManualPickupSlots === 0 || (isWithinDropoffRadius && activeDropoffPassengerCount > 0)}
+                  disabled={boardingSubmitting || assignedShuttle.currentCapacity >= assignedShuttle.maxCapacity || !isDriverOnShift || (!activePassengerPickupRequest && !driverAssignedPickupRequest) || !isWithinPickupRadius || !activePassengerPickupFitsCapacity || remainingManualPickupSlots === 0 || (isWithinDropoffRadius && activeDropoffPassengerCount > 0)}
                   accessibilityRole="button"
                   accessibilityLabel="Board one passenger manually"
                 >

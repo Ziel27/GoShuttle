@@ -50,6 +50,25 @@ const run = async () => {
 
       if (!tripId || !pickup) continue;
 
+      // Mark historical rides where destination equals pickup as fallback so clients can hide them
+      try {
+        if (doc.destinationLocation && doc.destinationLocation.coordinates && pickup && pickup.coordinates) {
+          const d = doc.destinationLocation.coordinates;
+          const p = pickup.coordinates;
+          if (d.length === 2 && p.length === 2 && Math.abs(d[0] - p[0]) < 1e-8 && Math.abs(d[1] - p[1]) < 1e-8) {
+            if (!doc.destinationIsFallback) {
+              console.log(`Marking PassengerRide ${doc._id} destinationIsFallback=true (destination equals pickup)`);
+              if (apply) {
+                doc.destinationIsFallback = true;
+                await doc.save();
+              }
+            }
+          }
+        }
+      } catch (e) {
+        // ignore
+      }
+
       // 1) Try exact match by tripId + passengerId + pickup coords
       let match = null;
       if (doc.passengerId) {
