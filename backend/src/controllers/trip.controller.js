@@ -23,6 +23,7 @@ const {
 
 const MAX_REMITTANCE_AMOUNT = 1000000;
 const DEFAULT_FIXED_DESTINATION_PICKUP_RADIUS_METERS = 80;
+const MANUAL_BOARD_PICKUP_RADIUS_METERS = 80;
 
 const isPlatformAdmin = (req) => req.user?.role === 'admin';
 
@@ -202,20 +203,49 @@ const parseDestinationPayload = (destination) => {
   };
 };
 
-const claimPendingPickupRequests = async ({ session, communityId, maxCount, shuttlePhase }) => {
-  const claimed = [];
+const resolveBoardablePickupRequests = async ({ session, communityId, maxCount, shuttlePhase, shuttleLocation }) => {
+  const boardableRequests = [];
   const phaseQuery = buildPhaseAwareRequestQuery({
     shuttlePhase,
     passengerPhaseField: 'passengerHomePhase',
   });
 
+  if (!shuttleLocation?.coordinates || shuttleLocation.coordinates.length !== 2) {
+    return boardableRequests;
+  }
+
   for (let i = 0; i < maxCount; i += 1) {
-    const request = await PickupRequest.findOneAndUpdate(
+    const claimedRequest = await PickupRequest.findOne({
+      communityId,
+      status: 'claimed',
+      expiresAt: { $gt: new Date() },
+      ...phaseQuery,
+      location: {
+        $near: {
+          $geometry: shuttleLocation,
+          $maxDistance: MANUAL_BOARD_PICKUP_RADIUS_METERS,
+        },
+      },
+    })
+      .session(session);
+
+    if (claimedRequest) {
+      boardableRequests.push(claimedRequest);
+      continue;
+    }
+
+    const pendingRequest = await PickupRequest.findOneAndUpdate(
       {
         communityId,
         status: 'pending',
         expiresAt: { $gt: new Date() },
         ...phaseQuery,
+        location: {
+          $near: {
+            $geometry: shuttleLocation,
+            $maxDistance: MANUAL_BOARD_PICKUP_RADIUS_METERS,
+          },
+        },
       },
       { $set: { status: 'claimed' } },
       {
@@ -225,11 +255,11 @@ const claimPendingPickupRequests = async ({ session, communityId, maxCount, shut
       }
     );
 
-    if (!request) break;
-    claimed.push(request);
+    if (!pendingRequest) break;
+    boardableRequests.push(pendingRequest);
   }
 
-  return claimed;
+  return boardableRequests;
 };
 
 const toPeriodKeyForSummary = (date, groupBy) => {
@@ -381,11 +411,12 @@ const passengerBoard = async (req, res) => {
     }
 
     // Enforce boarded seats against active pickup intents so driver actions are auditable.
-    const pendingRequests = await claimPendingPickupRequests({
+    const pendingRequests = await resolveBoardablePickupRequests({
       session,
       communityId: shuttle.communityId,
       maxCount: boardedCount,
       shuttlePhase: shuttle.assignedPhase,
+      shuttleLocation: shuttle.location,
     });
 
     // DISPATCH: Decrement pendingPickupCount for each dispatched PickupRequest that is now physically boarding
@@ -454,6 +485,7 @@ const passengerBoard = async (req, res) => {
             const rrDiscountType = rr.discountType && rr.discountType !== 'none' ? rr.discountType : 'none';
             const rrOriginalFare = rr.originalFare || null;
             const rrFareAtBoarding = rrDiscountType !== 'none' && rr.fareExpected ? rr.fareExpected : activeTrip.fareAtTime;
+            const destLocation = rr.destination?.location || request.destinationLocation || request.pickupLocation || request.location;
             passengerRidesToInsert.push({
               communityId: shuttle.communityId,
               passengerId: rr.passengerId || null,
@@ -469,7 +501,7 @@ const passengerBoard = async (req, res) => {
               pickupLocation: rr.pickupLocation || request.pickupLocation || request.location,
               destinationType: rr.destination?.type || request.destinationType || 'fixed',
               destinationLabel: rr.destination?.label || request.destinationLabel || 'Destination',
-              destinationLocation: rr.destination?.location || request.destinationLocation,
+              destinationLocation: destLocation,
               requestedAt: rr.createdAt || request.createdAt,
               boardedAt,
               status: 'boarded',
@@ -477,6 +509,7 @@ const passengerBoard = async (req, res) => {
           }
         } else if (Array.isArray(request.passengerManifest) && request.passengerManifest.length > 0) {
           for (const entry of request.passengerManifest) {
+            const destLocation = request.destinationLocation || request.pickupLocation || request.location;
             passengerRidesToInsert.push({
               communityId: shuttle.communityId,
               passengerId: entry.passengerId || null,
@@ -490,13 +523,14 @@ const passengerBoard = async (req, res) => {
               pickupLocation: request.pickupLocation || request.location,
               destinationType: request.destinationType || 'fixed',
               destinationLabel: request.destinationLabel || 'Destination',
-              destinationLocation: request.destinationLocation,
+              destinationLocation: destLocation,
               requestedAt: request.createdAt,
               boardedAt,
               status: 'boarded',
             });
           }
         } else {
+          const destLocation = request.destinationLocation || request.pickupLocation || request.location;
           passengerRidesToInsert.push({
             communityId: shuttle.communityId,
             passengerId: request.passengerId,
@@ -508,7 +542,7 @@ const passengerBoard = async (req, res) => {
             pickupLocation: request.pickupLocation || request.location,
             destinationType: request.destinationType || 'fixed',
             destinationLabel: request.destinationLabel || 'Destination',
-            destinationLocation: request.destinationLocation,
+            destinationLocation: destLocation,
             requestedAt: request.createdAt,
             boardedAt,
             status: 'boarded',
@@ -544,8 +578,10 @@ const passengerBoard = async (req, res) => {
         driverId: req.user._id,
         tripId: activeTrip._id,
         fareAtBoarding: activeTrip.fareAtTime,
+        pickupLocation: shuttle.location,
         destinationType: 'fixed',
         destinationLabel: 'Unknown',
+        destinationLocation: shuttle.location,
         requestedAt: boardedAt,
         boardedAt,
         status: 'boarded',
@@ -606,7 +642,10 @@ const passengerBoard = async (req, res) => {
     });
   } catch (error) {
     if (session) await session.abortTransaction();
-    console.error('Passenger board error:', error);
+    console.error('Passenger board error:', error instanceof Error ? error.message : error);
+    if (error instanceof Error && error.message) {
+      return res.status(500).json({ error: `Failed to record passenger boarding: ${error.message}` });
+    }
     return res.status(500).json({ error: 'Failed to record passenger boarding.' });
   } finally {
     if (session) session.endSession();
@@ -876,52 +915,52 @@ const createPickupIntent = async (req, res) => {
       ? normalizePhase(detectedPhase)
       : passengerHomePhase;
 
-    // Backward-compatible default destination for legacy clients not sending destination payload.
-    let destinationType = 'fixed';
+    // Destination is required — no legacy fallback
+    if (destination === undefined || destination === null) {
+      return res.status(400).json({ error: 'Destination is required. Please select a fixed location or home destination.' });
+    }
+
+    const destinationPayload = parseDestinationPayload(destination);
+    if (!destinationPayload.valid) {
+      return res.status(400).json({ error: destinationPayload.message });
+    }
+
+    let destinationType = destinationPayload.type;
     let destinationLabel = 'Destination';
     let destinationLocation = {
       type: 'Point',
       coordinates: [coords.lng, coords.lat],
     };
 
-    if (destination !== undefined) {
-      const destinationPayload = parseDestinationPayload(destination);
-      if (!destinationPayload.valid) {
-        return res.status(400).json({ error: destinationPayload.message });
+    if (destinationPayload.type === 'fixed') {
+      // Skip origin enforcement when an explicit pickupLocation is provided (booking-for-others)
+      if (!explicitPickupPoint && pickupOrigin.type !== 'home') {
+        return res.status(403).json({
+          error: 'Fixed destinations are only available when you are at your home pickup location.',
+        });
       }
 
-      destinationType = destinationPayload.type;
-
-      if (destinationPayload.type === 'fixed') {
-        // Skip origin enforcement when an explicit pickupLocation is provided (booking-for-others)
-        if (!explicitPickupPoint && pickupOrigin.type !== 'home') {
-          return res.status(403).json({
-            error: 'Fixed destinations are only available when you are at your home pickup location.',
-          });
-        }
-
-        const selectedFixed = (community.fixedDestinations || []).find(
-          (item) => String(item._id) === destinationPayload.fixedDestinationId && item.isActive !== false
-        );
-        if (!selectedFixed) {
-          return res.status(404).json({ error: 'Selected fixed destination not found or inactive.' });
-        }
-        destinationLabel = selectedFixed.name;
-        destinationLocation = selectedFixed.location;
-      } else {
-        // Skip origin enforcement when an explicit pickupLocation is provided (booking-for-others)
-        if (!explicitPickupPoint && pickupOrigin.type !== 'fixed') {
-          return res.status(403).json({
-            error: 'Home destinations are only available when you are at a fixed destination.',
-          });
-        }
-
-        destinationLabel = destinationPayload.label;
-        destinationLocation = {
-          type: 'Point',
-          coordinates: [destinationPayload.longitude, destinationPayload.latitude],
-        };
+      const selectedFixed = (community.fixedDestinations || []).find(
+        (item) => String(item._id) === destinationPayload.fixedDestinationId && item.isActive !== false
+      );
+      if (!selectedFixed) {
+        return res.status(404).json({ error: 'Selected fixed destination not found or inactive.' });
       }
+      destinationLabel = selectedFixed.name;
+      destinationLocation = selectedFixed.location;
+    } else {
+      // Skip origin enforcement when an explicit pickupLocation is provided (booking-for-others)
+      if (!explicitPickupPoint && pickupOrigin.type !== 'fixed') {
+        return res.status(403).json({
+          error: 'Home destinations are only available when you are at a fixed destination.',
+        });
+      }
+
+      destinationLabel = destinationPayload.label;
+      destinationLocation = {
+        type: 'Point',
+        coordinates: [destinationPayload.longitude, destinationPayload.latitude],
+      };
     }
 
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
@@ -1442,11 +1481,12 @@ const cancelMyPickupIntents = async (req, res) => {
 const listPickupIntents = async (req, res) => {
   try {
     const now = new Date();
-    const query = {
+    const baseQuery = {
       communityId: req.user.communityId,
       status: { $in: ['pending', 'queued'] },
       expiresAt: { $gt: now },
     };
+    let claimedNearbyQuery = null;
 
     if (req.user.role === 'driver') {
       const driverShuttle = await Shuttle.findOne({
@@ -1454,7 +1494,7 @@ const listPickupIntents = async (req, res) => {
         driverId: req.user._id,
         isActive: true,
       })
-        .select('assignedPhase')
+        .select('assignedPhase location')
         .lean();
 
       if (!driverShuttle) {
@@ -1462,18 +1502,52 @@ const listPickupIntents = async (req, res) => {
       }
 
       Object.assign(
-        query,
+        baseQuery,
         buildPhaseAwareRequestQuery({
           shuttlePhase: driverShuttle?.assignedPhase,
           passengerPhaseField: 'passengerHomePhase',
         })
       );
+
+      if (driverShuttle.location?.coordinates?.length === 2) {
+        claimedNearbyQuery = {
+          communityId: req.user.communityId,
+          status: 'claimed',
+          expiresAt: { $gt: now },
+          ...buildPhaseAwareRequestQuery({
+            shuttlePhase: driverShuttle?.assignedPhase,
+            passengerPhaseField: 'passengerHomePhase',
+          }),
+          location: {
+            $near: {
+              $geometry: driverShuttle.location,
+              $maxDistance: MANUAL_BOARD_PICKUP_RADIUS_METERS,
+            },
+          },
+        };
+      }
     }
 
-    const requests = await PickupRequest.find(query)
+    const activeRequests = await PickupRequest.find(baseQuery)
       .select('communityId passengerId location pickupLocation destinationType destinationLabel destinationLocation passengerHomePhase status expiresAt createdAt passengerManifest note trackingToken')
       .sort({ createdAt: -1 })
       .limit(100);
+
+    const claimedNearbyRequests = claimedNearbyQuery
+      ? await PickupRequest.find(claimedNearbyQuery)
+        .select('communityId passengerId location pickupLocation destinationType destinationLabel destinationLocation passengerHomePhase status expiresAt createdAt passengerManifest note trackingToken')
+        .sort({ createdAt: -1 })
+        .limit(20)
+      : [];
+
+    const requestMap = new Map();
+    for (const request of [...activeRequests, ...claimedNearbyRequests]) {
+      requestMap.set(String(request._id), request);
+    }
+
+    const requests = Array.from(requestMap.values()).sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
 
     return res.status(200).json({
       count: requests.length,

@@ -1341,7 +1341,7 @@ export default function HomeScreen() {
         fareType: payload?.fareType || 'standard',
         status: 'dispatched',
         expiresAt: payload?.expiresAt || new Date(Date.now() + 10 * 60 * 1000).toISOString(),
-        passengerManifest: [],
+        passengerManifest: payload?.passengerManifest || [],
         note: payload?.note || null,
         trackingToken: payload?.trackingToken || null,
         trackingUrl: payload?.trackingUrl || null,
@@ -1441,9 +1441,16 @@ export default function HomeScreen() {
       try {
         const requests = await listPickupIntents();
         if (!mounted) return;
-        setPickupIntents(
-          requests.filter((item) => (item.status === 'pending' || item.status === 'queued') && !isExpiredIntent(item))
-        );
+        const activeRequests = requests.filter((item) => (item.status === 'pending' || item.status === 'queued') && !isExpiredIntent(item));
+        const claimedRequest = user?.role === 'driver'
+          ? requests.find((item) => item.status === 'claimed' && !isExpiredIntent(item)) ?? null
+          : null;
+
+        setPickupIntents(activeRequests);
+
+        if (claimedRequest) {
+          setDriverAssignedPickupRequest((current) => current ?? claimedRequest);
+        }
       } catch (error) {
         const now = Date.now();
         if (now - pollErrorNoticeRef.current.pickup >= POLL_ERROR_NOTICE_COOLDOWN_MS) {
@@ -3245,76 +3252,6 @@ export default function HomeScreen() {
                   </ThemedText>
                 </Pressable>
               </View>
-
-              {__DEV__ && (
-                <View style={{ marginTop: 8, alignItems: 'center' }}>
-                  <Pressable
-                    onPress={() => {
-                      const requestId = activePassengerPickupRequest?._id || pickupIntents[0]?._id;
-                      if (!requestId || !assignedShuttle) {
-                        setPreferenceAwareFeedback('No pickup request or shuttle to simulate.', 'critical');
-                        return;
-                      }
-
-                      const payload: PickupClaimedEventPayload = {
-                        requestId: String(requestId),
-                        shuttleId: String(assignedShuttle._id),
-                        passengerId: activePassengerPickupRequest?.passengerId || undefined,
-                      };
-
-                      setPickupIntents((items) =>
-                        items.map((item) => (item._id === payload.requestId ? { ...item, status: 'claimed' } : item))
-                      );
-
-                      setDriverAssignedPickupRequest((current) => {
-                        if (!current || String(current._id) !== String(payload.requestId)) return current;
-                        if (payload.shuttleId && assignedShuttle && String(payload.shuttleId) === String(assignedShuttle._id)) {
-                          return current;
-                        }
-                        return null;
-                      });
-
-                      setPreferenceAwareFeedback('Simulated pickup: claimed by this shuttle.', 'service');
-                    }}
-                    style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, backgroundColor: '#333' }}
-                  >
-                    <ThemedText style={{ color: '#fff' }}>Simulate pickup:claimed</ThemedText>
-                  </Pressable>
-                </View>
-              )}
-
-              {__DEV__ && (
-                <View style={{ marginTop: 8, alignItems: 'center' }}>
-                  <Pressable
-                    onPress={() => {
-                      const coords = assignedShuttleCoordinate || { latitude: 14.5995, longitude: 120.9842 };
-                      const payload = {
-                        requestId: `sim-${Date.now()}`,
-                        passengerId: user?._id || 'sim-passenger',
-                        location: { type: 'Point' as const, coordinates: [coords.longitude, coords.latitude] as [number, number] },
-                        pickupLocation: { type: 'Point' as const, coordinates: [coords.longitude, coords.latitude] as [number, number] },
-                        destinationType: 'fixed' as const,
-                        destinationLabel: 'Sim Destination',
-                        destinationLocation: { type: 'Point' as const, coordinates: [coords.longitude, coords.latitude] as [number, number] },
-                        status: 'pending' as const,
-                        expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
-                      };
-
-                      const intent = toPickupIntent(payload);
-                      if (!intent) {
-                        setPreferenceAwareFeedback('Failed to build simulated pickup intent.', 'critical');
-                        return;
-                      }
-
-                      setPickupIntents((items) => upsertPickupIntent(items, intent));
-                      setPreferenceAwareFeedback('Simulated pickup intent emitted locally.', 'service');
-                    }}
-                    style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, backgroundColor: '#155', marginTop: 6 }}
-                  >
-                    <ThemedText style={{ color: '#fff' }}>Simulate pickup:intent</ThemedText>
-                  </Pressable>
-                </View>
-              )}
 
               <ThemedText
                 style={[
