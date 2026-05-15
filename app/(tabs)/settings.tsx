@@ -949,7 +949,7 @@ export default function SettingsTabScreen() {
                     </View>
                   </View>
                   <ThemedText type="caption" style={{ color: mutedColor }}>
-                    Your phase is automatically determined by your home's GPS location.
+                    Your phase is automatically determined by your home&apos;s GPS location.
                   </ThemedText>
                 </View>
               )}

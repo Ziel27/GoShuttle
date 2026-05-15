@@ -14,7 +14,6 @@ import { useThemeColor } from '@/hooks/use-theme-color';
 import { getCommunityById, getPhaseGeofences, type PhaseGeofence } from '@/services/community';
 import { syncOfflineBoardings } from '@/services/offline-boarding-queue';
 import {
-    AutomationDiagnostics,
     listShuttles,
     Shuttle,
     updateShuttleLocation,
@@ -42,8 +41,6 @@ import { formatPhaseLabel, formatShuttleLabel } from '@/utils/format';
 import { useAuthStore } from '@/store/auth';
 import { usePreferencesStore } from '@/store/preferences';
 import {
-    describeBoardingReason,
-    describeUnboardingReason,
     detectPhaseFromCoordinates,
     detectPickupOrigin,
     getDistanceMeters,
@@ -76,8 +73,6 @@ const DRIVER_CONTINUOUS_MIN_SYNC_INTERVAL_MS = 5_000;
 const DRIVER_CONTINUOUS_MIN_MOVE_METERS = 15;
 const POLL_ERROR_NOTICE_COOLDOWN_MS = 120_000;
 const COMMUNITY_SETTINGS_SYNC_POLL_MS = 45_000;
-const AUTOMATION_STALE_MULTIPLIER = 2;
-const MANUAL_AUTOMATION_COOLDOWN_MS = 15_000;
 const DRIVER_PICKUP_RADIUS_METERS = 80;
 const DRIVER_DROPOFF_RADIUS_METERS = 80;
 
@@ -138,12 +133,6 @@ type SocketErrorEventPayload = {
   message?: string;
 };
 
-type AutomationDiagnostic = {
-  state: 'ready' | 'waiting' | 'blocked';
-  label: string;
-  detail: string;
-};
-
 const lerp = (from: number, to: number, t: number) => from + (to - from) * t;
 
 type MapMarkerRef = ComponentRef<typeof Marker>;
@@ -166,7 +155,6 @@ export default function HomeScreen() {
   const capacityCardBorder = colorScheme === 'dark' ? successColor : SemanticColors.successLight;
   const hapticsEnabled = usePreferencesStore((state) => state.hapticsEnabled);
   const compactMapPins = usePreferencesStore((state) => state.compactMapPins);
-  const showEta = usePreferencesStore((state) => state.showEta);
   const precisePickup = usePreferencesStore((state) => state.precisePickup);
   const quietMode = usePreferencesStore((state) => state.quietMode);
   const pushAlerts = usePreferencesStore((state) => state.pushAlerts);
@@ -202,10 +190,6 @@ export default function HomeScreen() {
   const [activePassengerManualBoardCount, setActivePassengerManualBoardCount] = useState(0);
   const [onboardDestinations, setOnboardDestinations] = useState<OnboardDestinationPassenger[]>([]);
   const [revokingDiscountId, setRevokingDiscountId] = useState<string | null>(null);
-  const [autoSyncStatus, setAutoSyncStatus] = useState<'idle' | 'syncing' | 'error'>('idle');
-  const [lastAutoSyncAt, setLastAutoSyncAt] = useState<Date | null>(null);
-  const [lastAutomationDiagnostics, setLastAutomationDiagnostics] = useState<AutomationDiagnostics | null>(null);
-  const [isManualAutomationCooldownActive, setIsManualAutomationCooldownActive] = useState(false);
   const [markerCoordinates, setMarkerCoordinates] = useState<Record<string, LatLng>>({});
   const [mapReady, setMapReady] = useState(false);
   const mapRef = useRef<MapView | null>(null);
@@ -218,8 +202,6 @@ export default function HomeScreen() {
   const locationSyncInFlightRef = useRef(false);
   const driverLocationWatchRef = useRef<Location.LocationSubscription | null>(null);
   const driverFallbackIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const manualAutomationCooldownUntilRef = useRef(0);
-  const manualAutomationCooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastContinuousSyncRef = useRef<{ at: number; coords: LatLng } | null>(null);
   const pollErrorNoticeRef = useRef<{ pickup: number; onboard: number }>({
     pickup: 0,
@@ -235,6 +217,7 @@ export default function HomeScreen() {
   const [passengerCount, setPassengerCount] = useState(1);
   const [selfPassengerDraft, setSelfPassengerDraft] = useState<SelfPassengerEntry[]>([]);
   const [dispatchedShuttle, setDispatchedShuttle] = useState<AssignedShuttle | null>(null);
+  const [dispatchedShuttleEtaMinutesToDestination, setDispatchedShuttleEtaMinutesToDestination] = useState<number | null>(null);
   const [queueNotice, setQueueNotice] = useState<{
     position: number | null;
     reason: QueueReason | null;
@@ -413,19 +396,24 @@ export default function HomeScreen() {
     user?.homeDestination?.location?.coordinates?.length === 2
   );
 
-  const allowedPickupDestinationTypes: Array<'fixed' | 'home'> =
+  const allowedPickupDestinationTypes = useMemo((): ('fixed' | 'home')[] =>
     pickupOriginContext?.type === 'home'
       ? ['fixed']
       : pickupOriginContext?.type === 'fixed'
         ? ['home']
-        : ['fixed', 'home'];
+        : ['fixed', 'home'],
+    [pickupOriginContext?.type],
+  );
 
-  const assignedShuttleCoordinate = assignedShuttle?.location?.coordinates?.length === 2
-    ? {
-        latitude: assignedShuttle.location.coordinates[1],
-        longitude: assignedShuttle.location.coordinates[0],
-      }
-    : null;
+  const assignedShuttleCoordinate = useMemo(() =>
+    assignedShuttle?.location?.coordinates?.length === 2
+      ? {
+          latitude: assignedShuttle.location.coordinates[1],
+          longitude: assignedShuttle.location.coordinates[0],
+        }
+      : null,
+    [assignedShuttle?.location?.coordinates],
+  );
   const activePassengerPickupDistanceMeters = assignedShuttleCoordinate && activePassengerPickupCoordinate
     ? getDistanceMeters(assignedShuttleCoordinate, activePassengerPickupCoordinate)
     : null;
@@ -456,26 +444,7 @@ export default function HomeScreen() {
   const isWithinDropoffRadius =
     activePassengerDropoffDistanceMeters !== null && activePassengerDropoffDistanceMeters <= DRIVER_DROPOFF_RADIUS_METERS;
 
-  // Calculate how many passengers from the current request have been boarded
-  // by matching passenger IDs from the manifest with onboard destinations
-  const requestBoardedPassengerCount = useMemo(() => {
-    if (!activePassengerPickupRequest?.passengerManifest || onboardDestinations.length === 0) {
-      return 0;
-    }
-    const manifestPassengerIds = (activePassengerPickupRequest.passengerManifest || [])
-      .map(p => p.passengerId)
-      .filter((id): id is string => !!id);
-    const manifestPassengerNames = (activePassengerPickupRequest.passengerManifest || [])
-      .map(p => (p.name || '').trim())
-      .filter((n) => n.length > 0);
-
-    return onboardDestinations.filter(onboard =>
-      (onboard.passengerId && manifestPassengerIds.includes(onboard.passengerId)) ||
-      (onboard.passengerName && manifestPassengerNames.includes(onboard.passengerName))
-    ).length;
-  }, [activePassengerPickupRequest?.passengerManifest, onboardDestinations]);
-
-  const remainingManualPickupSlots = Math.max(0, activePassengerPickupRequestCount - requestBoardedPassengerCount);
+  const remainingManualPickupSlots = Math.max(0, activePassengerPickupRequestCount - activePassengerManualBoardCount);
   const activePassengerPickupFitsCapacity = Boolean(
     assignedShuttle && assignedShuttle.currentCapacity + activePassengerPickupRequestCount <= assignedShuttle.maxCapacity
   );
@@ -488,6 +457,7 @@ export default function HomeScreen() {
     () =>
       assignedShuttleCoordinate
         ? onboardDestinations.filter((item) => {
+            if (item.destinationIsFallback) return false;
             const destinationCoordinates = item.destinationLocation?.coordinates;
             if (!destinationCoordinates || destinationCoordinates.length !== 2) return false;
 
@@ -552,6 +522,8 @@ export default function HomeScreen() {
         return 'Claimed';
       case 'dispatched':
         return 'Assigned';
+      case 'boarded':
+        return 'Onboard';
       default:
         return status.charAt(0).toUpperCase() + status.slice(1);
     }
@@ -590,16 +562,6 @@ export default function HomeScreen() {
     const [firstName, ...otherNames] = names;
     return `${firstName} + ${otherNames.length}`;
   }, [activePassengerPickupRequest?.passengerManifest]);
-
-  const manifestSummary = useMemo(() => {
-    const filledEntries = manifestDraft
-      .map((entry) => entry.name.trim())
-      .filter((name) => name.length > 0);
-
-    if (filledEntries.length === 0) return null;
-
-    return filledEntries.map((name) => name || 'Guest').join(', ');
-  }, [manifestDraft]);
 
   const normalizedPassengerManifest = useMemo(
     () =>
@@ -775,205 +737,6 @@ export default function HomeScreen() {
     });
   }, [activeCommunityPickupIntents, pickupSearchQuery]);
 
-  const autoBoardDiagnostic = useMemo<AutomationDiagnostic>(() => {
-    if (!isDriverOnShift) {
-      return {
-        state: 'blocked',
-        label: 'Manual Boarding Blocked',
-        detail: 'Driver is off shift. Start shift to enable automation.',
-      };
-    }
-
-    const serverDiagnostic = lastAutomationDiagnostics?.autoBoarding;
-    if (serverDiagnostic) {
-      const mappedState = serverDiagnostic.state === 'executed' ? 'ready' : serverDiagnostic.state;
-      return {
-        state: mappedState,
-        label:
-          mappedState === 'blocked'
-            ? 'Manual Boarding Blocked'
-            : mappedState === 'ready'
-              ? 'Manual Boarding Ready'
-              : 'Manual Boarding Waiting',
-        detail: describeBoardingReason(
-          serverDiagnostic.reasonCode,
-          Number(serverDiagnostic.candidateCount || 0),
-          Number(serverDiagnostic.matchedCount || 0)
-        ),
-      };
-    }
-
-    if (!assignedShuttle) {
-      return {
-        state: 'blocked',
-        label: 'Manual Boarding Blocked',
-        detail: 'No shuttle is assigned to this driver.',
-      };
-    }
-
-    if (assignedShuttle.currentCapacity >= assignedShuttle.maxCapacity) {
-      return {
-        state: 'blocked',
-        label: 'Manual Boarding Blocked',
-        detail: 'Shuttle is at full capacity.',
-      };
-    }
-
-    if (activeCommunityPickupIntents.length === 0) {
-      return {
-        state: 'waiting',
-        label: 'Manual Boarding Waiting',
-        detail: 'No pending pickup requests in the queue.',
-      };
-    }
-
-    return {
-      state: 'ready',
-      label: 'Manual Boarding Ready',
-      detail: 'Board manually when the shuttle is within pickup radius and passengers remain on the request.',
-    };
-  }, [activeCommunityPickupIntents.length, assignedShuttle, isDriverOnShift, lastAutomationDiagnostics]);
-
-  const autoUnboardDiagnostic = useMemo<AutomationDiagnostic>(() => {
-    if (!isDriverOnShift) {
-      return {
-        state: 'blocked',
-        label: 'Manual Unboarding Blocked',
-        detail: 'Driver is off shift. Start shift to enable automation.',
-      };
-    }
-
-    const serverDiagnostic = lastAutomationDiagnostics?.autoUnboarding;
-    if (serverDiagnostic) {
-      const mappedState = serverDiagnostic.state === 'executed' ? 'ready' : serverDiagnostic.state;
-      return {
-        state: mappedState,
-        label:
-          mappedState === 'blocked'
-            ? 'Manual Unboarding Blocked'
-            : mappedState === 'ready'
-              ? 'Manual Unboarding Ready'
-              : 'Manual Unboarding Waiting',
-        detail: describeUnboardingReason(
-          serverDiagnostic.reasonCode,
-          Number(serverDiagnostic.candidateCount || 0),
-          Number(serverDiagnostic.matchedCount || 0)
-        ),
-      };
-    }
-
-    if (!assignedShuttle) {
-      return {
-        state: 'blocked',
-        label: 'Manual Unboarding Blocked',
-        detail: 'No shuttle is assigned to this driver.',
-      };
-    }
-
-    if (assignedShuttle.currentCapacity === 0) {
-      return {
-        state: 'waiting',
-        label: 'Manual Unboarding Waiting',
-        detail: 'No onboard passengers to unboard.',
-      };
-    }
-
-    if (onboardDestinations.length === 0) {
-      return {
-        state: 'waiting',
-        label: 'Manual Unboarding Waiting',
-        detail: 'No destination data available for onboard passengers.',
-      };
-    }
-
-    return {
-      state: 'ready',
-      label: 'Manual Unboarding Ready',
-      detail: 'Unboard manually when the shuttle reaches the drop-off radius for the request.',
-    };
-  }, [assignedShuttle, isDriverOnShift, lastAutomationDiagnostics, onboardDestinations.length]);
-
-  const automationReliabilityScore = useMemo(() => {
-    if (!assignedShuttle) return 0;
-
-    let score = 0;
-
-    if (isDriverOnShift) score += 40;
-    if (autoSyncStatus !== 'error') score += 20;
-    if (lastAutoSyncAt && Date.now() - lastAutoSyncAt.getTime() <= DRIVER_AUTO_SYNC_MS * 2) score += 20;
-    if (assignedShuttle.currentCapacity < assignedShuttle.maxCapacity) score += 10;
-    if (activeCommunityPickupIntents.length > 0 || onboardDestinations.length > 0) score += 10;
-
-    return Math.max(0, Math.min(100, score));
-  }, [
-    activeCommunityPickupIntents.length,
-    assignedShuttle,
-    autoSyncStatus,
-    isDriverOnShift,
-    lastAutoSyncAt,
-    onboardDestinations.length,
-  ]);
-
-  const automationReliabilityLabel = useMemo(() => {
-    if (automationReliabilityScore >= 80) return 'High';
-    if (automationReliabilityScore >= 50) return 'Medium';
-    return 'Low';
-  }, [automationReliabilityScore]);
-
-  const isAutomationSyncStale = useMemo(() => {
-    if (!isDriverOnShift) return false;
-    if (!lastAutoSyncAt) return true;
-    return Date.now() - lastAutoSyncAt.getTime() > DRIVER_AUTO_SYNC_MS * AUTOMATION_STALE_MULTIPLIER;
-  }, [isDriverOnShift, lastAutoSyncAt]);
-
-  const manualBoardFallbackEnabled = useMemo(() => {
-    if (!isDriverOnShift || !assignedShuttle) return false;
-    if (autoSyncStatus === 'error' || isAutomationSyncStale) return true;
-    return autoBoardDiagnostic.state === 'blocked';
-  }, [assignedShuttle, autoBoardDiagnostic.state, autoSyncStatus, isAutomationSyncStale, isDriverOnShift]);
-
-  const manualUnboardFallbackEnabled = useMemo(() => {
-    if (!isDriverOnShift || !assignedShuttle) return false;
-    if (autoSyncStatus === 'error' || isAutomationSyncStale) return true;
-    return autoUnboardDiagnostic.state === 'blocked';
-  }, [assignedShuttle, autoSyncStatus, autoUnboardDiagnostic.state, isAutomationSyncStale, isDriverOnShift]);
-
-  const manualFallbackStatusCopy = useMemo(() => {
-    if (isManualAutomationCooldownActive) {
-      return 'Manual count recorded. The next tap still depends on request count and radius.';
-    }
-
-    if (!activePassengerPickupRequest) {
-      return 'Waiting for a pickup request to be assigned to this driver.';
-    }
-
-    if (remainingManualPickupSlots > 0) {
-      if (!isWithinPickupRadius) {
-        return 'An active request is assigned. Move into pickup radius to board the next passenger.';
-      }
-
-      return `Manual boarding is ready for ${remainingManualPickupSlots} remaining passenger${remainingManualPickupSlots === 1 ? '' : 's'}.`;
-    }
-
-    if (activeDropoffPassengerCount === 0) {
-      return 'All requested passengers are onboard. Move into drop-off radius to unboard them manually.';
-    }
-
-    return 'Manual unboarding is ready for the active request.';
-  }, [
-    activePassengerPickupRequest,
-    isManualAutomationCooldownActive,
-    activeDropoffPassengerCount,
-    isWithinPickupRadius,
-    remainingManualPickupSlots,
-  ]);
-
-  const getDiagnosticColor = useCallback((state: AutomationDiagnostic['state']) => {
-    if (state === 'ready') return successColor;
-    if (state === 'blocked') return dangerColor;
-    return tint;
-  }, [dangerColor, successColor, tint]);
-
   const passengerFleet = useMemo(() => {
     return [...shuttles].sort((a, b) => {
       const ratioA = a.maxCapacity > 0 ? a.currentCapacity / a.maxCapacity : 0;
@@ -1025,26 +788,6 @@ export default function HomeScreen() {
 
     setFeedback({ message, type: channel });
   }, [pushAlerts, quietMode, serviceUpdates]);
-
-  const startManualAutomationCooldown = useCallback((durationMs: number = MANUAL_AUTOMATION_COOLDOWN_MS) => {
-    const normalizedDurationMs = Number.isFinite(durationMs)
-      ? Math.max(0, Math.floor(durationMs))
-      : MANUAL_AUTOMATION_COOLDOWN_MS;
-
-    manualAutomationCooldownUntilRef.current = Date.now() + normalizedDurationMs;
-    setIsManualAutomationCooldownActive(true);
-    setAutoSyncStatus('idle');
-
-    if (manualAutomationCooldownTimerRef.current) {
-      clearTimeout(manualAutomationCooldownTimerRef.current);
-    }
-
-    manualAutomationCooldownTimerRef.current = setTimeout(() => {
-      manualAutomationCooldownUntilRef.current = 0;
-      manualAutomationCooldownTimerRef.current = null;
-      setIsManualAutomationCooldownActive(false);
-    }, normalizedDurationMs);
-  }, []);
 
   const loadShuttles = useCallback(async () => {
     try {
@@ -1184,7 +927,7 @@ export default function HomeScreen() {
 
       const owningPassengerId = String((payload as any)?.bookingOwner || payload.passengerId || '');
       if (owningPassengerId && owningPassengerId === user?._id) {
-        setPreferenceAwareFeedback('Pickup successful. You have boarded.', 'ride');
+        setPreferenceAwareFeedback('Driver is on the way!', 'ride');
         void refreshPassengerDispatch();
       }
     };
@@ -1238,7 +981,7 @@ export default function HomeScreen() {
       })();
     };
 
-    const onPassengerAutoUnboarded = (payload: PassengerAutoUnboardedPayload) => {
+    const onAutoUnboard = (payload: PassengerAutoUnboardedPayload) => {
       if (payload.shuttleId && payload.currentCapacity !== undefined) {
         setShuttles((current) =>
           current.map((item) =>
@@ -1253,21 +996,45 @@ export default function HomeScreen() {
         );
 
         if (user?.role === 'passenger' && dispatchedShuttle?.shuttleId && String(dispatchedShuttle.shuttleId) === String(payload.shuttleId)) {
-          setDispatchedShuttle((current) =>
-            current
-              ? {
-                  ...current,
-                  currentCapacity: payload.currentCapacity!,
-                  ...(payload.maxCapacity !== undefined ? { maxCapacity: payload.maxCapacity } : {}),
-                }
-              : current
-          );
+          setDispatchedShuttle(null);
+          setDispatchedShuttleEtaMinutesToDestination(null);
         }
       }
       if (!payload.rideIds || payload.rideIds.length === 0) return;
-      setOnboardDestinations((items) => items.filter((item) => !payload.rideIds!.includes(item.rideId)));
+      if (user?.role === 'driver') {
+        setOnboardDestinations((items) => items.filter((item) => !payload.rideIds!.includes(item.rideId)));
+      }
       if (user?.role === 'passenger') {
         setPreferenceAwareFeedback('You reached your destination. Unboarded automatically.', 'ride');
+      }
+    };
+
+    const onPassengerUnboarded = (payload: {
+      tripId?: string;
+      shuttleId?: string;
+      unboardCount?: number;
+      currentCapacity?: number;
+      maxCapacity?: number;
+      rideIds?: string[];
+      unboardedAt?: string;
+    }) => {
+      if (payload.shuttleId && payload.currentCapacity !== undefined) {
+        setShuttles((current) =>
+          current.map((item) =>
+            item._id === payload.shuttleId
+              ? {
+                  ...item,
+                  currentCapacity: payload.currentCapacity!,
+                  ...(payload.maxCapacity !== undefined ? { maxCapacity: payload.maxCapacity } : {}),
+                }
+              : item
+          )
+        );
+      }
+      if (user?.role === 'passenger' && payload.rideIds && payload.rideIds.length > 0) {
+        setDispatchedShuttle(null);
+        setDispatchedShuttleEtaMinutesToDestination(null);
+        setPreferenceAwareFeedback('You have been unboarded.', 'ride');
       }
     };
 
@@ -1289,6 +1056,7 @@ export default function HomeScreen() {
 
       if (payload.passengerId && payload.passengerId === user?._id) {
         setDispatchedShuttle(null);
+        setDispatchedShuttleEtaMinutesToDestination(null);
         setQueueNotice(null);
         void refreshPassengerDispatch();
         setPreferenceAwareFeedback('Pickup request cancelled.', 'ride');
@@ -1334,6 +1102,7 @@ export default function HomeScreen() {
 
         if (shuttle) {
           setDispatchedShuttle(shuttle);
+          setDispatchedShuttleEtaMinutesToDestination(null);
           setQueueNotice(null);
           setPreferenceAwareFeedback(
             `Shuttle ${shuttle.plateNumber || shuttle.label || ''} is on the way!`,
@@ -1403,6 +1172,7 @@ export default function HomeScreen() {
         : queueReasonMessage(reason);
       setQueueNotice({ position, reason, message });
       setDispatchedShuttle(null);
+      setDispatchedShuttleEtaMinutesToDestination(null);
       setPreferenceAwareFeedback(
         message,
         'service'
@@ -1411,6 +1181,41 @@ export default function HomeScreen() {
 
 
     // DISPATCH: Shuttle pending count updated — refresh dispatched shuttle location if it matches
+    const onPassengerBoardConfirmed = (payload: {
+      shuttleId?: string;
+      plateNumber?: string;
+      shuttleLocation?: { type: 'Point'; coordinates: [number, number] };
+      destinationLocation?: { type: 'Point'; coordinates: [number, number] };
+      destinationLabel?: string;
+      destinationType?: 'fixed' | 'home';
+      boardedAt?: string;
+      etaMinutes?: number | null;
+      passengerId?: string;
+    }) => {
+      if (user?.role !== 'passenger') return;
+      if (!user?._id) return;
+      if (payload.passengerId && String(payload.passengerId) !== String(user._id)) return;
+
+      if (payload.shuttleId && dispatchedShuttle) {
+        setDispatchedShuttle((current) =>
+          current
+            ? {
+                ...current,
+                shuttleId: payload.shuttleId!,
+                plateNumber: payload.plateNumber || current.plateNumber,
+              }
+            : current
+        );
+      }
+
+      if (payload.etaMinutes !== undefined && payload.etaMinutes !== null) {
+        setDispatchedShuttleEtaMinutesToDestination(payload.etaMinutes);
+      }
+
+      void refreshPassengerDispatch();
+      setPreferenceAwareFeedback('You have boarded the shuttle.', 'ride');
+    };
+
     const onDispatchShuttlePendingUpdated = (payload: any) => {
       if (dispatchedShuttle && String(payload?.shuttleId) === String(dispatchedShuttle.shuttleId)) {
         setDispatchedShuttle((prev) =>
@@ -1425,8 +1230,8 @@ export default function HomeScreen() {
     socket.on('trip:passenger-boarded', onPassengerBoarded);
     socket.on('trip:pickup-intent', onPickupIntent);
     socket.on('trip:pickup-claimed', onPickupClaimed);
-    socket.on('trip:passenger-auto-unboarded', onPassengerAutoUnboarded);
-    socket.on('trip:passenger-unboarded', onPassengerAutoUnboarded);
+    socket.on('trip:passenger-auto-unboarded', onAutoUnboard);
+    socket.on('trip:passenger-unboarded', onPassengerUnboarded);
     socket.on('pickup-intent:cancelled', onPickupIntentCancelled);
     socket.on('trip:pickup-intent-cancelled', onPickupIntentCancelled);
     socket.on('socket:error', onSocketError);
@@ -1446,6 +1251,7 @@ export default function HomeScreen() {
 
     socket.on('dispatch:passenger-assigned', onDispatchPassengerAssigned);
     socket.on('dispatch:queued', onDispatchQueued);
+    socket.on('passenger:boarded', onPassengerBoardConfirmed);
     socket.on('dispatch:shuttle-pending-updated', onDispatchShuttlePendingUpdated);
     socket.on('dispatch:timeout', onDispatchTimeout);
 
@@ -1455,8 +1261,8 @@ export default function HomeScreen() {
       socket.off('trip:passenger-boarded', onPassengerBoarded);
       socket.off('trip:pickup-intent', onPickupIntent);
       socket.off('trip:pickup-claimed', onPickupClaimed);
-      socket.off('trip:passenger-auto-unboarded', onPassengerAutoUnboarded);
-      socket.off('trip:passenger-unboarded', onPassengerAutoUnboarded);
+      socket.off('trip:passenger-auto-unboarded', onAutoUnboard);
+      socket.off('trip:passenger-unboarded', onPassengerUnboarded);
       socket.off('pickup-intent:cancelled', onPickupIntentCancelled);
       socket.off('trip:pickup-intent-cancelled', onPickupIntentCancelled);
       socket.off('socket:error', onSocketError);
@@ -1464,10 +1270,11 @@ export default function HomeScreen() {
       socket.off('announcement:new', onAnnouncementNew);
       socket.off('dispatch:passenger-assigned', onDispatchPassengerAssigned);
       socket.off('dispatch:queued', onDispatchQueued);
+      socket.off('passenger:boarded', onPassengerBoardConfirmed);
       socket.off('dispatch:shuttle-pending-updated', onDispatchShuttlePendingUpdated);
       socket.off('dispatch:timeout', onDispatchTimeout);
     };
-  }, [activeCommunityId, dispatchedShuttle, loadShuttles, refreshPassengerDispatch, setPreferenceAwareFeedback, token, user?._id, user?.role]);
+  }, [activeCommunityId, assignedShuttle, dispatchedShuttle, isAppActive, loadShuttles, queueReasonMessage, refreshPassengerDispatch, setPreferenceAwareFeedback, token, user?._id, user?.role]);
 
 
   useEffect(() => {
@@ -1511,7 +1318,7 @@ export default function HomeScreen() {
       mounted = false;
       clearInterval(timer);
     };
-  }, [activeCommunityId, setPreferenceAwareFeedback, user?.role]);
+  }, [activeCommunityId, isAppActive, setPreferenceAwareFeedback, user?.role]);
 
   useEffect(() => {
     if (user?.role !== 'passenger') return;
@@ -1589,7 +1396,7 @@ export default function HomeScreen() {
     return () => {
       active = false;
     };
-  }, [activeCommunityId, fixedDestinations, precisePickup, user?.homeDestination?.label, user?.homeDestination?.location?.coordinates, user?.role]);
+  }, [activeCommunityId, fixedDestinations, precisePickup, user?.homeDestination, user?.role]);
 
   useEffect(() => {
     if (allowedPickupDestinationTypes.length === 1) {
@@ -1650,7 +1457,7 @@ export default function HomeScreen() {
       mounted = false;
       clearInterval(timer);
     };
-  }, [assignedShuttle?._id, setPreferenceAwareFeedback, user?.role]);
+  }, [assignedShuttle?._id, isAppActive, setPreferenceAwareFeedback, user?.role]);
 
   useEffect(() => {
     if (!activeCommunityId) return;
@@ -1722,62 +1529,13 @@ export default function HomeScreen() {
           } else {
             setDriverRegion(regionFromBoundary);
           }
-        } else {
-          // No boundary data — fall back to device location or default
-          try {
-            const { status } = await Location.requestForegroundPermissionsAsync();
-            if (status === 'granted') {
-              const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-              if (active) {
-                const region = {
-                  latitude: loc.coords.latitude,
-                  longitude: loc.coords.longitude,
-                  latitudeDelta: 0.015,
-                  longitudeDelta: 0.015,
-                };
-                if (user?.role === 'passenger') {
-                  setPassengerRegion(region);
-                } else {
-                  setDriverRegion(region);
-                }
-              }
-              return;
-            }
-          } catch {
-            if (active) {
-              setPreferenceAwareFeedback('Device GPS unavailable. Showing default map region.', 'service');
-            }
-          }
-          const defaultRegion = {
-            latitude: 14.5995,
-            longitude: 120.9842,
-            latitudeDelta: 0.05,
-            longitudeDelta: 0.05,
-          };
-          if (active) {
-            if (user?.role === 'passenger') {
-              setPassengerRegion(defaultRegion);
-            } else {
-              setDriverRegion(defaultRegion);
-            }
-          }
+        } else if (active) {
+          setPreferenceAwareFeedback('Community boundary data is incomplete. Map will appear once configured.', 'service');
         }
       } catch (error) {
         if (!active) return;
         const message = error instanceof Error ? error.message : 'Failed to load community boundary.';
         setPreferenceAwareFeedback(message, 'critical');
-        // Still show the map even on error — use a default region
-        const defaultRegion = {
-          latitude: 14.5995,
-          longitude: 120.9842,
-          latitudeDelta: 0.05,
-          longitudeDelta: 0.05,
-        };
-        if (user?.role === 'passenger') {
-          setPassengerRegion(defaultRegion);
-        } else {
-          setDriverRegion(defaultRegion);
-        }
       }
     };
 
@@ -1788,7 +1546,7 @@ export default function HomeScreen() {
       active = false;
       clearInterval(timer);
     };
-  }, [activeCommunityId, communitySyncTick, setPreferenceAwareFeedback, user?.role]);
+  }, [activeCommunityId, communitySyncTick, isAppActive, setPreferenceAwareFeedback, user?.role]);
 
   // Load phase geofences for the community
   useEffect(() => {
@@ -1815,7 +1573,7 @@ export default function HomeScreen() {
       active = false;
       clearInterval(timer);
     };
-  }, [activeCommunityId, communitySyncTick]);
+  }, [activeCommunityId, communitySyncTick, isAppActive]);
 
   useEffect(() => {
     if (user?.role !== 'passenger' || !isAppActive()) return;
@@ -1918,10 +1676,6 @@ export default function HomeScreen() {
     return () => {
       if (driverConstraintTimer.current) clearTimeout(driverConstraintTimer.current);
       if (passengerConstraintTimer.current) clearTimeout(passengerConstraintTimer.current);
-      if (manualAutomationCooldownTimerRef.current) {
-        clearTimeout(manualAutomationCooldownTimerRef.current);
-        manualAutomationCooldownTimerRef.current = null;
-      }
     };
   }, []);
 
@@ -2012,7 +1766,7 @@ export default function HomeScreen() {
     try {
       setBoardingSubmitting(true);
       await boardPassenger(assignedShuttle._id, 1, { requestIds: [activePassengerPickupRequest._id] });
-      startManualAutomationCooldown();
+      setActivePassengerManualBoardCount(prev => prev + 1);
       await loadShuttles();
       // Refresh onboard destinations to get the server's updated state
       if (assignedShuttle) {
@@ -2035,41 +1789,17 @@ export default function HomeScreen() {
   }) => {
     const silent = options?.silent === true;
     if (!assignedShuttleId || locationSyncInFlightRef.current) {
-      if (silent && !locationSyncInFlightRef.current) {
-        setAutoSyncStatus('idle');
-      }
       return;
     }
 
     if (user?.role === 'driver' && user?.status !== 'driving') {
-      if (silent) {
-        setAutoSyncStatus('idle');
-      }
       if (!silent) {
         setPreferenceAwareFeedback('Start your shift first before syncing location.', 'critical');
       }
       return;
     }
 
-    const manualCooldownRemainingMs = Math.max(0, manualAutomationCooldownUntilRef.current - Date.now());
-    if (manualCooldownRemainingMs > 0) {
-      if (silent) {
-        setAutoSyncStatus('idle');
-      } else {
-        const secondsRemaining = Math.ceil(manualCooldownRemainingMs / 1000);
-        setPreferenceAwareFeedback(
-          `Auto-processing is paused for ${secondsRemaining}s after manual boarding/unboarding to prevent duplicate counts.`,
-          'service'
-        );
-      }
-      return;
-    }
-
     locationSyncInFlightRef.current = true;
-    if (silent) {
-      setAutoSyncStatus('syncing');
-    }
-    let silentSyncFailed = false;
 
     try {
       let latitude = options?.coords?.latitude;
@@ -2106,77 +1836,32 @@ export default function HomeScreen() {
         normalizedLatitude,
         normalizedLongitude
       );
-      setLastAutomationDiagnostics(locationSync.automationDiagnostics || null);
-
-      const backendManualCooldownSeconds = Math.max(
-        0,
-        Number(locationSync.manualAutomationCooldownSeconds || 0)
-      );
-      if (backendManualCooldownSeconds > 0) {
-        startManualAutomationCooldown(backendManualCooldownSeconds * 1000);
-      }
 
       if (locationSync.shuttle?._id) {
         setShuttles((current) =>
           current.map((item) =>
             item._id === locationSync.shuttle._id
               ? {
-                ...item,
-                ...locationSync.shuttle,
-              }
+                  ...item,
+                  ...locationSync.shuttle,
+                }
               : item
           )
         );
       }
 
-      const autoBoardedCount = locationSync.autoBoardedCount || 0;
-      const autoUnboardedCount = locationSync.autoUnboardedCount || 0;
-      setLastAutoSyncAt(new Date());
-      if (autoBoardedCount > 0) {
-        setPreferenceAwareFeedback(
-          `GPS synced. Auto-boarded ${autoBoardedCount} pickup request${autoBoardedCount > 1 ? 's' : ''}.`,
-          'ride'
-        );
-      } else if (autoUnboardedCount > 0) {
-        setPreferenceAwareFeedback(
-          `GPS synced. Auto-unboarded ${autoUnboardedCount} passenger${autoUnboardedCount > 1 ? 's' : ''}.`,
-          'ride'
-        );
-      } else if (!silent && backendManualCooldownSeconds > 0) {
-        setPreferenceAwareFeedback(
-          `GPS synced. Automation remains paused for ${backendManualCooldownSeconds}s to prevent duplicate counts.`,
-          'service'
-        );
-      } else if (!silent) {
+      if (!silent) {
         setPreferenceAwareFeedback('GPS synced successfully.', 'service');
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : '';
-      const isWriteConflict = /conflicted with another write/i.test(message);
-      if (silent) {
-        silentSyncFailed = !isWriteConflict;
-        if (!isWriteConflict) {
-          setAutoSyncStatus('error');
-        }
-      }
       if (!silent) {
         setPreferenceAwareFeedback(message || 'Failed to sync location.', 'critical');
       }
     } finally {
-      if (silent && !silentSyncFailed) {
-        setAutoSyncStatus('idle');
-      }
       locationSyncInFlightRef.current = false;
     }
-  }, [assignedShuttleId, setPreferenceAwareFeedback, startManualAutomationCooldown, user?.role, user?.status]);
-
-  const handleSyncLocation = async () => {
-    if (!assignedShuttle) {
-      setPreferenceAwareFeedback('No shuttle assigned to this driver account.', 'critical');
-      return;
-    }
-    await syncDriverLocation({ silent: false });
-  };
+  }, [assignedShuttleId, setPreferenceAwareFeedback, user?.role, user?.status]);
 
   useEffect(() => {
     if (user?.role !== 'driver') return;
@@ -2191,17 +1876,8 @@ export default function HomeScreen() {
       driverLocationWatchRef.current = null;
     }
 
-    setAutoSyncStatus('idle');
-    setLastAutoSyncAt(null);
-    setLastAutomationDiagnostics(null);
     locationSyncInFlightRef.current = false;
     lastContinuousSyncRef.current = null;
-    manualAutomationCooldownUntilRef.current = 0;
-    setIsManualAutomationCooldownActive(false);
-    if (manualAutomationCooldownTimerRef.current) {
-      clearTimeout(manualAutomationCooldownTimerRef.current);
-      manualAutomationCooldownTimerRef.current = null;
-    }
   }, [user?.role, user?.status]);
 
   useEffect(() => {
@@ -2633,13 +2309,11 @@ export default function HomeScreen() {
     setBookForOthers((current) => {
       const next = !current;
       if (next) {
-        // Default guest dropoff to current selected destination type when possible
         const defaultDropoff = selectedDestinationType || (allowedPickupDestinationTypes[0] ?? 'fixed');
         const defaultPickup = defaultDropoff === 'fixed' ? 'home' : 'fixed';
         setGuestDropoffType(defaultDropoff as 'fixed' | 'home');
         setGuestPickupType(defaultPickup as 'fixed' | 'home');
       } else {
-        // reset when turning off
         setGuestDropoffType(null);
         setGuestPickupType(null);
         setGuestDropoffFixedId('');
@@ -2647,7 +2321,7 @@ export default function HomeScreen() {
       }
       return next;
     });
-  }, []);
+  }, [allowedPickupDestinationTypes, selectedDestinationType]);
 
   const updateManifestEntry = useCallback((id: string, field: 'name', value: string) => {
     setManifestDraft((current) => current.map((entry) => (entry.id === id ? { ...entry, [field]: value } : entry)));
@@ -2688,7 +2362,7 @@ export default function HomeScreen() {
     } finally {
       setRevokingDiscountId(null);
     }
-  }, []);
+  }, [setPreferenceAwareFeedback]);
 
   return (
     <SafeAreaView style={[styles.root, { backgroundColor: bgColor }]} edges={['top', 'left', 'right']}>
@@ -2862,14 +2536,18 @@ export default function HomeScreen() {
                       accessible
                       accessibilityLabel={`Active pickup request marker for ${activePickupMarkerLabel}`}
                     >
-                      <View style={styles.pickupMarkerStack}>
-                        <View style={[styles.pickupMarkerLabelPill, { backgroundColor: bgColor, borderColor }]}> 
-                          <ThemedText numberOfLines={1} style={[styles.pickupMarkerLabelText, { color: textColor }]}>
-                            {activePickupMarkerLabel}
-                          </ThemedText>
+                      {user?.role === 'driver' ? (
+                        <View style={styles.pickupMarkerStack}>
+                          <View style={[styles.pickupMarkerLabelPill, { backgroundColor: bgColor, borderColor }]}> 
+                            <ThemedText numberOfLines={1} style={[styles.pickupMarkerLabelText, { color: textColor }]}>
+                              {activePickupMarkerLabel}
+                            </ThemedText>
+                          </View>
+                          <MapIndicator iconName="person" />
                         </View>
+                      ) : (
                         <MapIndicator iconName="person" />
-                      </View>
+                      )}
                       <Callout tooltip>
                         <View style={[styles.calloutContainer, { backgroundColor: bgColor, borderColor }]}> 
                           <ThemedText type="defaultSemiBold" style={{ color: textColor, fontSize: 14 }}>
@@ -2918,13 +2596,9 @@ export default function HomeScreen() {
                   if (!coords || coords.length !== 2) return null;
                   const [longitude, latitude] = coords;
                   if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
-                    if (item.destinationIsFallback) {
-                      // Skip rendering ambiguous entries where destination was a server-side fallback
-                      return null;
-                    }
-                    const onboardDisplayName = item.passengerName && item.passengerName !== 'Passenger'
-                      ? item.passengerName
-                      : (item.destinationLabel || 'Unknown');
+                  const onboardDisplayName = item.passengerName && item.passengerName !== 'Passenger'
+                    ? item.passengerName
+                    : (item.destinationLabel || 'Unknown');
                   return (
                     <Marker
                       key={`destination-${item.rideId}`}
@@ -3175,10 +2849,10 @@ export default function HomeScreen() {
                     {onboardDestinations.length === 0 ? (
                       <ThemedText style={[styles.metaText, { color: mutedColor }]}>No onboard passengers.</ThemedText>
                     ) : onboardDestinations.map((item) => {
-                      const onboardDisplayName = item.passengerName && item.passengerName !== 'Passenger'
-                        ? item.passengerName
-                        : (item.destinationLabel || 'Unknown');
-                    const showDestinationLabel = Boolean(item.destinationLabel && onboardDisplayName !== item.destinationLabel);
+const onboardDisplayName = item.passengerName && item.passengerName !== 'Passenger'
+  ? `${item.passengerName} → ${item.destinationLabel || 'Passenger'}`
+  : (item.destinationLabel || 'Passenger');
+const showDestinationLabel = false;
                       const hasActiveDiscount = item.discountType !== 'none' && !item.discountRevoked;
                       const discountLabel = item.discountType === 'student' ? 'Student' : item.discountType === 'pwd' ? 'PWD' : item.discountType === 'senior' ? 'Senior' : null;
                       const isRevoking = revokingDiscountId === item.rideId;
@@ -3229,63 +2903,50 @@ export default function HomeScreen() {
           </ScrollView>
 
           {assignedShuttle && (
-            <>
-              <View style={styles.driverButtonRow}>
-                <Pressable
-                  style={[
-                    styles.driverActionButton,
-                    styles.driverBoardButton,
-                    { backgroundColor: tint, borderColor: tint },
-                    (boardingSubmitting || assignedShuttle.currentCapacity >= assignedShuttle.maxCapacity || !isDriverOnShift || (!activePassengerPickupRequest && !driverAssignedPickupRequest) || !isWithinPickupRadius || !activePassengerPickupFitsCapacity || remainingManualPickupSlots === 0 || (isWithinDropoffRadius && activeDropoffPassengerCount > 0)) && styles.driverActionButtonDisabled,
-                  ]}
-                  onPress={onDriverBoard}
-                  disabled={boardingSubmitting || assignedShuttle.currentCapacity >= assignedShuttle.maxCapacity || !isDriverOnShift || (!activePassengerPickupRequest && !driverAssignedPickupRequest) || !isWithinPickupRadius || !activePassengerPickupFitsCapacity || remainingManualPickupSlots === 0 || (isWithinDropoffRadius && activeDropoffPassengerCount > 0)}
-                  accessibilityRole="button"
-                  accessibilityLabel="Board one passenger manually"
-                >
-                  <Ionicons name={boardingSubmitting ? 'time-outline' : 'add-circle-outline'} size={18} color={palette.white} />
-                  <ThemedText style={[styles.driverActionButtonText, styles.driverActionButtonTextOnColor]}>
-                    {boardingSubmitting ? 'Recording...' : `Board Passenger +1${remainingManualPickupSlots > 1 ? ` (${remainingManualPickupSlots} left)` : ''}`}
-                  </ThemedText>
-                </Pressable>
+              <>
+                <View style={styles.driverButtonRow}>
+                  <Pressable
+                    style={[
+                      styles.driverActionButton,
+                      styles.driverBoardButton,
+                      { backgroundColor: tint, borderColor: tint },
+                      (boardingSubmitting || assignedShuttle.currentCapacity >= assignedShuttle.maxCapacity || !isDriverOnShift || (!activePassengerPickupRequest && !driverAssignedPickupRequest) || !isWithinPickupRadius || !activePassengerPickupFitsCapacity || remainingManualPickupSlots === 0 || (isWithinDropoffRadius && activeDropoffPassengerCount > 0)) && styles.driverActionButtonDisabled,
+                    ]}
+                    onPress={onDriverBoard}
+                    disabled={boardingSubmitting || assignedShuttle.currentCapacity >= assignedShuttle.maxCapacity || !isDriverOnShift || (!activePassengerPickupRequest && !driverAssignedPickupRequest) || !isWithinPickupRadius || !activePassengerPickupFitsCapacity || remainingManualPickupSlots === 0 || (isWithinDropoffRadius && activeDropoffPassengerCount > 0)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Board one passenger manually"
+                  >
+                    <Ionicons name={boardingSubmitting ? 'time-outline' : 'add-circle-outline'} size={18} color={palette.white} />
+                    <ThemedText style={[styles.driverActionButtonText, styles.driverActionButtonTextOnColor]}>
+                      {boardingSubmitting ? 'Recording...' : `Board Passenger +1${remainingManualPickupSlots > 1 ? ` (${remainingManualPickupSlots} left)` : ''}`}
+                    </ThemedText>
+                  </Pressable>
 
-                <Pressable
-                  style={[
-                    styles.driverActionButton,
-                    styles.driverUnboardButton,
-                    { backgroundColor: surfaceColor, borderColor: dangerColor },
-                    (unboardingSubmitting || assignedShuttle.currentCapacity === 0 || !isDriverOnShift || activeDropoffPassengerCount === 0) && styles.driverActionButtonDisabled,
-                  ]}
-                  onPress={onDriverUnboard}
-                  disabled={unboardingSubmitting || assignedShuttle.currentCapacity === 0 || !isDriverOnShift || activeDropoffPassengerCount === 0}
-                  accessibilityRole="button"
-                  accessibilityLabel="Unboard one passenger manually"
-                >
-                  <Ionicons name={unboardingSubmitting ? 'time-outline' : 'remove-circle-outline'} size={18} color={dangerColor} />
-                  <ThemedText style={[styles.driverActionButtonText, { color: dangerColor }]}> 
-                    {unboardingSubmitting ? 'Recording...' : `Unboard Passenger${activeDropoffPassengerCount > 1 ? ` (${activeDropoffPassengerCount})` : ''}`}
-                  </ThemedText>
-                </Pressable>
-              </View>
-
-              <ThemedText
-                style={[
-                  styles.manualFallbackHint,
-                  {
-                    color: isManualAutomationCooldownActive
-                      ? tint
-                      : manualBoardFallbackEnabled || manualUnboardFallbackEnabled
-                        ? successColor
-                        : mutedColor,
-                  },
-                ]}>
-                {manualFallbackStatusCopy}
-              </ThemedText>
-            </>
-          )}
-        </View>
-      ) : (
-        <View style={styles.passengerLayout}>
+                  <Pressable
+                    style={[
+                      styles.driverActionButton,
+                      styles.driverUnboardButton,
+                      { backgroundColor: surfaceColor, borderColor: dangerColor },
+                      (unboardingSubmitting || assignedShuttle.currentCapacity === 0 || !isDriverOnShift || activeDropoffPassengerCount === 0) && styles.driverActionButtonDisabled,
+                    ]}
+                    onPress={onDriverUnboard}
+                    disabled={unboardingSubmitting || assignedShuttle.currentCapacity === 0 || !isDriverOnShift || activeDropoffPassengerCount === 0}
+                    accessibilityRole="button"
+                    accessibilityLabel="Unboard one passenger manually"
+                  >
+                    <Ionicons name={unboardingSubmitting ? 'time-outline' : 'remove-circle-outline'} size={18} color={dangerColor} />
+                    <ThemedText style={[styles.driverActionButtonText, { color: dangerColor }]}>
+                      {unboardingSubmitting ? 'Recording...' : `Unboard Passenger${activeDropoffPassengerCount > 1 ? ` (${activeDropoffPassengerCount})` : ''}`}
+                    </ThemedText>
+                  </Pressable>
+                </View>
+              </>
+            )}
+          </View>
+        ) : (
+          <>
+          {assignedShuttle && (
           <View style={[styles.mapWrap, styles.passengerMapWrap]}>
             {passengerRegion ? (
               <MapView
@@ -3521,6 +3182,7 @@ export default function HomeScreen() {
               <ThemedText style={styles.mapLockText}>Map Locked to Community</ThemedText>
             </View>
           </View>
+          )}
 
           {feedbackBanner}
 
@@ -4815,13 +4477,23 @@ export default function HomeScreen() {
                           : ''}
                       </ThemedText>
                     </View>
-                    {dispatchedShuttleEtaMinutes !== null && (
+                    {dispatchedShuttleEtaMinutes !== null && activePickupLifecycleStatus !== 'boarded' && (
                       <View style={styles.dispatchAssignedDetailRow}>
                         <Ionicons name="time-outline" size={13} color={colorScheme === 'dark' ? '#6ee7b7' : '#059669'} />
                         <ThemedText
                           style={[styles.dispatchAssignedDetailText, { color: colorScheme === 'dark' ? '#6ee7b7' : '#047857', fontWeight: '700' }]}
                         >
                           ETA: ~{dispatchedShuttleEtaMinutes} min to pickup
+                        </ThemedText>
+                      </View>
+                    )}
+                    {dispatchedShuttleEtaMinutesToDestination !== null && activePickupLifecycleStatus === 'boarded' && (
+                      <View style={styles.dispatchAssignedDetailRow}>
+                        <Ionicons name="time-outline" size={13} color={colorScheme === 'dark' ? '#6ee7b7' : '#059669'} />
+                        <ThemedText
+                          style={[styles.dispatchAssignedDetailText, { color: colorScheme === 'dark' ? '#6ee7b7' : '#047857', fontWeight: '700' }]}
+                        >
+                          ETA: ~{dispatchedShuttleEtaMinutesToDestination} min to destination
                         </ThemedText>
                       </View>
                     )}
@@ -4948,7 +4620,7 @@ export default function HomeScreen() {
 
             </View>
           </ScrollView>
-        </View>
+        </>
       )}
       <HowToBookModal visible={showHowToBookModal} onClose={() => setShowHowToBookModal(false)} />
     </SafeAreaView>
@@ -5107,15 +4779,6 @@ const styles = StyleSheet.create({
     marginHorizontal: DesignTokens.spacing.sm,
     marginVertical: DesignTokens.spacing.sm,
   },
-  manualFallbackHint: {
-    marginHorizontal: DesignTokens.spacing.sm,
-    marginTop: -DesignTokens.spacing.xxs,
-    marginBottom: DesignTokens.spacing.sm,
-    textAlign: 'center',
-    fontSize: 11,
-    fontFamily: OutfitFonts.semiBold,
-    lineHeight: 16,
-  },
   driverActionButton: {
     flex: 1,
     minHeight: 58,
@@ -5171,45 +4834,6 @@ const styles = StyleSheet.create({
     borderRadius: DesignTokens.radius.lg,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  automationCard: {
-    borderWidth: 1,
-    borderRadius: DesignTokens.radius.lg,
-    paddingVertical: DesignTokens.spacing.xs,
-    paddingHorizontal: DesignTokens.spacing.sm,
-    gap: DesignTokens.spacing.xs,
-  },
-  automationTitle: {
-    fontSize: 12,
-    fontFamily: OutfitFonts.extraBold,
-    letterSpacing: 0.4,
-  },
-  automationReliability: {
-    fontSize: 11,
-    fontFamily: OutfitFonts.bold,
-  },
-  automationRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: DesignTokens.spacing.xs,
-  },
-  automationDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    marginTop: 5,
-  },
-  automationCopy: {
-    flex: 1,
-    gap: 2,
-  },
-  automationLabel: {
-    fontSize: 13,
-    fontFamily: OutfitFonts.bold,
-  },
-  automationDetail: {
-    fontSize: 12,
-    fontFamily: OutfitFonts.semiBold,
   },
   passengerLayout: {
     flex: 1,
@@ -6034,7 +5658,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   pickupMarkerLabelPill: {
-    maxWidth: 120,
+    maxWidth: 160,
     marginBottom: 4,
     paddingHorizontal: 8,
     paddingVertical: 3,

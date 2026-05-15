@@ -101,6 +101,7 @@ export type OnboardDestinationPassenger = {
     type: 'Point';
     coordinates: [number, number];
   };
+  destinationIsFallback: boolean;
   discountType: 'student' | 'pwd' | 'senior' | 'none';
   fareAtBoarding: number;
   originalFare: number | null;

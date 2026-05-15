@@ -8,7 +8,6 @@ import { getCapacityColor } from '@/constants/app-ui';
 import { DesignTokens, OutfitFonts, SemanticColors } from '@/constants/theme';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { listShuttles, Shuttle } from '@/services/shuttle';
-import { formatShuttleLabel } from '@/utils/format';
 import { connectCommunitySocket } from '@/services/socket';
 import {
     DriverCompletedTrip,

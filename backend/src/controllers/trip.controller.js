@@ -11,7 +11,6 @@ const ShiftRemittance = require('../models/ShiftRemittance');
 const RideRequest = require('../models/RideRequest');
 const { distanceMeters } = require('../services/geofence');
 const { completeRideRequestsForPassengers } = require('../services/ride-request-lifecycle');
-const { startManualAutomationCooldown } = require('../services/automation-cooldown');
 const { uploadReceiptImage } = require('../services/cloudinary');
 const { findAndDispatch, releaseAndRetry, retryWaitingQueue, releasePendingSlot, haversineMeters } = require('../services/dispatch.service');
 const {
@@ -328,9 +327,9 @@ const listUnresolvedRideRequestsForShift = async ({ communityId, shiftStart, shu
 
 const mapUnresolvedRideRequest = (request) => ({
   requestId: request._id,
-  passengerName: request.passengerId
-    ? `${request.passengerId.firstName} ${request.passengerId.lastName}`.trim()
-    : 'Unknown',
+passengerName: request.passengerId?.firstName
+          ? `${request.passengerId.firstName} ${request.passengerId.lastName || ''}`.trim()
+          : 'Unknown',
   passengerId: request.passengerId?._id || request.passengerId,
   destinationLabel: request.destination?.label || 'Destination',
   fareExpected: request.fareExpected,
@@ -435,12 +434,21 @@ const passengerBoard = async (req, res) => {
       });
     }
 
+    const boardedPassengersForEvent = [];
+
     // If there are no pending requests to link, require an explicit confirmation (force)
     // to allow anonymous/manual boarding. This prevents accidental anonymous rides.
     const forceManualBoard = Boolean(req.body.force === true || String(req.body.force) === 'true');
     if ((!pendingRequests || pendingRequests.length === 0) && !forceManualBoard) {
       if (session) await session.abortTransaction();
       return res.status(409).json({ error: 'No matching pickup requests found. Provide `requestIds` or set `force=true` to confirm anonymous boarding.' });
+    }
+
+    // REJECT boarding if any PickupRequest was already fully boarded
+    const alreadyBoardedRequests = pendingRequests.filter((r) => r.status === 'boarded');
+    if (alreadyBoardedRequests.length > 0) {
+      if (session) await session.abortTransaction();
+      return res.status(409).json({ error: 'This pickup request has already been completed. All passengers from this request have been boarded.' });
     }
 
     // DISPATCH: Decrement pendingPickupCount for each dispatched PickupRequest that is now physically boarding
@@ -497,7 +505,6 @@ const passengerBoard = async (req, res) => {
     // Manual board actions remain supported even without pending pickup intents.
     if (pendingRequests.length > 0) {
       const boardedAt = new Date();
-
       const passengerRidesToInsert = [];
       for (const request of pendingRequests) {
         // Prefer authoritative RideRequest documents linked to this pickup request so
@@ -534,6 +541,15 @@ const passengerBoard = async (req, res) => {
               boardedAt,
               status: 'boarded',
             });
+            if (rr.passengerId) {
+              boardedPassengersForEvent.push({
+                passengerId: rr.passengerId,
+                destinationLocation: destLocation,
+                destinationLabel: rr.destination?.label || request.destinationLabel || 'Destination',
+                destinationType: rr.destination?.type || request.destinationType || 'fixed',
+                boardedAt,
+              });
+            }
           }
         } else if (Array.isArray(request.passengerManifest) && request.passengerManifest.length > 0) {
           for (const entry of request.passengerManifest) {
@@ -544,8 +560,8 @@ const passengerBoard = async (req, res) => {
             passengerRidesToInsert.push({
               communityId: shuttle.communityId,
               passengerId: entry.passengerId || null,
-              passengerName: entry.name || null,
-              passengerPhone: entry.phone || null,
+passengerName: entry.name || (entry.passengerId ? userNameCache[entry.passengerId] || null : null),
+      passengerPhone: entry.phone || null,
               shuttleId: shuttle._id,
               driverId: req.user._id,
               tripId: activeTrip._id,
@@ -560,6 +576,15 @@ const passengerBoard = async (req, res) => {
               boardedAt,
               status: 'boarded',
             });
+            if (entry.passengerId) {
+              boardedPassengersForEvent.push({
+                passengerId: entry.passengerId,
+                destinationLocation: destLocation,
+                destinationLabel: request.destinationLabel || 'Destination',
+                destinationType: request.destinationType || 'fixed',
+                boardedAt,
+              });
+            }
           }
         } else {
           const destLocation = request.destinationLocation || request.pickupLocation || request.location;
@@ -575,6 +600,7 @@ const passengerBoard = async (req, res) => {
             tripId: activeTrip._id,
             fareAtBoarding: activeTrip.fareAtTime,
             discountType: 'none',
+            originalFare: null,
             pickupLocation: request.pickupLocation || request.location,
             destinationType: request.destinationType || 'fixed',
             destinationLabel: request.destinationLabel || 'Destination',
@@ -584,6 +610,15 @@ const passengerBoard = async (req, res) => {
             boardedAt,
             status: 'boarded',
           });
+          if (request.passengerId) {
+            boardedPassengersForEvent.push({
+              passengerId: request.passengerId,
+              destinationLocation: destLocation,
+              destinationLabel: request.destinationLabel || 'Destination',
+              destinationType: request.destinationType || 'fixed',
+              boardedAt,
+            });
+          }
         }
       }
 
@@ -621,6 +656,24 @@ const passengerBoard = async (req, res) => {
         },
         { session }
       );
+
+      // MARK PICKUPREQUEST AS BOARDED when all linked RideRequests are now boarded
+      for (const request of pendingRequests) {
+        const totalRideRequests = await RideRequest.countDocuments({
+          pickupRequestId: request._id,
+        }).session(session);
+        const boardedRideRequests = await RideRequest.countDocuments({
+          pickupRequestId: request._id,
+          status: 'boarded',
+        }).session(session);
+        if (totalRideRequests > 0 && totalRideRequests === boardedRideRequests) {
+          await PickupRequest.updateOne(
+            { _id: request._id },
+            { $set: { status: 'boarded' } },
+            { session }
+          );
+        }
+      }
     } else {
       // Manual board with no matching pickup intents — create anonymous PassengerRide records for audit.
       const boardedAt = new Date();
@@ -656,9 +709,6 @@ const passengerBoard = async (req, res) => {
     // Commit transaction
     if (session) await session.commitTransaction();
 
-    // Pause location-triggered automation briefly to avoid manual+auto double processing.
-    startManualAutomationCooldown(shuttle._id);
-
     // Emit event after successful transaction
     const io = req.app.get('io');
     const communityRoom = `community:${String(shuttle.communityId)}`;
@@ -680,6 +730,28 @@ const passengerBoard = async (req, res) => {
         passengerId: request.passengerId,
         shuttleId: shuttle._id,
         tripId: activeTrip._id,
+      });
+    }
+
+    // Emit targeted passenger:boarded event to each boarded passenger's socket room
+    for (const boarded of boardedPassengersForEvent) {
+      const destCoords = boarded.destinationLocation && boarded.destinationLocation.coordinates;
+      let etaMinutes = null;
+      if (destCoords && shuttle.location && shuttle.location.coordinates && shuttle.location.coordinates.length === 2) {
+        const shuttleCoords = { latitude: shuttle.location.coordinates[1], longitude: shuttle.location.coordinates[0] };
+        const destPt = { latitude: destCoords[1], longitude: destCoords[0] };
+        const distM = distanceMeters(shuttleCoords, destPt);
+        etaMinutes = Math.max(1, Math.round(distM / 500));
+      }
+      io.to(`user:${String(boarded.passengerId)}`).emit('passenger:boarded', {
+        shuttleId: shuttle._id,
+        plateNumber: shuttle.plateNumber || '',
+        shuttleLocation: shuttle.location,
+        destinationLocation: boarded.destinationLocation,
+        destinationLabel: boarded.destinationLabel,
+        destinationType: boarded.destinationType,
+        boardedAt: boarded.boardedAt,
+        etaMinutes,
       });
     }
 
@@ -1107,6 +1179,18 @@ const createPickupIntent = async (req, res) => {
       finalNote = finalNote.slice(0, 500);
     }
     const rideRequestsToCreate = [];
+    // Pre-fetch all referenced users so we can resolve passengerName when entry.name is empty
+    const allManifestPassengerIds = normalizedManifest
+      .map((e) => e.passengerId && validator.isMongoId(String(e.passengerId)) ? e.passengerId : null)
+      .filter(Boolean);
+    const userNameCache = {};
+    if (allManifestPassengerIds.length > 0) {
+      const users = await User.find({ _id: { $in: allManifestPassengerIds } }).select('firstName lastName').lean();
+      for (const u of users) {
+        userNameCache[u._id] = `${u.firstName || ''} ${u.lastName || ''}`.trim() || null;
+      }
+    }
+
     for (let i = 0; i < normalizedManifest.length; i++) {
       const entry = normalizedManifest[i];
       const passengerDiscountType = entry.discountType;
@@ -2878,9 +2962,6 @@ const passengerUnboard = async (req, res) => {
     // Commit transaction
     if (session) await session.commitTransaction();
 
-    // Pause location-triggered automation briefly to avoid manual+auto double processing.
-    startManualAutomationCooldown(shuttle._id);
-
     // Emit event after successful transaction
     const io = req.app.get('io');
     const communityRoom = `community:${String(shuttle.communityId)}`;
@@ -3014,9 +3095,9 @@ const getCurrentPassengers = async (req, res) => {
     // Transform response to match expected format
     const passengers = boardedPassengers.map((ride) => ({
       passengerId: ride.passengerId?._id || null,
-      passengerName: ride.passengerId
-        ? `${ride.passengerId.firstName} ${ride.passengerId.lastName}`
-        : 'Unknown',
+passengerName: ride.passengerId?.firstName
+          ? `${ride.passengerId.firstName} ${ride.passengerId.lastName || ''}`.trim()
+          : 'Unknown',
       boardedAt: ride.boardedAt,
       boardLocation: ride.pickupLocation,
     }));
@@ -3076,7 +3157,7 @@ const listOnboardDestinations = async (req, res) => {
       rideId: String(ride._id),
       passengerId: ride.passengerId?._id || null,
       passengerName: ride.passengerName
-        || (ride.passengerId ? `${ride.passengerId.firstName} ${ride.passengerId.lastName}`.trim() : null)
+        || (ride.passengerId?.firstName ? `${ride.passengerId.firstName} ${ride.passengerId.lastName || ''}`.trim() : null)
         || ride.destinationLabel
         || 'Passenger',
       boardedAt: ride.boardedAt,
@@ -3304,7 +3385,9 @@ const resolveRideRequest = async (req, res) => {
         shuttleId: shuttle._id,
         driverId: req.user._id,
         tripId: activeTrip._id,
-        fareAtBoarding: activeTrip.fareAtTime,
+        fareAtBoarding: rideRequest.fareExpected || activeTrip.fareAtTime,
+        discountType: rideRequest.discountType || 'none',
+        originalFare: rideRequest.originalFare || null,
         pickupLocation: rideRequest.pickupLocation,
         destinationType: rideRequest.destination?.type || 'fixed',
         destinationLabel: rideRequest.destination?.label || 'Destination',
@@ -3384,7 +3467,7 @@ const getMyDispatch = async (req, res) => {
     const request = await PickupRequest.findOne({
       passengerId: req.user._id,
       communityId: req.user.communityId,
-      status: { $in: ['pending', 'dispatched', 'queued'] },
+      status: { $in: ['pending', 'dispatched', 'queued', 'boarded'] },
       expiresAt: { $gt: new Date() },
     })
       .sort({ createdAt: -1 })

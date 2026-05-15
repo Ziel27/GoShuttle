@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Modal, View, StyleSheet, Pressable, ScrollView } from 'react-native';
 import { ThemedText } from './themed-text';
 import { Ionicons } from '@expo/vector-icons';
@@ -108,7 +108,7 @@ export function HowToBookModal({ visible, onClose, showDontShowAgain = true }: H
                 accessibilityState={{ checked: dontShowAgain }}
               >
                 <Ionicons name={dontShowAgain ? 'checkbox' : 'square-outline'} size={20} color={dontShowAgain ? tint : mutedColor} />
-                <ThemedText style={[styles.checkboxLabel, { color: mutedColor }]}>Don't show this again</ThemedText>
+                <ThemedText style={[styles.checkboxLabel, { color: mutedColor }]}>Don&apos;t show this again</ThemedText>
               </Pressable>
             )}
             
