@@ -793,7 +793,6 @@ export default function HomeScreen() {
     try {
       const items = await listShuttles();
       setShuttles(items);
-      setPreferenceAwareFeedback('Fleet refreshed.', 'service');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to fetch shuttles.';
       setPreferenceAwareFeedback(message, 'critical');
@@ -1530,6 +1529,28 @@ export default function HomeScreen() {
             setDriverRegion(regionFromBoundary);
           }
         } else if (active) {
+          try {
+            const { status } = await Location.requestForegroundPermissionsAsync();
+            if (status === 'granted') {
+              const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+              if (active) {
+                const fallbackRegion = {
+                  latitude: loc.coords.latitude,
+                  longitude: loc.coords.longitude,
+                  latitudeDelta: 0.015,
+                  longitudeDelta: 0.015,
+                };
+                if (user?.role === 'passenger') {
+                  setPassengerRegion(fallbackRegion);
+                } else {
+                  setDriverRegion(fallbackRegion);
+                }
+                return;
+              }
+            }
+          } catch {
+            // GPS unavailable — leave region null
+          }
           setPreferenceAwareFeedback('Community boundary data is incomplete. Map will appear once configured.', 'service');
         }
       } catch (error) {
@@ -2946,7 +2967,6 @@ const showDestinationLabel = false;
           </View>
         ) : (
           <>
-          {assignedShuttle && (
           <View style={[styles.mapWrap, styles.passengerMapWrap]}>
             {passengerRegion ? (
               <MapView
@@ -3182,7 +3202,6 @@ const showDestinationLabel = false;
               <ThemedText style={styles.mapLockText}>Map Locked to Community</ThemedText>
             </View>
           </View>
-          )}
 
           {feedbackBanner}
 
@@ -5658,10 +5677,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   pickupMarkerLabelPill: {
-    maxWidth: 160,
     marginBottom: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
     borderRadius: 999,
     borderWidth: 1,
     shadowColor: '#000',
