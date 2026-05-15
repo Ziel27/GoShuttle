@@ -2955,6 +2955,7 @@ const showDestinationLabel = false;
                 rotateEnabled={false}
                 pitchEnabled={false}
                 toolbarEnabled={false}
+                showsUserLocation={true}
                 onRegionChange={handlePassengerMapRegionChange}
               >
                 {communityBoundary.length >= 3 ? (
