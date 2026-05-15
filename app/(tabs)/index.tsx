@@ -545,24 +545,6 @@ export default function HomeScreen() {
       .join(', ');
   }, [activePassengerPickupRequest]);
 
-  const activePickupMarkerLabel = useMemo(() => {
-    const manifest = activePassengerPickupRequest?.passengerManifest || [];
-    const names = manifest
-      .map((entry) => entry.name?.trim())
-      .filter((name): name is string => Boolean(name));
-
-    if (names.length === 0) {
-      return 'Passenger';
-    }
-
-    if (names.length === 1) {
-      return names[0];
-    }
-
-    const [firstName, ...otherNames] = names;
-    return `${firstName} + ${otherNames.length}`;
-  }, [activePassengerPickupRequest?.passengerManifest]);
-
   const normalizedPassengerManifest = useMemo(
     () =>
       manifestDraft
@@ -2555,20 +2537,14 @@ export default function HomeScreen() {
                       coordinate={coordinate}
                       anchor={{ x: 0.5, y: 0.5 }}
                       accessible
-                      accessibilityLabel={`Active pickup request marker for ${activePickupMarkerLabel}`}
+                      accessibilityLabel="Passenger pickup location"
                     >
-                      {user?.role === 'driver' ? (
-                        <View style={styles.pickupMarkerStack}>
-                          <View style={[styles.pickupMarkerLabelPill, { backgroundColor: bgColor, borderColor }]}> 
-                            <ThemedText numberOfLines={1} style={[styles.pickupMarkerLabelText, { color: textColor }]}>
-                              {activePickupMarkerLabel}
-                            </ThemedText>
-                          </View>
-                          <MapIndicator iconName="person" />
+                      <View style={styles.pickupMarkerStack}>
+                        <View style={[styles.pickupIndicatorBadge, { backgroundColor: AppPalette.danger }]}>
+                          <Ionicons name="arrow-down-circle" size={14} color={palette.white} />
                         </View>
-                      ) : (
                         <MapIndicator iconName="person" />
-                      )}
+                      </View>
                       <Callout tooltip>
                         <View style={[styles.calloutContainer, { backgroundColor: bgColor, borderColor }]}> 
                           <ThemedText type="defaultSemiBold" style={{ color: textColor, fontSize: 14 }}>
@@ -5676,22 +5652,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  pickupMarkerLabelPill: {
-    marginBottom: 4,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 999,
-    borderWidth: 1,
+  pickupIndicatorBadge: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 2,
     shadowColor: '#000',
-    shadowOpacity: 0.12,
-    shadowRadius: 4,
+    shadowOpacity: 0.15,
+    shadowRadius: 3,
     shadowOffset: { width: 0, height: 1 },
     elevation: 2,
-  },
-  pickupMarkerLabelText: {
-    fontSize: 11,
-    fontFamily: OutfitFonts.semiBold,
-    textAlign: 'center',
   },
   mapIndicatorWrapper: {
     width: 22,
