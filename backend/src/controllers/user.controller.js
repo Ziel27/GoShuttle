@@ -401,6 +401,12 @@ const updateOwnStatus = async (req, res) => {
           error: 'You have overdue or escalated remittances. You must submit them before starting a new shift.'
         });
       }
+
+      // Reset shuttle capacity to 0 when starting a new shift
+      await Shuttle.updateOne(
+        { driverId: userId, isActive: true },
+        { $set: { currentCapacity: 0 } }
+      );
     }
 
     const user = await User.findByIdAndUpdate(
