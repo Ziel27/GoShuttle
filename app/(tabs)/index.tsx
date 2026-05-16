@@ -4315,9 +4315,11 @@ const showDestinationLabel = false;
                       ? 'Your pickup has been claimed. The driver is on the way to you.'
                       : activePickupLifecycleStatus === 'Assigned'
                         ? 'A shuttle has been assigned — stay near your pickup location.'
-                        : queueNotice
-                          ? 'You are in the waiting queue. We will dispatch you automatically.'
-                          : 'Waiting for a shuttle to be assigned to you...'}
+                        : activePickupLifecycleStatus === 'Onboard'
+                          ? 'You are on board! Enjoy the ride.'
+                          : queueNotice
+                            ? 'You are in the waiting queue. We will dispatch you automatically.'
+                            : 'Waiting for a shuttle to be assigned to you...'}
                   </ThemedText>
 
                   {activePickupManifestSummary ? (
@@ -4420,7 +4422,7 @@ const showDestinationLabel = false;
                           { color: colorScheme === 'dark' ? '#34d399' : '#065f46' },
                         ]}
                       >
-                        Shuttle Assigned
+                        {activePickupLifecycleStatus === 'Onboard' ? 'On Board' : 'Shuttle Assigned'}
                       </ThemedText>
                     </View>
                     <View
@@ -4432,11 +4434,11 @@ const showDestinationLabel = false;
                         },
                       ]}
                     >
-                      <Ionicons name="checkmark-circle" size={11} color={successColor} />
+                      <Ionicons name={activePickupLifecycleStatus === 'Onboard' ? 'people' : 'checkmark-circle'} size={11} color={successColor} />
                       <ThemedText
                         style={[styles.dispatchAssignedBadgeText, { color: successColor }]}
                       >
-                        EN ROUTE
+                        {activePickupLifecycleStatus === 'Onboard' ? 'ON BOARD' : 'EN ROUTE'}
                       </ThemedText>
                     </View>
                   </View>
@@ -4472,7 +4474,7 @@ const showDestinationLabel = false;
                           : ''}
                       </ThemedText>
                     </View>
-                    {dispatchedShuttleEtaMinutes !== null && activePickupLifecycleStatus !== 'boarded' && (
+                    {dispatchedShuttleEtaMinutes !== null && activePickupLifecycleStatus !== 'Onboard' && (
                       <View style={styles.dispatchAssignedDetailRow}>
                         <Ionicons name="time-outline" size={13} color={colorScheme === 'dark' ? '#6ee7b7' : '#059669'} />
                         <ThemedText
@@ -4482,7 +4484,7 @@ const showDestinationLabel = false;
                         </ThemedText>
                       </View>
                     )}
-                    {dispatchedShuttleEtaMinutesToDestination !== null && activePickupLifecycleStatus === 'boarded' && (
+                    {dispatchedShuttleEtaMinutesToDestination !== null && activePickupLifecycleStatus === 'Onboard' && (
                       <View style={styles.dispatchAssignedDetailRow}>
                         <Ionicons name="time-outline" size={13} color={colorScheme === 'dark' ? '#6ee7b7' : '#059669'} />
                         <ThemedText
@@ -4498,14 +4500,16 @@ const showDestinationLabel = false;
                   <View style={styles.dispatchStepRow}>
                     <View style={[styles.dispatchStepDot, { backgroundColor: successColor }]} />
                     <View style={[styles.dispatchStepLine, { backgroundColor: successColor }]} />
-                    <View style={[styles.dispatchStepDot, { backgroundColor: successColor, opacity: 0.4 }]} />
-                    <View style={[styles.dispatchStepLine, { backgroundColor: colorScheme === 'dark' ? '#303951' : '#D1D5DB' }]} />
-                    <View style={[styles.dispatchStepDot, { backgroundColor: colorScheme === 'dark' ? '#303951' : '#D1D5DB' }]} />
+                    <View style={[styles.dispatchStepDot, { backgroundColor: successColor, opacity: activePickupLifecycleStatus === 'Onboard' ? 1 : 0.4 }]} />
+                    <View style={[styles.dispatchStepLine, { backgroundColor: activePickupLifecycleStatus === 'Onboard' ? successColor : colorScheme === 'dark' ? '#303951' : '#D1D5DB' }]} />
+                    <View style={[styles.dispatchStepDot, { backgroundColor: activePickupLifecycleStatus === 'Onboard' ? successColor : colorScheme === 'dark' ? '#303951' : '#D1D5DB' }]} />
                   </View>
                   <View style={styles.dispatchStepLabels}>
                     <ThemedText style={[styles.dispatchStepLabel, { color: successColor }]}>Requested</ThemedText>
                     <ThemedText style={[styles.dispatchStepLabel, { color: colorScheme === 'dark' ? '#34d399' : '#059669' }]}>Assigned</ThemedText>
-                    <ThemedText style={[styles.dispatchStepLabel, { color: mutedColor }]}>Pickup</ThemedText>
+                    <ThemedText style={[styles.dispatchStepLabel, { color: activePickupLifecycleStatus === 'Onboard' ? (colorScheme === 'dark' ? '#34d399' : '#059669') : mutedColor }]}>
+                      {activePickupLifecycleStatus === 'Onboard' ? 'Boarded' : 'Pickup'}
+                    </ThemedText>
                   </View>
                 </View>
               )}
