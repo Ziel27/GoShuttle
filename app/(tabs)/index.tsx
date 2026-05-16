@@ -1210,6 +1210,13 @@ export default function HomeScreen() {
     socket.on('trip:pickup-claimed', onPickupClaimed);
     socket.on('trip:passenger-auto-unboarded', onAutoUnboard);
     socket.on('trip:passenger-unboarded', onPassengerUnboarded);
+    socket.on('trip:pickup-boarded', (payload: { requestId: string; status: string }) => {
+      setPickupIntents((items) =>
+        items.map((item) =>
+          String(item._id) === String(payload.requestId) ? { ...item, status: payload.status } : item
+        )
+      );
+    });
     socket.on('pickup-intent:cancelled', onPickupIntentCancelled);
     socket.on('trip:pickup-intent-cancelled', onPickupIntentCancelled);
     socket.on('socket:error', onSocketError);
@@ -1241,6 +1248,7 @@ export default function HomeScreen() {
       socket.off('trip:pickup-claimed', onPickupClaimed);
       socket.off('trip:passenger-auto-unboarded', onAutoUnboard);
       socket.off('trip:passenger-unboarded', onPassengerUnboarded);
+      socket.off('trip:pickup-boarded');
       socket.off('pickup-intent:cancelled', onPickupIntentCancelled);
       socket.off('trip:pickup-intent-cancelled', onPickupIntentCancelled);
       socket.off('socket:error', onSocketError);

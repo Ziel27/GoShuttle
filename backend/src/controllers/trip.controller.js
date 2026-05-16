@@ -686,6 +686,12 @@ passengerName: entry.name || (entry.passengerId ? userNameCache[entry.passengerI
             { $set: { status: 'boarded' } },
             { session }
           );
+          // Notify passengers that their pickup request is now fully boarded
+          io.to(communityRoom).emit('trip:pickup-boarded', {
+            requestId: request._id,
+            passengerId: request.passengerId,
+            status: 'boarded',
+          });
         }
       }
     } else {
