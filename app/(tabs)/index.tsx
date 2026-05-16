@@ -74,6 +74,7 @@ const DRIVER_CONTINUOUS_MIN_MOVE_METERS = 30; // 30 meters
 const COMMUNITY_SETTINGS_SYNC_POLL_MS = 120_000; // 2 minutes
 const DRIVER_PICKUP_RADIUS_METERS = 80;
 const DRIVER_DROPOFF_RADIUS_METERS = 80;
+const POLL_ERROR_NOTICE_COOLDOWN_MS = 60_000; // 1 minute cooldown before showing poll error notice again
 
 type ManifestDraftEntry = {
   id: string;
