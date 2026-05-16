@@ -877,6 +877,25 @@ const endShift = async (req, res) => {
       { $set: { status: 'completed', completedAt: activeTrip.shiftEnd } }
     );
 
+    // Mark boarded passenger rides as completed so the onboard list is empty for the next shift
+    await PassengerRide.updateMany(
+      { tripId: activeTrip._id, status: 'boarded' },
+      { $set: { status: 'completed', completedAt: activeTrip.shiftEnd } }
+    );
+
+    // Mark associated PickupRequests as completed so they don't appear in passenger queues
+    const boardedRideRequests = await RideRequest.find({
+      tripId: activeTrip._id,
+      status: 'completed',
+    }).select('pickupRequestId').lean();
+    if (boardedRideRequests.length > 0) {
+      const pickupIds = [...new Set(boardedRideRequests.map((r) => String(r.pickupRequestId)))];
+      await PickupRequest.updateMany(
+        { _id: { $in: pickupIds }, status: 'boarded' },
+        { $set: { status: 'completed' } }
+      );
+    }
+
     shuttle.currentCapacity = 0;
     shuttle.status = 'idle';
     shuttle.lastLocationUpdate = new Date();
