@@ -506,13 +506,19 @@ const passengerBoard = async (req, res) => {
     if (pendingRequests.length > 0) {
       const boardedAt = new Date();
       const passengerRidesToInsert = [];
+      const boardedRideRequestIds = [];
+      let boardedSoFar = 0;
       for (const request of pendingRequests) {
+        if (boardedSoFar >= boardedCount) break;
         // Prefer authoritative RideRequest documents linked to this pickup request so
         // we accurately create PassengerRide rows and keep linkage to the audit ledger.
         const linkedRideRequests = await RideRequest.find({ pickupRequestId: request._id, status: 'pending' }).session(session);
 
         if (linkedRideRequests && linkedRideRequests.length > 0) {
-          for (const rr of linkedRideRequests) {
+          const remaining = boardedCount - boardedSoFar;
+          const toProcess = linkedRideRequests.slice(0, remaining);
+          for (const rr of toProcess) {
+            boardedRideRequestIds.push(rr._id.toString());
             const rrDiscountType = rr.discountType && rr.discountType !== 'none' ? rr.discountType : 'none';
             const rrOriginalFare = rr.originalFare || null;
             const rrFareAtBoarding = rrDiscountType !== 'none' && rr.fareExpected ? rr.fareExpected : activeTrip.fareAtTime;
@@ -551,8 +557,11 @@ const passengerBoard = async (req, res) => {
               });
             }
           }
+          boardedSoFar += toProcess.length;
         } else if (Array.isArray(request.passengerManifest) && request.passengerManifest.length > 0) {
-          for (const entry of request.passengerManifest) {
+          const remaining = boardedCount - boardedSoFar;
+          const toProcess = request.passengerManifest.slice(0, remaining);
+          for (const entry of toProcess) {
             const destLocation = request.destinationLocation || request.pickupLocation || request.location;
             const destCoords = destLocation && destLocation.coordinates ? destLocation.coordinates : null;
             const pickupCoords = request.pickupLocation && request.pickupLocation.coordinates ? request.pickupLocation.coordinates : null;
@@ -586,7 +595,9 @@ passengerName: entry.name || (entry.passengerId ? userNameCache[entry.passengerI
               });
             }
           }
+          boardedSoFar += toProcess.length;
         } else {
+          if (boardedSoFar >= boardedCount) break;
           const destLocation = request.destinationLocation || request.pickupLocation || request.location;
           // Determine whether this destination is simply a fallback copied from pickup/shuttle.
           const destCoords = destLocation && destLocation.coordinates ? destLocation.coordinates : null;
@@ -619,6 +630,7 @@ passengerName: entry.name || (entry.passengerId ? userNameCache[entry.passengerI
               boardedAt,
             });
           }
+          boardedSoFar += 1;
         }
       }
 
@@ -642,22 +654,24 @@ passengerName: entry.name || (entry.passengerId ? userNameCache[entry.passengerI
         await PassengerRide.insertMany(passengerRidesToInsert, { session });
       }
 
-      // PERSISTENCE: Update linked RideRequest records to reflect successful boarding
-      const claimedPickupIds = pendingRequests.map((r) => r._id);
-      await RideRequest.updateMany(
-        { pickupRequestId: { $in: claimedPickupIds }, status: 'pending' },
-        {
-          $set: {
-            status: 'boarded',
-            shuttleId: shuttle._id,
-            tripId: activeTrip._id,
-            boardedAt,
+      // PERSISTENCE: Update only the RideRequest records that were actually boarded
+      if (boardedRideRequestIds.length > 0) {
+        await RideRequest.updateMany(
+          { _id: { $in: boardedRideRequestIds } },
+          {
+            $set: {
+              status: 'boarded',
+              shuttleId: shuttle._id,
+              tripId: activeTrip._id,
+              boardedAt,
+            },
           },
-        },
-        { session }
-      );
+          { session }
+        );
+      }
 
       // MARK PICKUPREQUEST AS BOARDED when all linked RideRequests are now boarded
+      const claimedPickupIds = pendingRequests.map((r) => r._id);
       for (const request of pendingRequests) {
         const totalRideRequests = await RideRequest.countDocuments({
           pickupRequestId: request._id,
