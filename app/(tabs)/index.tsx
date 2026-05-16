@@ -4116,7 +4116,6 @@ const showDestinationLabel = false;
                     placeholder="e.g. I'll be waiting at the gate"
                     placeholderTextColor={mutedColor}
                     multiline
-                    numberOfLines={2}
                     style={[styles.noteInputBare, { color: textColor }]}
                     accessibilityLabel="Note to driver"
                     textAlignVertical="top"
