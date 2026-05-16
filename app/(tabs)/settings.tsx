@@ -1363,18 +1363,17 @@ export default function SettingsTabScreen() {
                 />
 
                 <ThemedText type="caption" style={[styles.supportFieldLabel, { color: mutedColor }]}>Message</ThemedText>
-                <TextInput
-                  style={[styles.supportInput, styles.supportTextarea, { borderColor, color: textColor, backgroundColor: surface }]}
-                  placeholder="Describe your concern in detail..."
-                  placeholderTextColor={mutedColor}
-                  value={supportMessage}
-                  onChangeText={(t) => { setSupportMessage(t); setSupportError(''); }}
-                  multiline
-                  numberOfLines={5}
-                  maxLength={1000}
-                  editable={!supportLoading}
-                  textAlignVertical="top"
-                />
+<TextInput
+                   style={[styles.supportInput, styles.supportTextarea, { borderColor, color: textColor, backgroundColor: surface }]}
+                   placeholder="Describe your concern in detail..."
+                   placeholderTextColor={mutedColor}
+                   value={supportMessage}
+                   onChangeText={(t) => { setSupportMessage(t); setSupportError(''); }}
+                   multiline
+                   maxLength={1000}
+                   editable={!supportLoading}
+                   textAlignVertical="top"
+                 />
                 <ThemedText type="caption" style={[styles.supportCharCount, { color: mutedColor }]}>
                   {supportMessage.length}/1000
                 </ThemedText>
