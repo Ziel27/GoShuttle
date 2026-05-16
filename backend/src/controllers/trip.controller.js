@@ -415,7 +415,7 @@ const passengerBoard = async (req, res) => {
     const explicitRequestIds = Array.isArray(req.body.requestIds) ? req.body.requestIds.filter(Boolean) : [];
     if (explicitRequestIds.length > 0) {
       // Validate and load the explicitly provided PickupRequest documents.
-      const objectIds = explicitRequestIds.filter((id) => validator.isMongoId(String(id))).map((id) => mongoose.Types.ObjectId(id));
+      const objectIds = explicitRequestIds.filter((id) => validator.isMongoId(String(id))).map((id) => new mongoose.Types.ObjectId(id));
       if (objectIds.length === 0) {
         if (session) await session.abortTransaction();
         return res.status(400).json({ error: 'Invalid requestIds provided.' });
