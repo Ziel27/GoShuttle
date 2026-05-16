@@ -357,7 +357,7 @@ export default function HomeScreen() {
       pickupIntents.filter(
         (item) =>
           item.passengerId === user?._id &&
-          ['pending', 'claimed', 'queued', 'dispatched'].includes(item.status)
+          ['pending', 'claimed', 'queued', 'dispatched', 'boarded'].includes(item.status)
       ),
     [pickupIntents, user?._id]
   );
