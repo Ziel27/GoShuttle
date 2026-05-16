@@ -64,15 +64,11 @@ import MapView, { Callout, Circle, LatLng, Marker, Polygon, Region } from 'react
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 const capacityBadgeColor = getCapacityColor;
-const DRIVER_PICKUP_INTENTS_POLL_MS = 30_000;
-const DRIVER_ONBOARD_DESTINATIONS_POLL_MS = 20_000;
-const DRIVER_AUTO_SYNC_MS = 30_000;
-const DRIVER_WATCH_TIME_INTERVAL_MS = 3_000;
-const DRIVER_WATCH_DISTANCE_INTERVAL_METERS = 5;
-const DRIVER_CONTINUOUS_MIN_SYNC_INTERVAL_MS = 5_000;
-const DRIVER_CONTINUOUS_MIN_MOVE_METERS = 15;
-const POLL_ERROR_NOTICE_COOLDOWN_MS = 120_000;
-const COMMUNITY_SETTINGS_SYNC_POLL_MS = 45_000;
+const DRIVER_PICKUP_INTENTS_POLL_MS = 60_000; // 1 minute
+const DRIVER_ONBOARD_DESTINATIONS_POLL_MS = 60_000; // 1 minute
+const DRIVER_AUTO_SYNC_MS = 60_000; // 1 minute
+const DRIVER_WATCH_TIME_INTERVAL_MS = 5_000; // 5 seconds - location watch, not API call
+const COMMUNITY_SETTINGS_SYNC_POLL_MS = 120_000; // 2 minutes
 const DRIVER_PICKUP_RADIUS_METERS = 80;
 const DRIVER_DROPOFF_RADIUS_METERS = 80;
 
