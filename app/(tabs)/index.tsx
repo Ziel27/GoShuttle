@@ -23,7 +23,7 @@ import {
     AssignedShuttle,
     boardPassenger,
     cancelPickupIntent,
-    claimPickupIntent,
+
     createPickupIntent,
     getMyDispatch,
     listOnboardDestinations,
@@ -177,7 +177,6 @@ export default function HomeScreen() {
   const [bookForOthers, setBookForOthers] = useState(false);
   const [rideNote, setRideNote] = useState('');
   const [pickupSearchQuery, setPickupSearchQuery] = useState('');
-  const [claimingIntentId, setClaimingIntentId] = useState<string | null>(null);
   const [driverAssignedPickupRequest, setDriverAssignedPickupRequest] = useState<PickupIntent | null>(null);
   const [manifestDraft, setManifestDraft] = useState<ManifestDraftEntry[]>([
     { id: 'guest-1', name: '', discountType: 'none' },
@@ -1233,7 +1232,7 @@ export default function HomeScreen() {
     socket.on('trip:pickup-claimed', onPickupClaimed);
     socket.on('trip:passenger-auto-unboarded', onAutoUnboard);
     socket.on('trip:passenger-unboarded', onPassengerUnboarded);
-    socket.on('trip:pickup-boarded', (payload: { requestId: string; status: string }) => {
+    socket.on('trip:pickup-boarded', (payload: { requestId: string; status: PickupIntent['status'] }) => {
       setPickupIntents((items) =>
         items.map((item) =>
           String(item._id) === String(payload.requestId) ? { ...item, status: payload.status } : item
@@ -2788,44 +2787,6 @@ export default function HomeScreen() {
                                     <Ionicons name="hourglass-outline" size={10} color="#f59e0b" />
                                     <ThemedText style={[styles.pickupQueueStatusText, { color: '#f59e0b' }]}>Waiting in queue</ThemedText>
                                   </View>
-                                )}
-                                {/* Claim button — only for on-shift drivers */}
-                                {isDriverOnShift && (
-                                  <Pressable
-                                    style={[
-                                      styles.claimPickupBtn,
-                                      {
-                                        backgroundColor: isPriority ? '#f59e0b' : tint,
-                                        opacity: claimingIntentId === item._id ? 0.6 : 1,
-                                      },
-                                    ]}
-                                    disabled={claimingIntentId !== null}
-                                    onPress={async () => {
-                                      if (claimingIntentId) return;
-                                      setClaimingIntentId(item._id);
-                                      try {
-                                        await claimPickupIntent(item._id);
-                                        setPickupIntents((prev) => prev.filter((p) => p._id !== item._id));
-                                        setPreferenceAwareFeedback('Pickup claimed! Head to the passenger.', 'ride');
-                                      } catch (err: unknown) {
-                                        const msg = err instanceof Error ? err.message : 'Failed to claim pickup.';
-                                        setPreferenceAwareFeedback(msg, 'service');
-                                      } finally {
-                                        setClaimingIntentId(null);
-                                      }
-                                    }}
-                                    accessibilityRole="button"
-                                    accessibilityLabel="Claim this pickup"
-                                  >
-                                    <Ionicons
-                                      name={claimingIntentId === item._id ? 'hourglass-outline' : 'checkmark-circle-outline'}
-                                      size={13}
-                                      color="#fff"
-                                    />
-                                    <ThemedText style={styles.claimPickupBtnText}>
-                                      {claimingIntentId === item._id ? 'Claiming…' : 'Claim Pickup'}
-                                    </ThemedText>
-                                  </Pressable>
                                 )}
                               </View>
                             );
@@ -5079,20 +5040,6 @@ const styles = StyleSheet.create({
   pickupQueueStatusText: {
     fontFamily: OutfitFonts.semiBold,
     fontSize: 10,
-  },
-  claimPickupBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 5,
-    marginTop: 8,
-    borderRadius: DesignTokens.radius.sm,
-    paddingVertical: 7,
-  },
-  claimPickupBtnText: {
-    fontFamily: OutfitFonts.semiBold,
-    fontSize: 12,
-    color: '#fff',
   },
   shareTrackingBtn: {
     flexDirection: 'row',

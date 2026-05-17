@@ -31,7 +31,7 @@ export type PickupIntent = {
   destinationRadiusMeters?: number | null;
   passengerHomePhase: string | null;
   fareType: 'standard' | 'priority';
-  status: 'pending' | 'claimed' | 'dispatched' | 'queued' | 'bumped' | 'expired' | 'cancelled';
+  status: 'pending' | 'claimed' | 'dispatched' | 'queued' | 'bumped' | 'expired' | 'cancelled' | 'boarded';
   expiresAt: string;
   passengerManifest?: Array<{
     passengerId?: string | null;
