@@ -54,6 +54,12 @@ const pickupRequestSchema = new mongoose.Schema(
         required: [true, 'Pickup coordinates are required'],
       },
     },
+    pickupLabel: {
+      type: String,
+      trim: true,
+      maxlength: [500, 'Pickup label cannot exceed 500 characters.'],
+      default: null,
+    },
     destinationType: {
       type: String,
       enum: ['fixed', 'home'],

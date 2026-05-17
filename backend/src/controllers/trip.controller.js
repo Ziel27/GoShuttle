@@ -1311,6 +1311,7 @@ const createPickupIntent = async (req, res) => {
         coordinates: [coords.lng, coords.lat],
       },
       pickupLocation: explicitPickupPoint,
+      pickupLabel: explicitPickupPoint ? null : (pickupOrigin.label || null),
       destinationType,
       destinationLabel,
       destinationLocation,

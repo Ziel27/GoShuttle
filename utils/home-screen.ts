@@ -16,6 +16,7 @@ export type PickupIntentEventPayload = {
     type?: 'Point';
     coordinates?: [number, number];
   };
+  pickupLabel?: string | null;
   destinationType?: 'fixed' | 'home';
   destinationLabel?: string;
   destinationLocation?: {
@@ -146,6 +147,7 @@ export const toPickupIntent = (payload: PickupIntentEventPayload): PickupIntent 
         coordinates: explicitPickupCoordinates,
       }
       : null,
+    pickupLabel: payload.pickupLabel ?? null,
     destinationType: payload.destinationType || 'fixed',
     destinationLabel: payload.destinationLabel || 'Destination',
     destinationLocation: payload.destinationLocation?.coordinates?.length === 2

@@ -22,6 +22,7 @@ export type PickupIntent = {
     type: 'Point';
     coordinates: [number, number];
   } | null;
+  pickupLabel?: string | null;
   destinationType: 'fixed' | 'home';
   destinationLabel: string;
   destinationLocation: {

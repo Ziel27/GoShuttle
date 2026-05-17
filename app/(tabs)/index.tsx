@@ -2755,6 +2755,14 @@ export default function HomeScreen() {
                                     <ThemedText style={[styles.pickupQueueName, { color: textColor }]} numberOfLines={1}>
                                       {displayName}
                                     </ThemedText>
+                                    {item.pickupLabel ? (
+                                      <View style={styles.pickupQueueDestRow}>
+                                        <Ionicons name="navigate-outline" size={12} color={successColor} />
+                                        <ThemedText style={[styles.pickupQueueDest, { color: mutedColor }]} numberOfLines={2}>
+                                          {item.pickupLabel}
+                                        </ThemedText>
+                                      </View>
+                                    ) : null}
                                     <View style={styles.pickupQueueDestRow}>
                                       <Ionicons name="location-outline" size={12} color={mutedColor} />
                                       <ThemedText style={[styles.pickupQueueDest, { color: mutedColor }]} numberOfLines={2}>
@@ -2815,6 +2823,9 @@ export default function HomeScreen() {
                           <ThemedText style={[styles.metaText, { color: mutedColor }]}>Active Pickup Request</ThemedText>
                           <ThemedText style={[styles.valueSmallText, { color: successColor }]}>Boarding</ThemedText>
                         </View>
+                        {activePassengerPickupRequest.pickupLabel ? (
+                          <ThemedText style={[styles.valueText, { color: textColor }]} numberOfLines={3}>{activePassengerPickupRequest.pickupLabel}</ThemedText>
+                        ) : null}
                         <ThemedText style={[styles.valueText, { color: textColor }]} numberOfLines={3}>{activePickupDestinationSummary || activePassengerPickupRequest.destinationLabel}</ThemedText>
                         <ThemedText style={[styles.metaText, { color: mutedColor }]}>Remaining passengers: {remainingManualPickupSlots}</ThemedText>
                         {activePickupManifestSummary ? (
