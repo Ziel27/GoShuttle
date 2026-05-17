@@ -2706,35 +2706,36 @@ export default function HomeScreen() {
                       ]}
                     />
                   </View>
-                  <View style={styles.statusSection}>
-                    <View style={styles.rowBetween}>
-                      <ThemedText style={[styles.metaText, { color: mutedColor }]}>Pickup Requests</ThemedText>
-                      <ThemedText style={[styles.valueSmallText, { color: textColor }]}>{activeCommunityPickupIntents.length} active</ThemedText>
-                    </View>
-                    {activeCommunityPickupIntents.length > 0 && (
-                      <>
-                        <View style={[styles.pickupSearchBar, { borderColor, backgroundColor: surfaceColor }]}>
-                          <Ionicons name="search-outline" size={14} color={mutedColor} style={{ marginRight: 6 }} />
-                          <TextInput
-                            value={pickupSearchQuery}
-                            onChangeText={setPickupSearchQuery}
-                            placeholder="Search by name, destination, or note…"
-                            placeholderTextColor={mutedColor}
-                            style={[styles.pickupSearchInput, { color: textColor }]}
-                            clearButtonMode="while-editing"
-                            returnKeyType="search"
-                            accessibilityLabel="Search pickup requests"
-                          />
-                          {pickupSearchQuery.length > 0 && (
-                            <Pressable onPress={() => setPickupSearchQuery('')} hitSlop={8}>
-                              <Ionicons name="close-circle" size={14} color={mutedColor} />
-                            </Pressable>
-                          )}
-                        </View>
-                        {filteredPickupIntents.length === 0 ? (
-                          <ThemedText style={[styles.metaText, { color: mutedColor, marginTop: 6 }]}>No results for &quot;{pickupSearchQuery}&quot;</ThemedText>
-                        ) : (
-                          filteredPickupIntents.map((item, idx) => {
+                  {isDriverOnShift ? (
+                    <View style={styles.statusSection}>
+                      <View style={styles.rowBetween}>
+                        <ThemedText style={[styles.metaText, { color: mutedColor }]}>Pickup Requests</ThemedText>
+                        <ThemedText style={[styles.valueSmallText, { color: textColor }]}>{activeCommunityPickupIntents.length} active</ThemedText>
+                      </View>
+                      {activeCommunityPickupIntents.length > 0 && (
+                        <>
+                          <View style={[styles.pickupSearchBar, { borderColor, backgroundColor: surfaceColor }]}>
+                            <Ionicons name="search-outline" size={14} color={mutedColor} style={{ marginRight: 6 }} />
+                            <TextInput
+                              value={pickupSearchQuery}
+                              onChangeText={setPickupSearchQuery}
+                              placeholder="Search by name, destination, or note…"
+                              placeholderTextColor={mutedColor}
+                              style={[styles.pickupSearchInput, { color: textColor }]}
+                              clearButtonMode="while-editing"
+                              returnKeyType="search"
+                              accessibilityLabel="Search pickup requests"
+                            />
+                            {pickupSearchQuery.length > 0 && (
+                              <Pressable onPress={() => setPickupSearchQuery('')} hitSlop={8}>
+                                <Ionicons name="close-circle" size={14} color={mutedColor} />
+                              </Pressable>
+                            )}
+                          </View>
+                          {filteredPickupIntents.length === 0 ? (
+                            <ThemedText style={[styles.metaText, { color: mutedColor, marginTop: 6 }]}>No results for &quot;{pickupSearchQuery}&quot;</ThemedText>
+                          ) : (
+                            filteredPickupIntents.map((item, idx) => {
                             const guestNames = (item.passengerManifest || [])
                               .map((g) => g.name || 'Guest')
                               .join(', ');
@@ -2794,6 +2795,16 @@ export default function HomeScreen() {
                         )}
                       </>
                     )}
+                    {activeCommunityPickupIntents.length === 0 && (
+                      <ThemedText style={[styles.metaText, { color: mutedColor, marginTop: 6 }]}>No pickup requests in queue.</ThemedText>
+                    )}
+                  </View>
+                  ) : (
+                    <View style={styles.statusSection}>
+                      <ThemedText style={[styles.metaText, { color: mutedColor }]}>Start your shift to see pickup requests.</ThemedText>
+                    </View>
+                  )}
+                  <View style={styles.statusSection}>
                     <View style={styles.rowBetween}>
                       <ThemedText style={[styles.metaText, { color: mutedColor }]}>Shift Status</ThemedText>
                       <ThemedText style={[styles.valueSmallText, { color: isDriverOnShift ? successColor : dangerColor }]}>
@@ -2876,7 +2887,7 @@ const showDestinationLabel = false;
             </View>
           </ScrollView>
 
-          {assignedShuttle && (
+          {assignedShuttle && isDriverOnShift && (
               <>
                 <View style={styles.driverButtonRow}>
                   <Pressable
