@@ -126,6 +126,7 @@ type PickupCancelledEventPayload = {
   status?: string;
   cancelledBy?: string;
   cancelledAt?: string;
+  message?: string;
 };
 
 type SocketErrorEventPayload = {
@@ -1051,12 +1052,12 @@ export default function HomeScreen() {
         setDispatchedShuttleEtaMinutesToDestination(null);
         setQueueNotice(null);
         void refreshPassengerDispatch();
-        setPreferenceAwareFeedback('Pickup request cancelled.', 'ride');
+        setPreferenceAwareFeedback(payload.message || 'Pickup request cancelled.', 'ride');
         return;
       }
 
       if (user?.role === 'driver') {
-        setPreferenceAwareFeedback('A pickup request was cancelled by a passenger.', 'service');
+        setPreferenceAwareFeedback(payload.message || 'A pickup request was cancelled by a passenger.', 'service');
       }
     };
 

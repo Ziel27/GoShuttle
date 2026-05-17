@@ -3119,6 +3119,16 @@ const passengerUnboard = async (req, res) => {
             { _id: { $in: [...pickupIdsToExpire] } },
             { $set: { expiresAt: expireTime, status: 'expired' } }
           );
+          
+          // Emit cancellation events to community room for each expired request
+          const io = req.app.get('io');
+          const communityRoom = `community:${String(shuttle.communityId)}`;
+          for (const requestId of pickupIdsToExpire) {
+            io.to(communityRoom).emit('pickup-intent:cancelled', {
+              requestId: requestId,
+              message: 'Pickup completed and request expired.'
+            });
+          }
         }
       } catch (err) {
         console.error('[passengerUnboard] expire PickupRequests error:', err);
