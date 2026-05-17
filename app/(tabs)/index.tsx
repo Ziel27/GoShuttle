@@ -1551,12 +1551,6 @@ export default function HomeScreen() {
     };
 
     loadCommunityBoundary();
-    const timer = setInterval(loadCommunityBoundary, COMMUNITY_SETTINGS_SYNC_POLL_MS);
-
-    return () => {
-      active = false;
-      clearInterval(timer);
-    };
   }, [activeCommunityId, communitySyncTick, isAppActive, setPreferenceAwareFeedback, user?.role]);
 
   // Load phase geofences for the community
@@ -1578,12 +1572,6 @@ export default function HomeScreen() {
     };
 
     loadPhaseGeofencesData();
-    const timer = setInterval(loadPhaseGeofencesData, COMMUNITY_SETTINGS_SYNC_POLL_MS);
-
-    return () => {
-      active = false;
-      clearInterval(timer);
-    };
   }, [activeCommunityId, communitySyncTick, isAppActive]);
 
   useEffect(() => {

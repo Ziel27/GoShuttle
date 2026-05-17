@@ -369,16 +369,24 @@ export default function SettingsTabScreen() {
 
   useEffect(() => {
     if (!user?.communityId) return;
+    let isMounted = true;
     const loadCommunity = async () => {
       try {
         const community = await getCommunityById(user.communityId);
-        setCommunityName(community?.name ?? null);
-        setOpsBypassMode(Boolean(community?.opsBypassMode));
+        if (isMounted) {
+          setCommunityName(community?.name ?? null);
+          setOpsBypassMode(Boolean(community?.opsBypassMode));
+        }
       } catch (error) {
-        console.error('Failed to load community:', error);
+        if (isMounted) {
+          console.error('Failed to load community:', error);
+        }
       }
     };
     loadCommunity();
+    return () => {
+      isMounted = false;
+    };
   }, [user?.communityId]);
 
   useEffect(() => {
