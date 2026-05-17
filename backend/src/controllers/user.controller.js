@@ -403,10 +403,10 @@ const updateOwnStatus = async (req, res) => {
         });
       }
 
-      // Reset shuttle capacity to 0 when starting a new shift
+      // Reset shuttle capacity to 0 and set status to idle when starting a new shift
       await Shuttle.updateOne(
         { driverId: userId, isActive: true },
-        { $set: { currentCapacity: 0 } }
+        { $set: { currentCapacity: 0, status: 'idle' } }
       );
     }
 
@@ -418,6 +418,17 @@ const updateOwnStatus = async (req, res) => {
 
     if (!user) {
       return res.status(404).json({ error: 'User not found.' });
+    }
+
+    // DISPATCH: When a driver starts their shift, retry the waiting queue
+    // so queued requests get auto-dispatched to the newly available driver
+    if (status === 'driving' && req.user.role === 'driver') {
+      const { retryWaitingQueue } = require('../services/dispatch.service');
+      setImmediate(() => {
+        retryWaitingQueue(req.user.communityId, req.app.get('io')).catch((err) =>
+          console.error('[startShift] retryWaitingQueue error:', err)
+        );
+      });
     }
 
     return res.status(200).json({
