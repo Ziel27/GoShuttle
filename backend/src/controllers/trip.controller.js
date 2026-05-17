@@ -503,6 +503,7 @@ const passengerBoard = async (req, res) => {
 
     // Get io instance early — used in both branches and after the if/else
     const io = req.app.get('io');
+    const communityRoom = `community:${String(shuttle.communityId)}`;
 
     // Create passenger ride records for pickup-intent based boardings when available.
     // Manual board actions remain supported even without pending pickup intents.
@@ -733,7 +734,6 @@ passengerName: entry.name || (entry.passengerId ? userNameCache[entry.passengerI
     if (session) await session.commitTransaction();
 
     // Emit event after successful transaction
-    const communityRoom = `community:${String(shuttle.communityId)}`;
     io.to(communityRoom).emit('trip:passenger-boarded', {
       tripId: activeTrip._id,
       shuttleId: shuttle._id,
