@@ -501,6 +501,9 @@ const passengerBoard = async (req, res) => {
     activeTrip.revenueCollected = activeTrip.passengersBoarded * activeTrip.fareAtTime;
     await activeTrip.save({ session });
 
+    // Get io instance early — used in both branches and after the if/else
+    const io = req.app.get('io');
+
     // Create passenger ride records for pickup-intent based boardings when available.
     // Manual board actions remain supported even without pending pickup intents.
     if (pendingRequests.length > 0) {
@@ -670,8 +673,6 @@ passengerName: entry.name || (entry.passengerId ? userNameCache[entry.passengerI
         );
       }
 
-      // Get io instance before the loop that uses it
-      const io = req.app.get('io');
       // MARK PICKUPREQUEST AS BOARDED when all linked RideRequests are now boarded
       const claimedPickupIds = pendingRequests.map((r) => r._id);
       for (const request of pendingRequests) {
