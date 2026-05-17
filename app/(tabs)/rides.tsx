@@ -90,6 +90,15 @@ const RideItemCard = memo(function RideItemCard({
             {ride.shuttle.plateNumber || 'Shuttle'}
             {ride.shuttle.label ? ` · Electric ${ride.shuttle.label}` : ''}
           </ThemedText>
+          {ride.isBookedForOthers && ride.passengerName ? (
+            <ThemedText type="caption" style={{ color: tint }}>
+              Booked for: {ride.passengerName}{ride.companionCount > 0 ? ` +${ride.companionCount} companion${ride.companionCount > 1 ? 's' : ''}` : ''}
+            </ThemedText>
+          ) : ride.companionCount > 0 ? (
+            <ThemedText type="caption" style={{ color: tint }}>
+              +{ride.companionCount} companion{ride.companionCount > 1 ? 's' : ''}
+            </ThemedText>
+          ) : null}
           <ThemedText type="caption" style={{ color: mutedColor }}>
             Boarded: {boardedTime}
           </ThemedText>
@@ -504,6 +513,15 @@ export default function RidesScreen() {
                     Shuttle: {selectedRide.shuttle.plateNumber || 'Shuttle'}
                     {selectedRide.shuttle.label ? ` · Electric ${selectedRide.shuttle.label}` : ''}
                   </ThemedText>
+                  {selectedRide.isBookedForOthers && selectedRide.passengerName ? (
+                    <ThemedText style={[styles.rideModalLine, { color: tint }]}>
+                      Booked for: {selectedRide.passengerName}{selectedRide.companionCount > 0 ? ` +${selectedRide.companionCount} companion${selectedRide.companionCount > 1 ? 's' : ''}` : ''}
+                    </ThemedText>
+                  ) : selectedRide.companionCount > 0 ? (
+                    <ThemedText style={[styles.rideModalLine, { color: tint }]}>
+                      +{selectedRide.companionCount} companion{selectedRide.companionCount > 1 ? 's' : ''}
+                    </ThemedText>
+                  ) : null}
                   <ThemedText style={[styles.rideModalLine, { color: mutedColor }]}> 
                     Boarded At: {new Date(selectedRide.boardedAt).toLocaleString()}
                   </ThemedText>

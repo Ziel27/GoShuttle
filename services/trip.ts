@@ -88,6 +88,10 @@ export type PassengerRecentRide = {
     type: 'Point';
     coordinates: [number, number];
   };
+  passengerName: string | null;
+  isBookedForOthers: boolean;
+  bookedByName: string | null;
+  companionCount: number;
   shuttle: {
     plateNumber: string;
     label: string;

@@ -1767,32 +1767,55 @@ const listPickupIntents = async (req, res) => {
  */
 const listPassengerRecentRides = async (req, res) => {
   try {
+    // Find ride requests where the current user is the booking owner
+    const bookedForOthers = await RideRequest.find({
+      communityId: req.user.communityId,
+      bookingOwner: req.user._id,
+    }).select('_id').lean();
+
+    const bookedForOthersIds = bookedForOthers.map((r) => r._id);
+
+    // Fetch rides where passenger is the current user OR the ride was booked by the current user
     const rides = await PassengerRide.find({
       communityId: req.user.communityId,
-      passengerId: req.user._id,
+      $or: [
+        { passengerId: req.user._id },
+        ...(bookedForOthersIds.length > 0 ? [{ rideRequestId: { $in: bookedForOthersIds } }] : []),
+      ],
     })
       .populate('shuttleId', 'plateNumber label')
-      .select('status requestedAt boardedAt unboardedAt completedAt fareAtBoarding pickupLocation destinationType destinationLabel destinationLocation shuttleId')
+      .populate('rideRequestId', 'passengerName passengerManifest')
+      .select('status requestedAt boardedAt unboardedAt completedAt fareAtBoarding pickupLocation destinationType destinationLabel destinationLocation shuttleId rideRequestId passengerId passengerName')
       .sort({ boardedAt: -1 })
-      .limit(10);
+      .limit(20);
 
-    const serialized = rides.map((ride) => ({
-      rideId: ride._id,
-      status: ride.status,
-      requestedAt: ride.requestedAt,
-      boardedAt: ride.boardedAt,
-      unboardedAt: ride.unboardedAt || null,
-      completedAt: ride.completedAt || null,
-      fareAtBoarding: ride.fareAtBoarding,
-      pickupLocation: ride.pickupLocation,
-      destinationType: ride.destinationType,
-      destinationLabel: ride.destinationLabel,
-      destinationLocation: ride.destinationLocation,
-      shuttle: {
-        plateNumber: ride.shuttleId?.plateNumber || '',
-        label: ride.shuttleId?.label || '',
-      },
-    }));
+    const serialized = rides.map((ride) => {
+      const manifest = ride.rideRequestId?.passengerManifest || [];
+      const isBookedForOthers = ride.passengerId && String(ride.passengerId) !== String(req.user._id);
+      const bookedByName = ride.rideRequestId?.passengerName || null;
+
+      return {
+        rideId: ride._id,
+        status: ride.status,
+        requestedAt: ride.requestedAt,
+        boardedAt: ride.boardedAt,
+        unboardedAt: ride.unboardedAt || null,
+        completedAt: ride.completedAt || null,
+        fareAtBoarding: ride.fareAtBoarding,
+        pickupLocation: ride.pickupLocation,
+        destinationType: ride.destinationType,
+        destinationLabel: ride.destinationLabel,
+        destinationLocation: ride.destinationLocation,
+        passengerName: ride.passengerName || null,
+        isBookedForOthers,
+        bookedByName,
+        companionCount: manifest.length > 1 ? manifest.length - 1 : 0,
+        shuttle: {
+          plateNumber: ride.shuttleId?.plateNumber || '',
+          label: ride.shuttleId?.label || '',
+        },
+      };
+    });
 
     return res.status(200).json({
       count: serialized.length,
