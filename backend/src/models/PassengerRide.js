@@ -22,6 +22,13 @@ const passengerRideSchema = new mongoose.Schema(
       default: null,
       index: true,
     },
+    // Link to PickupRequest to group rides from same booking
+    pickupRequestId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'PickupRequest',
+      default: null,
+      index: true,
+    },
     // For guest/delegated entries when passengerId is not provided
     passengerName: {
       type: String,

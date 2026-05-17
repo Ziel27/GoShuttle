@@ -15,6 +15,7 @@ type TrackingData = {
   expiresAt: string;
   passengerNames: string[];
   location: { latitude: number; longitude: number } | null;
+  passengerLocation: { latitude: number; longitude: number } | null;
   pickupLocation: { latitude: number; longitude: number } | null;
   destinationLocation: { latitude: number; longitude: number } | null;
   shuttleLabel: string | null;
@@ -88,22 +89,29 @@ const makePinHtml = (color: string, svg: string) => `
     <div style="width:2px;height:8px;background:${color};opacity:0.7;border-radius:1px;"></div>
   </div>`;
 
+// Brand colors — green theme to match the app
+const BRAND_COLOR = '#10b981';
+const BRAND_LIGHT = '#d1fae5';
+const BRAND_DARK = '#059669';
+const PASSENGER_COLOR = '#06b6d4';
+const PASSENGER_LIGHT = '#cffafe';
+
 const makeShuttleIcon = (live: boolean) => L.divIcon({
-  html: makePrimaryMarkerHtml('#1d4ed8', BUS_SVG, live),
+  html: makePrimaryMarkerHtml(BRAND_COLOR, BUS_SVG, live),
   iconSize: [52, 52],
   iconAnchor: [26, 26],
   className: '',
 });
 
 const makePassengerIcon = () => L.divIcon({
-  html: makePrimaryMarkerHtml('#7c3aed', USER_SVG, true),
+  html: makePrimaryMarkerHtml(PASSENGER_COLOR, USER_SVG, true),
   iconSize: [52, 52],
   iconAnchor: [26, 26],
   className: '',
 });
 
 const pickupPinIcon = L.divIcon({
-  html: makePinHtml('#7c3aed', PIN_SVG),
+  html: makePinHtml(BRAND_COLOR, PIN_SVG),
   iconSize: [36, 48],
   iconAnchor: [18, 48],
   className: '',
@@ -212,6 +220,7 @@ export const TrackPage = () => {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
   const primaryMarkerRef = useRef<L.Marker | null>(null);
+  const passengerMarkerRef = useRef<L.Marker | null>(null);
   const pickupMarkerRef = useRef<L.Marker | null>(null);
   const destinationMarkerRef = useRef<L.Marker | null>(null);
   const hasInitialFocus = useRef(false);
@@ -272,6 +281,7 @@ export const TrackPage = () => {
       map.remove();
       mapRef.current = null;
       primaryMarkerRef.current = null;
+      passengerMarkerRef.current = null;
       pickupMarkerRef.current = null;
       destinationMarkerRef.current = null;
       hasInitialFocus.current = false;
@@ -341,6 +351,21 @@ export const TrackPage = () => {
         }
       }
 
+      // Passenger marker (shows passenger pickup location in driver mode)
+      if (isDriverMode && hasRealShuttle && json.passengerLocation) {
+        const { latitude, longitude } = json.passengerLocation;
+        const latlng: L.LatLngExpression = [latitude, longitude];
+        if (!passengerMarkerRef.current) {
+          passengerMarkerRef.current = L.marker(latlng, { icon: makePassengerIcon() }).addTo(mapRef.current!);
+          passengerMarkerRef.current.bindTooltip('Passenger location', { permanent: false, direction: 'top', className: 'track-tooltip' });
+        } else {
+          passengerMarkerRef.current.setLatLng(latlng);
+        }
+      } else if (passengerMarkerRef.current) {
+        passengerMarkerRef.current.remove();
+        passengerMarkerRef.current = null;
+      }
+
       // Pickup pin
       if (isDriverMode && hasRealShuttle && json.pickupLocation) {
         const { latitude, longitude } = json.pickupLocation;
@@ -378,6 +403,7 @@ export const TrackPage = () => {
       if (!hasInitialFocus.current && json.location) {
         hasInitialFocus.current = true;
         const points: L.LatLngExpression[] = [[json.location.latitude, json.location.longitude]];
+        if (json.passengerLocation) points.push([json.passengerLocation.latitude, json.passengerLocation.longitude]);
         if (json.pickupLocation) points.push([json.pickupLocation.latitude, json.pickupLocation.longitude]);
         if (json.destinationLocation) points.push([json.destinationLocation.latitude, json.destinationLocation.longitude]);
 
@@ -467,10 +493,10 @@ export const TrackPage = () => {
   const statusStyle = STATUS_COLORS[data?.status ?? ''] ?? { bg: '#f8fafc', text: '#475569', dot: '#94a3b8', border: '#e2e8f0' };
   const hasEta = typeof data?.etaMinutes === 'number' && data.etaMinutes !== null && !isTerminal;
 
-  // Brand colors — driver mode = blue, passenger mode = purple
-  const brandColor = isDriverMode ? '#1d4ed8' : '#7c3aed';
-  const brandLight = isDriverMode ? '#dbeafe' : '#ede9fe';
-  const brandDark  = isDriverMode ? '#1e3a8a' : '#5b21b6';
+  // Brand colors — green theme to match the app
+  const brandColor = BRAND_COLOR;
+  const brandLight = BRAND_LIGHT;
+  const brandDark  = BRAND_DARK;
 
   // ── Completed screen ──────────────────────────────────────────────────────
   if (completed) {
@@ -633,8 +659,8 @@ export const TrackPage = () => {
               <div style={{
                 background: 'rgba(255,255,255,0.96)', borderRadius: 99, padding: '5px 12px',
                 boxShadow: '0 2px 10px rgba(0,0,0,0.12)', fontSize: 12, fontWeight: 600,
-                display: 'flex', alignItems: 'center', gap: 6, color: '#7c3aed',
-                border: '1px solid rgba(124,58,237,0.15)',
+                display: 'flex', alignItems: 'center', gap: 6, color: BRAND_COLOR,
+                border: '1px solid rgba(16,185,129,0.15)',
                 backdropFilter: 'blur(6px)',
               }}>
                 <span style={{ opacity: 0.8 }}><IconMapPin /></span> Pickup point
@@ -799,8 +825,8 @@ export const TrackPage = () => {
             {isDriverMode && data.pickupLocation && (
               <DetailRow
                 icon={<IconMapPin />}
-                iconBg="#ede9fe"
-                iconColor="#7c3aed"
+                iconBg={BRAND_LIGHT}
+                iconColor={BRAND_COLOR}
                 label="PICKUP POINT"
                 value={`${data.pickupLocation.latitude.toFixed(5)}, ${data.pickupLocation.longitude.toFixed(5)}`}
               />

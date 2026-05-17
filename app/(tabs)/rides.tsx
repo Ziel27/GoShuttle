@@ -90,7 +90,11 @@ const RideItemCard = memo(function RideItemCard({
             {ride.shuttle.plateNumber || 'Shuttle'}
             {ride.shuttle.label ? ` · Electric ${ride.shuttle.label}` : ''}
           </ThemedText>
-          {ride.isBookedForOthers && ride.passengerName ? (
+          {ride.allPassengerNames && ride.allPassengerNames.length > 1 ? (
+            <ThemedText type="caption" style={{ color: tint }}>
+              Passengers: {ride.allPassengerNames.join(', ')}
+            </ThemedText>
+          ) : ride.isBookedForOthers && ride.passengerName ? (
             <ThemedText type="caption" style={{ color: tint }}>
               Booked for: {ride.passengerName}{ride.companionCount > 0 ? ` +${ride.companionCount} companion${ride.companionCount > 1 ? 's' : ''}` : ''}
             </ThemedText>
@@ -106,7 +110,7 @@ const RideItemCard = memo(function RideItemCard({
             Requested: {requestedTime}
           </ThemedText>
           <ThemedText type="caption" style={{ color: mutedColor }}>
-            Fare: {formatMoney(ride.fareAtBoarding)} · Pickup: {pickupLabel}
+            Fare: {formatMoney(ride.totalFare)} · {ride.passengerCount} passenger{ride.passengerCount > 1 ? 's' : ''} · Pickup: {pickupLabel}
           </ThemedText>
           <ThemedText type="caption" style={{ color: mutedColor }}>
             Destination: {destinationLabel}
@@ -513,7 +517,11 @@ export default function RidesScreen() {
                     Shuttle: {selectedRide.shuttle.plateNumber || 'Shuttle'}
                     {selectedRide.shuttle.label ? ` · Electric ${selectedRide.shuttle.label}` : ''}
                   </ThemedText>
-                  {selectedRide.isBookedForOthers && selectedRide.passengerName ? (
+                  {selectedRide.allPassengerNames && selectedRide.allPassengerNames.length > 1 ? (
+                    <ThemedText style={[styles.rideModalLine, { color: tint }]}>
+                      Passengers: {selectedRide.allPassengerNames.join(', ')}
+                    </ThemedText>
+                  ) : selectedRide.isBookedForOthers && selectedRide.passengerName ? (
                     <ThemedText style={[styles.rideModalLine, { color: tint }]}>
                       Booked for: {selectedRide.passengerName}{selectedRide.companionCount > 0 ? ` +${selectedRide.companionCount} companion${selectedRide.companionCount > 1 ? 's' : ''}` : ''}
                     </ThemedText>
@@ -528,7 +536,7 @@ export default function RidesScreen() {
                   <ThemedText style={[styles.rideModalLine, { color: mutedColor }]}> 
                     Requested At: {new Date(selectedRide.requestedAt).toLocaleString()}
                   </ThemedText>
-                  <ThemedText style={[styles.rideModalLine, { color: mutedColor }]}>Fare: {formatMoney(selectedRide.fareAtBoarding)}</ThemedText>
+                  <ThemedText style={[styles.rideModalLine, { color: mutedColor }]}>Fare: {formatMoney(selectedRide.totalFare)} ({selectedRide.passengerCount} passenger{selectedRide.passengerCount > 1 ? 's' : ''})</ThemedText>
                   <ThemedText style={[styles.rideModalLine, { color: mutedColor }]}> 
                     Pickup: {selectedRidePickupLabel}
                   </ThemedText>

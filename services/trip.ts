@@ -77,7 +77,8 @@ export type PassengerRecentRide = {
   boardedAt: string;
   unboardedAt: string | null;
   completedAt: string | null;
-  fareAtBoarding: number;
+  totalFare: number;
+  passengerCount: number;
   pickupLocation: {
     type: 'Point';
     coordinates: [number, number];
@@ -92,6 +93,7 @@ export type PassengerRecentRide = {
   isBookedForOthers: boolean;
   bookedByName: string | null;
   companionCount: number;
+  allPassengerNames?: string[] | null;
   shuttle: {
     plateNumber: string;
     label: string;
@@ -115,6 +117,7 @@ export type OnboardDestinationPassenger = {
   fareAtBoarding: number;
   originalFare: number | null;
   discountRevoked: boolean;
+  canRevokeDiscount?: boolean;
 };
 
 export type CurrentPassenger = {

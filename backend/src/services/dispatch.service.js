@@ -85,10 +85,12 @@ const loadOnDutyShuttles = async (communityId) => {
 };
 
 // ─── Atomically increment pendingPickupCount and return updated shuttle ───────
-const reservePendingSlot = async (shuttleId) => {
+// Uses $set with an explicit target value (actualPending + 1) instead of $inc
+// to avoid inheriting a drifted stored counter.
+const reservePendingSlot = async (shuttleId, actualPending) => {
   return Shuttle.findByIdAndUpdate(
     shuttleId,
-    { $inc: { pendingPickupCount: 1 } },
+    { $set: { pendingPickupCount: actualPending + 1 } },
     { new: true, select: '_id driverId currentCapacity maxCapacity pendingPickupCount' }
   );
 };
@@ -113,6 +115,7 @@ const emitDispatchEvents = (io, { communityId, pickupRequest, shuttle, driverId,
     passengerId: pickupRequest.passengerId,
     fareType: pickupRequest.fareType,
     fareExpected,
+    pickupLabel: pickupRequest.pickupLabel || null,
     // Prefer explicit pickupLocation when present
     pickupLocation: pickupRequest.pickupLocation || null,
     location: pickupRequest.location,
@@ -346,8 +349,8 @@ const findAndDispatch = async ({
   }
 
 
-  // Atomically reserve the slot
-  const updatedShuttle = await reservePendingSlot(targetShuttle._id);
+  // Atomically reserve the slot using the live pending count (not $inc)
+  const updatedShuttle = await reservePendingSlot(targetShuttle._id, targetShuttle.pendingPickupCount);
   if (!updatedShuttle) {
     // Very unlikely race — shuttle was deleted between load and reserve
     return enqueueRequest({ pickupRequest, fareExpected, io, position: 0 });

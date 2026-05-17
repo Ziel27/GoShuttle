@@ -77,6 +77,7 @@ const runDispatchTimeoutCheck = async (io) => {
             passengerId: req.passengerId,
             bookingOwner: req.bookingOwner || req.passengerId,
             pickupLocation: req.pickupLocation || null,
+            pickupLabel: req.pickupLabel || null,
             location: req.location,
             destinationType: req.destinationType,
             destinationLabel: req.destinationLabel,

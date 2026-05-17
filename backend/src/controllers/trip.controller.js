@@ -540,6 +540,7 @@ const passengerBoard = async (req, res) => {
               driverId: req.user._id,
               tripId: activeTrip._id,
               rideRequestId: rr._id,
+              pickupRequestId: request._id,
               fareAtBoarding: rrFareAtBoarding,
               discountType: rrDiscountType,
               originalFare: rrOriginalFare,
@@ -582,6 +583,7 @@ const passengerBoard = async (req, res) => {
               shuttleId: shuttle._id,
               driverId: req.user._id,
               tripId: activeTrip._id,
+              pickupRequestId: request._id,
               fareAtBoarding: activeTrip.fareAtTime,
               discountType: 'none',
               pickupLocation: request.pickupLocation || request.location,
@@ -762,6 +764,7 @@ const passengerBoard = async (req, res) => {
         passengerId: request.passengerId,
         shuttleId: shuttle._id,
         tripId: activeTrip._id,
+        pickupLabel: request.pickupLabel || null,
       });
     }
 
@@ -1310,9 +1313,11 @@ const createPickupIntent = async (req, res) => {
         type: 'Point',
         coordinates: [coords.lng, coords.lat],
       },
-      pickupLocation: explicitPickupPoint,
-      pickupLabel: explicitPickupPoint ? null : (pickupOrigin.label || null),
-      destinationType,
+pickupLocation: explicitPickupPoint,
+        pickupLabel: explicitPickupPoint
+          ? 'Custom pickup location'
+          : (pickupOrigin.label && pickupOrigin.label !== 'Home address' ? pickupOrigin.label : (destinationType === 'fixed' ? destinationLabel : pickupOrigin.label)),
+        destinationType,
       destinationLabel,
       destinationLocation,
       destinationRadiusMeters,
@@ -1412,6 +1417,7 @@ const createPickupIntent = async (req, res) => {
       passengerId: pickupRequest.passengerId,
       bookingOwner: pickupRequest.bookingOwner || pickupRequest.passengerId,
       pickupLocation: pickupRequest.pickupLocation || null,
+      pickupLabel: pickupRequest.pickupLabel || null,
       location: pickupRequest.location,
       destinationType: pickupRequest.destinationType,
       destinationLabel: pickupRequest.destinationLabel,
@@ -1731,13 +1737,13 @@ const listPickupIntents = async (req, res) => {
     }
 
     const activeRequests = await PickupRequest.find(baseQuery)
-      .select('communityId passengerId location pickupLocation destinationType destinationLabel destinationLocation passengerHomePhase status expiresAt createdAt passengerManifest note trackingToken')
+      .select('communityId passengerId location pickupLocation pickupLabel destinationType destinationLabel destinationLocation passengerHomePhase status expiresAt createdAt passengerManifest note trackingToken')
       .sort({ createdAt: -1 })
       .limit(100);
 
     const claimedNearbyRequests = claimedNearbyQuery
       ? await PickupRequest.find(claimedNearbyQuery)
-        .select('communityId passengerId location pickupLocation destinationType destinationLabel destinationLocation passengerHomePhase status expiresAt createdAt passengerManifest note trackingToken')
+        .select('communityId passengerId location pickupLocation pickupLabel destinationType destinationLabel destinationLocation passengerHomePhase status expiresAt createdAt passengerManifest note trackingToken')
         .sort({ createdAt: -1 })
         .limit(20)
       : [];
@@ -1784,38 +1790,70 @@ const listPassengerRecentRides = async (req, res) => {
       ],
     })
       .populate('shuttleId', 'plateNumber label')
-      .populate('rideRequestId', 'passengerName passengerManifest')
-      .select('status requestedAt boardedAt unboardedAt completedAt fareAtBoarding pickupLocation destinationType destinationLabel destinationLocation shuttleId rideRequestId passengerId passengerName')
+      .populate('pickupRequestId', 'passengerManifest bookingOwner')
+      .select('status requestedAt boardedAt unboardedAt completedAt fareAtBoarding pickupLocation destinationType destinationLabel destinationLocation shuttleId rideRequestId pickupRequestId passengerId passengerName')
       .sort({ boardedAt: -1 })
-      .limit(20);
+      .limit(100);
 
-    const serialized = rides.map((ride) => {
-      const manifest = ride.rideRequestId?.passengerManifest || [];
-      const isBookedForOthers = ride.passengerId && String(ride.passengerId) !== String(req.user._id);
-      const bookedByName = ride.rideRequestId?.passengerName || null;
+    // Group rides by pickupRequestId - one entry per booking group
+    const ridesByPickupRequest = new Map();
+    for (const ride of rides) {
+      const key = ride.pickupRequestId ? String(ride.pickupRequestId._id) : `standalone_${String(ride._id)}`;
+      if (!ridesByPickupRequest.has(key)) {
+        ridesByPickupRequest.set(key, []);
+      }
+      ridesByPickupRequest.get(key).push(ride);
+    }
 
-      return {
-        rideId: ride._id,
-        status: ride.status,
-        requestedAt: ride.requestedAt,
-        boardedAt: ride.boardedAt,
-        unboardedAt: ride.unboardedAt || null,
-        completedAt: ride.completedAt || null,
-        fareAtBoarding: ride.fareAtBoarding,
-        pickupLocation: ride.pickupLocation,
-        destinationType: ride.destinationType,
-        destinationLabel: ride.destinationLabel,
-        destinationLocation: ride.destinationLocation,
-        passengerName: ride.passengerName || null,
+    // Build serialized array - one entry per booking group
+    const serialized = [];
+    for (const [key, groupRides] of ridesByPickupRequest) {
+      if (groupRides.length === 0) continue;
+
+      // Use the first ride as the base data
+      const primaryRide = groupRides[0];
+      const pickupRequest = primaryRide.pickupRequestId;
+
+      // Collect all passenger names from the group
+      const allPassengerNames = groupRides
+        .map((r) => r.passengerName)
+        .filter(Boolean);
+
+      // Calculate total fare for the group
+      const totalFare = groupRides.reduce((sum, r) => sum + (r.fareAtBoarding || 0), 0);
+
+      const manifest = pickupRequest?.passengerManifest;
+      const manifestLength = Array.isArray(manifest) ? manifest.length : 0;
+      const isBookedForOthers = primaryRide.passengerId && String(primaryRide.passengerId) !== String(req.user._id);
+      const bookedByName = pickupRequest?.bookingOwner ? String(pickupRequest.bookingOwner) !== String(req.user._id) ? primaryRide.passengerName : null : null;
+
+      serialized.push({
+        rideId: primaryRide._id,
+        status: primaryRide.status,
+        requestedAt: primaryRide.requestedAt,
+        boardedAt: primaryRide.boardedAt,
+        unboardedAt: primaryRide.unboardedAt || null,
+        completedAt: primaryRide.completedAt || null,
+        totalFare,
+        passengerCount: allPassengerNames.length,
+        pickupLocation: primaryRide.pickupLocation,
+        destinationType: primaryRide.destinationType,
+        destinationLabel: primaryRide.destinationLabel,
+        destinationLocation: primaryRide.destinationLocation,
+        passengerName: primaryRide.passengerName || null,
         isBookedForOthers,
         bookedByName,
-        companionCount: manifest.length > 1 ? manifest.length - 1 : 0,
+        companionCount: manifestLength > 1 ? manifestLength - 1 : 0,
+        allPassengerNames: allPassengerNames.length > 0 ? allPassengerNames : null,
         shuttle: {
-          plateNumber: ride.shuttleId?.plateNumber || '',
-          label: ride.shuttleId?.label || '',
+          plateNumber: primaryRide.shuttleId?.plateNumber || '',
+          label: primaryRide.shuttleId?.label || '',
         },
-      };
-    });
+      });
+    }
+
+    // Sort by boardedAt descending (most recent first)
+    serialized.sort((a, b) => new Date(b.boardedAt).getTime() - new Date(a.boardedAt).getTime());
 
     return res.status(200).json({
       count: serialized.length,
@@ -3254,8 +3292,9 @@ const listOnboardDestinations = async (req, res) => {
       tripId: activeTrip._id,
       status: 'boarded',
     })
-      .populate('passengerId', 'firstName lastName')
-      .select('passengerId passengerName boardedAt destinationType destinationLabel destinationLocation destinationIsFallback destinationFixedId discountType fareAtBoarding originalFare discountRevoked')
+      .populate('passengerId', 'firstName lastName discountVerification')
+      .populate('pickupRequestId', 'passengerManifest')
+      .select('passengerId passengerName boardedAt destinationType destinationLabel destinationLocation destinationIsFallback destinationFixedId discountType fareAtBoarding originalFare discountRevoked pickupRequestId')
       .sort({ boardedAt: 1 })
       .lean();
 
@@ -3264,12 +3303,23 @@ const listOnboardDestinations = async (req, res) => {
       if (ride.destinationType === 'fixed' && ride.destinationFixedId) {
         destinationRadiusMeters = fixedDestinationsMap[String(ride.destinationFixedId)] ?? null;
       }
+
+      // Check if this passenger's discount is from a verified account (should not be revocable)
+      const passenger = ride.passengerId;
+      const discountVerification = passenger?.discountVerification;
+      const isVerifiedDiscount = discountVerification
+        && ['approved', 'verified'].includes(discountVerification.status)
+        && (!discountVerification.validUntil || new Date(discountVerification.validUntil) > new Date());
+
+      // Can revoke if: has discount, not already revoked, and not from verified account
+      const canRevoke = ride.discountType && ride.discountType !== 'none' && !ride.discountRevoked && !isVerifiedDiscount;
+
       return {
         destinationIsFallback: ride.destinationIsFallback || false,
         rideId: String(ride._id),
         passengerId: ride.passengerId?._id || null,
         passengerName: ride.passengerName
-          || (ride.passengerId?.firstName ? `${ride.passengerId.firstName} ${ride.passengerId.lastName || ''}`.trim() : null)
+          || (passenger?.firstName ? `${passenger.firstName} ${passenger.lastName || ''}`.trim() : null)
           || ride.destinationLabel
           || 'Passenger',
         boardedAt: ride.boardedAt,
@@ -3281,6 +3331,7 @@ const listOnboardDestinations = async (req, res) => {
         fareAtBoarding: ride.fareAtBoarding,
         originalFare: ride.originalFare || null,
         discountRevoked: ride.discountRevoked || false,
+        canRevokeDiscount: canRevoke,
       };
     });
 
@@ -3499,6 +3550,8 @@ const resolveRideRequest = async (req, res) => {
         shuttleId: shuttle._id,
         driverId: req.user._id,
         tripId: activeTrip._id,
+        rideRequestId: rideRequest._id,
+        pickupRequestId: rideRequest.pickupRequestId,
         fareAtBoarding: rideRequest.fareExpected || activeTrip.fareAtTime,
         discountType: rideRequest.discountType || 'none',
         originalFare: rideRequest.originalFare || null,
@@ -3527,10 +3580,12 @@ const resolveRideRequest = async (req, res) => {
     }
 
     // Release the pendingPickupCount slot if the linked PickupRequest was dispatched
+    let pickupLabel = null;
     if (rideRequest.pickupRequestId) {
       const linkedPickup = await PickupRequest.findById(rideRequest.pickupRequestId)
-        .select('status assignedShuttleId')
+        .select('status assignedShuttleId pickupLabel')
         .session(session);
+      pickupLabel = linkedPickup?.pickupLabel || null;
       if (linkedPickup?.status === 'dispatched' && linkedPickup.assignedShuttleId) {
         await Shuttle.updateOne(
           { _id: linkedPickup.assignedShuttleId, pendingPickupCount: { $gt: 0 } },
@@ -3548,6 +3603,7 @@ const resolveRideRequest = async (req, res) => {
       passengerId: rideRequest.passengerId || null,
       shuttleId: shuttle._id,
       tripId: activeTrip._id,
+      pickupLabel,
     });
     if (rideRequest.passengerId) {
       lateIo.to(`user:${String(rideRequest.passengerId)}`).emit('notification', {
@@ -3863,6 +3919,7 @@ const getTrackingInfo = async (req, res) => {
       expiresAt: pickupRequest.expiresAt,
       passengerNames,
       location: null,
+      passengerLocation: pickupLatLng,
       pickupLocation: pickupLatLng,
       destinationLocation: destinationLatLng,
       shuttleLabel: null,
@@ -3889,11 +3946,14 @@ const getTrackingInfo = async (req, res) => {
         // No shuttle assigned yet — show passenger pickup location so map is useful
         response.location = pickupLatLng;
       }
+      // Always include passenger pickup location for map context
+      response.passengerLocation = pickupLatLng;
     } else {
       const coords = pickupRequest.location?.coordinates;
       if (Array.isArray(coords) && coords.length === 2) {
         const [lng, lat] = coords;
         response.location = { latitude: lat, longitude: lng };
+        response.passengerLocation = { latitude: lat, longitude: lng };
       }
     }
 

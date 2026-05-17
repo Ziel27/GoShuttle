@@ -18,6 +18,7 @@ import {
     Shuttle,
     updateShuttleLocation,
 } from '@/services/shuttle';
+import { api, API_BASE_URL } from '@/services/api';
 import { connectCommunitySocket } from '@/services/socket';
 import {
     AssignedShuttle,
@@ -487,7 +488,7 @@ export default function HomeScreen() {
     const activeIntent = activePassengerPickupRequest;
     if (!activeIntent) return null;
 
-    return `${activeIntent.destinationType === 'home' ? 'Home' : 'Fixed'} - ${activeIntent.destinationLabel}`;
+    return activeIntent.destinationLabel;
   }, [activePassengerPickupRequest]);
 
   const selectedDestinationSummary = useMemo(() => {
@@ -1131,6 +1132,7 @@ export default function HomeScreen() {
         passengerId: String(payload?.passengerId || ''),
         location,
         pickupLocation,
+        pickupLabel: payload?.pickupLabel || null,
         destinationType: payload?.destinationType || 'fixed',
         destinationLabel: payload?.destinationLabel || 'Destination',
         destinationLocation: payload?.destinationLocation?.coordinates?.length === 2
@@ -1305,7 +1307,14 @@ export default function HomeScreen() {
         setPickupIntents(activeRequests);
 
         if (claimedRequest) {
-          setDriverAssignedPickupRequest((current) => current ?? claimedRequest);
+          setDriverAssignedPickupRequest((current) => {
+            if (!current) return claimedRequest;
+            // If current is missing pickupLabel but polled data has it, update to get complete data
+            if (!current.pickupLabel && claimedRequest.pickupLabel) {
+              return { ...current, ...claimedRequest };
+            }
+            return current;
+          });
         }
       } catch (error) {
         const now = Date.now();
@@ -1735,6 +1744,17 @@ export default function HomeScreen() {
 
     try {
       setUnboardingSubmitting(true);
+      // Immediately remove dropoff passengers from local state (optimistic update)
+      const dropoffRideIds = new Set(activeDropoffPassengers.map((p) => p.rideId));
+      setOnboardDestinations((prev) => prev.filter((p) => !dropoffRideIds.has(p.rideId)));
+      // Also decrement the shuttle's currentCapacity locally
+      setShuttles((prev) =>
+        prev.map((s) =>
+          s._id === assignedShuttle._id
+            ? { ...s, currentCapacity: Math.max(0, (s.currentCapacity ?? 0) - activeDropoffPassengerCount) }
+            : s
+        )
+      );
       await unboardPassenger(assignedShuttle._id, activeDropoffPassengerCount);
       await loadShuttles();
       setPreferenceAwareFeedback(`${activeDropoffPassengerCount} passenger${activeDropoffPassengerCount > 1 ? 's' : ''} dropped off.`, 'ride');
@@ -2820,19 +2840,20 @@ export default function HomeScreen() {
                   <View style={styles.statusSection}>
                     {activePassengerPickupVisible && activePassengerPickupRequest ? (
                       <View style={[styles.pickupRequestCard, { borderColor, backgroundColor: surfaceColor }]}>
-                        <View style={styles.rowBetween}>
+<View style={styles.rowBetween}>
                           <ThemedText style={[styles.metaText, { color: mutedColor }]}>Active Pickup Request</ThemedText>
                           <ThemedText style={[styles.valueSmallText, { color: successColor }]}>Boarding</ThemedText>
                         </View>
                         {activePassengerPickupRequest.pickupLabel ? (
                           <ThemedText style={[styles.valueText, { color: textColor }]} numberOfLines={3}>{activePassengerPickupRequest.pickupLabel}</ThemedText>
                         ) : null}
+                        <ThemedText style={[styles.metaText, { color: successColor, fontSize: 16 }]}>↓</ThemedText>
                         <ThemedText style={[styles.valueText, { color: textColor }]} numberOfLines={3}>{activePickupDestinationSummary || activePassengerPickupRequest.destinationLabel}</ThemedText>
                         <ThemedText style={[styles.metaText, { color: mutedColor }]}>Remaining passengers: {remainingManualPickupSlots}</ThemedText>
                         {activePickupManifestSummary ? (
                           <ThemedText style={[styles.metaText, { color: mutedColor }]}>Booking for: {activePickupManifestSummary}</ThemedText>
                         ) : null}
-                        {activePassengerPickupRequest.note ? (
+{activePassengerPickupRequest.note ? (
                           <ThemedText style={[styles.metaText, { color: mutedColor }]}>Note: {activePassengerPickupRequest.note}</ThemedText>
                         ) : null}
                       </View>
@@ -2858,7 +2879,7 @@ const showDestinationLabel = false;
                               <View />
                             )}
                           </View>
-                          {hasActiveDiscount && discountLabel ? (
+                          {hasActiveDiscount && discountLabel && item.canRevokeDiscount !== false ? (
                             <View style={[styles.rowBetween, { marginTop: 2 }]}>
                               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                                 <View style={{ backgroundColor: '#fef3c7', borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2 }}>
@@ -2872,6 +2893,12 @@ const showDestinationLabel = false;
                               >
                                 <ThemedText style={{ fontSize: 11, color: '#fff', fontWeight: '600' }}>{isRevoking ? 'Revoking…' : 'Revoke'}</ThemedText>
                               </Pressable>
+                            </View>
+                          ) : hasActiveDiscount && discountLabel ? (
+                            <View style={{ marginTop: 2 }}>
+                              <View style={{ backgroundColor: '#d1fae5', borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2, alignSelf: 'flex-start' }}>
+                                <ThemedText style={{ fontSize: 11, color: '#065f46', fontWeight: '600' }}>{discountLabel} Discount · ₱{item.fareAtBoarding.toFixed(2)} (Verified)</ThemedText>
+                              </View>
                             </View>
                           ) : item.discountRevoked && discountLabel ? (
                             <View style={{ marginTop: 2 }}>
@@ -4323,45 +4350,6 @@ const showDestinationLabel = false;
                     </ThemedText>
                   ) : null}
 
-                  {/* ── Share Tracking Link ── */}
-                  {activePassengerPickupIntents[0]?.trackingToken ? (
-                    <Pressable
-                      style={[
-                        styles.shareTrackingBtn,
-                        {
-                          backgroundColor: colorScheme === 'dark' ? '#1d4ed8' : '#2563eb',
-                        },
-                      ]}
-                      onPress={async () => {
-                        const intent = activePassengerPickupIntents[0];
-                        if (!intent?.trackingToken) return;
-                        const trackingUrl = intent.trackingUrl;
-                        const isBookForOthers = Array.isArray(intent.passengerManifest) && intent.passengerManifest.length > 0;
-                        const message = isBookForOthers
-                          ? `Track the shuttle on its way to pick up ${activePickupManifestSummary || 'your passengers'}`
-                          : 'Track my shuttle pickup location';
-                        try {
-                          if (trackingUrl) {
-                            await Share.share({ message: `${message}: ${trackingUrl}`, url: trackingUrl });
-                          } else {
-                            await Share.share({ message: `${message} — Tracking ID: ${intent.trackingToken}` });
-                          }
-                        } catch {}
-                      }}
-                      accessibilityRole="button"
-                      accessibilityLabel="Share tracking link"
-                    >
-                      <View style={styles.shareTrackingIconWrap}>
-                        <Ionicons name="share-social-outline" size={20} color="#ffffff" />
-                      </View>
-                      <View style={styles.shareTrackingContent}>
-                        <ThemedText style={styles.shareTrackingTitle}>Share Tracking Link</ThemedText>
-                        <ThemedText style={styles.shareTrackingSubtitle}>Let others follow your ride live</ThemedText>
-                      </View>
-                      <Ionicons name="chevron-forward-outline" size={16} color="rgba(255,255,255,0.65)" />
-                    </Pressable>
-                  ) : null}
-
                   {/* ── Cancel button ── */}
                   <Pressable
                     style={[
@@ -4506,6 +4494,43 @@ const showDestinationLabel = false;
                       {activePickupLifecycleStatus === 'Onboard' ? 'Boarded' : 'Pickup'}
                     </ThemedText>
                   </View>
+
+                  {/* ── Share Tracking Link ─ */}
+                  {activePassengerPickupIntents[0]?.trackingToken ? (
+                    <Pressable
+                      style={[
+                        styles.shareTrackingBtn,
+                        {
+                          backgroundColor: colorScheme === 'dark' ? 'rgba(16,185,129,0.15)' : 'rgba(16,185,129,0.1)',
+                          borderColor: colorScheme === 'dark' ? 'rgba(52,211,153,0.3)' : '#A7F3D0',
+                          borderWidth: 1,
+                        },
+                      ]}
+                      onPress={async () => {
+                        const intent = activePassengerPickupIntents[0];
+                        if (!intent?.trackingToken) return;
+                        const trackingUrl = intent.trackingUrl || `${API_BASE_URL.replace(/\/api\/?$/, '')}/track/${intent.trackingToken}`;
+                        const isBookForOthers = Array.isArray(intent.passengerManifest) && intent.passengerManifest.length > 0;
+                        const message = isBookForOthers
+                          ? `Track the shuttle on its way to pick up ${activePickupManifestSummary || 'your passengers'}`
+                          : 'Track my shuttle pickup location';
+                        try {
+                          await Share.share({ message: `${message}: ${trackingUrl}`, url: trackingUrl });
+                        } catch {}
+                      }}
+                      accessibilityRole="button"
+                      accessibilityLabel="Share tracking link"
+                    >
+                      <View style={[styles.shareTrackingIconWrap, { backgroundColor: colorScheme === 'dark' ? 'rgba(16,185,129,0.25)' : '#D1FAE5' }]}>
+                        <Ionicons name="share-social-outline" size={18} color={successColor} />
+                      </View>
+                      <View style={styles.shareTrackingContent}>
+                        <ThemedText style={[styles.shareTrackingTitle, { color: colorScheme === 'dark' ? '#34d399' : '#065f46' }]}>Share Tracking Link</ThemedText>
+                        <ThemedText style={[styles.shareTrackingSubtitle, { color: colorScheme === 'dark' ? 'rgba(52,211,153,0.7)' : '#059669' }]}>Let others follow your ride live</ThemedText>
+                      </View>
+                      <Ionicons name="chevron-forward-outline" size={16} color={colorScheme === 'dark' ? 'rgba(52,211,153,0.5)' : '#6ee7b7'} />
+                    </Pressable>
+                  ) : null}
                 </View>
               )}
 
@@ -5066,13 +5091,12 @@ const styles = StyleSheet.create({
     borderRadius: DesignTokens.radius.md,
     paddingVertical: 12,
     paddingHorizontal: 14,
-    marginTop: 12,
+    marginTop: 14,
   },
   shareTrackingIconWrap: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: 'rgba(255,255,255,0.2)',
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -5082,12 +5106,10 @@ const styles = StyleSheet.create({
   shareTrackingTitle: {
     fontFamily: OutfitFonts.semiBold,
     fontSize: 14,
-    color: '#ffffff',
   },
   shareTrackingSubtitle: {
     fontFamily: OutfitFonts.regular,
     fontSize: 12,
-    color: 'rgba(255,255,255,0.75)',
     marginTop: 1,
   },
   shareTrackingText: {
