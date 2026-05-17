@@ -250,6 +250,9 @@ app.use(helmet({
   },
 }));
 
+// Attach io to Express app so controllers can access it via req.app.get('io')
+app.set('io', io);
+
 // CORS
 app.use(
   cors(corsConfig)
