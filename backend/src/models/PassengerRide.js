@@ -98,6 +98,10 @@ const passengerRideSchema = new mongoose.Schema(
       default: false,
       index: true,
     },
+    destinationFixedId: {
+      type: mongoose.Schema.Types.ObjectId,
+      default: null,
+    },
     requestedAt: {
       type: Date,
       required: true,
@@ -125,7 +129,7 @@ const passengerRideSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['boarded', 'unboarded'],
+      enum: ['boarded', 'unboarded', 'completed'],
       default: 'boarded',
       index: true,
     },

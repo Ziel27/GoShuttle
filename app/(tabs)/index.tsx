@@ -445,8 +445,9 @@ export default function HomeScreen() {
   }, [dispatchedShuttleLiveCoord, activePassengerPickupCoordinate]);
   const isWithinPickupRadius =
     activePassengerPickupDistanceMeters !== null && activePassengerPickupDistanceMeters <= DRIVER_PICKUP_RADIUS_METERS;
+  const activeDropoffRadiusMeters = activePassengerPickupRequest?.destinationRadiusMeters ?? DRIVER_DROPOFF_RADIUS_METERS;
   const isWithinDropoffRadius =
-    activePassengerDropoffDistanceMeters !== null && activePassengerDropoffDistanceMeters <= DRIVER_DROPOFF_RADIUS_METERS;
+    activePassengerDropoffDistanceMeters !== null && activePassengerDropoffDistanceMeters <= activeDropoffRadiusMeters;
 
   const remainingManualPickupSlots = Math.max(0, activePassengerPickupRequestCount - activePassengerManualBoardCount);
   const activePassengerPickupFitsCapacity = Boolean(
@@ -470,7 +471,8 @@ export default function HomeScreen() {
               longitude: destinationCoordinates[0],
             };
 
-            return getDistanceMeters(assignedShuttleCoordinate, destinationPoint) <= DRIVER_DROPOFF_RADIUS_METERS;
+            const radius = item.destinationRadiusMeters ?? DRIVER_DROPOFF_RADIUS_METERS;
+            return getDistanceMeters(assignedShuttleCoordinate, destinationPoint) <= radius;
           })
         : [],
     [assignedShuttleCoordinate, onboardDestinations]
@@ -983,6 +985,9 @@ export default function HomeScreen() {
         if (user?.role === 'passenger' && dispatchedShuttle?.shuttleId && String(dispatchedShuttle.shuttleId) === String(payload.shuttleId)) {
           setDispatchedShuttle(null);
           setDispatchedShuttleEtaMinutesToDestination(null);
+          setPickupIntents((items) =>
+            items.filter((item) => !(item.passengerId === user._id && item.status === 'boarded'))
+          );
         }
       }
       if (!payload.rideIds || payload.rideIds.length === 0) return;
@@ -1019,6 +1024,9 @@ export default function HomeScreen() {
       if (user?.role === 'passenger' && payload.rideIds && payload.rideIds.length > 0) {
         setDispatchedShuttle(null);
         setDispatchedShuttleEtaMinutesToDestination(null);
+        setPickupIntents((items) =>
+          items.filter((item) => !(item.passengerId === user._id && item.status === 'boarded'))
+        );
         setPreferenceAwareFeedback('You have been unboarded.', 'ride');
       }
     };
@@ -1180,6 +1188,14 @@ export default function HomeScreen() {
       if (user?.role !== 'passenger') return;
       if (!user?._id) return;
       if (payload.passengerId && String(payload.passengerId) !== String(user._id)) return;
+
+      setPickupIntents((items) =>
+        items.map((item) =>
+          item.passengerId === user._id && ['pending', 'claimed', 'queued', 'dispatched'].includes(item.status)
+            ? { ...item, status: 'boarded' }
+            : item
+        )
+      );
 
       if (payload.shuttleId && dispatchedShuttle) {
         setDispatchedShuttle((current) =>
@@ -2746,7 +2762,7 @@ export default function HomeScreen() {
                                     </ThemedText>
                                     <View style={styles.pickupQueueDestRow}>
                                       <Ionicons name="location-outline" size={12} color={mutedColor} />
-                                      <ThemedText style={[styles.pickupQueueDest, { color: mutedColor }]} numberOfLines={1}>
+                                      <ThemedText style={[styles.pickupQueueDest, { color: mutedColor }]} numberOfLines={2}>
                                         {item.destinationLabel}
                                       </ThemedText>
                                     </View>
@@ -2832,7 +2848,7 @@ export default function HomeScreen() {
                           <ThemedText style={[styles.metaText, { color: mutedColor }]}>Active Pickup Request</ThemedText>
                           <ThemedText style={[styles.valueSmallText, { color: successColor }]}>Boarding</ThemedText>
                         </View>
-                        <ThemedText style={[styles.valueText, { color: textColor }]}>{activePickupDestinationSummary || activePassengerPickupRequest.destinationLabel}</ThemedText>
+                        <ThemedText style={[styles.valueText, { color: textColor }]} numberOfLines={3}>{activePickupDestinationSummary || activePassengerPickupRequest.destinationLabel}</ThemedText>
                         <ThemedText style={[styles.metaText, { color: mutedColor }]}>Remaining passengers: {remainingManualPickupSlots}</ThemedText>
                         {activePickupManifestSummary ? (
                           <ThemedText style={[styles.metaText, { color: mutedColor }]}>Booking for: {activePickupManifestSummary}</ThemedText>
@@ -4159,7 +4175,7 @@ const showDestinationLabel = false;
                   {bookForOthers
                     ? pickupSubmitting
                       ? 'Sending Request...'
-                      : activePassengerPickupIntents.length > 0
+                      : activePassengerPickupIntents.length > 0 && activePickupLifecycleStatus !== 'Onboard'
                         ? 'Pickup Active'
                         : noDriversOnDuty
                           ? 'No Driver On Duty'
@@ -4168,7 +4184,7 @@ const showDestinationLabel = false;
                       ? 'Select Destination'
                       : pickupSubmitting
                         ? 'Sending Request...'
-                        : activePassengerPickupIntents.length > 0
+                        : activePassengerPickupIntents.length > 0 && activePickupLifecycleStatus !== 'Onboard'
                           ? 'Pickup Active'
                           : noDriversOnDuty
                             ? 'No Driver On Duty'
@@ -4176,7 +4192,7 @@ const showDestinationLabel = false;
                 </ThemedText>
               </Pressable>
 
-              {activePassengerPickupIntents.length > 0 ? (
+              {activePassengerPickupIntents.length > 0 && activePickupLifecycleStatus !== 'Onboard' ? (
                 <View
                   style={[
                     styles.pickupActiveCard,

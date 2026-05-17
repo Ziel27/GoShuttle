@@ -22,6 +22,7 @@ export type PickupIntentEventPayload = {
     type?: 'Point';
     coordinates?: [number, number];
   };
+  destinationRadiusMeters?: number | null;
   status?: PickupIntent['status'];
   expiresAt?: string;
   note?: string | null;
@@ -156,6 +157,7 @@ export const toPickupIntent = (payload: PickupIntentEventPayload): PickupIntent 
         type: 'Point',
         coordinates: [point.longitude, point.latitude],
       },
+    destinationRadiusMeters: payload.destinationRadiusMeters ?? null,
     passengerHomePhase: null,
     fareType: 'standard',
     status: payload.status || 'pending',

@@ -78,6 +78,14 @@ const pickupRequestSchema = new mongoose.Schema(
         required: [true, 'Destination coordinates are required'],
       },
     },
+    destinationRadiusMeters: {
+      type: Number,
+      default: null,
+    },
+    destinationFixedId: {
+      type: mongoose.Schema.Types.ObjectId,
+      default: null,
+    },
     passengerHomePhase: {
       type: String,
       trim: true,

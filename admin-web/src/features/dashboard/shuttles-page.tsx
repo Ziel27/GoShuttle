@@ -77,6 +77,8 @@ export const ShuttlesPage = () => {
   const [phaseGeofences, setPhaseGeofences] = useState<PhaseGeofence[]>([]);
   const [opsBypassMode, setOpsBypassMode] = useState(false);
   const [savingOpsBypass, setSavingOpsBypass] = useState(false);
+  const [preserveRequestsOnLogout, setPreserveRequestsOnLogout] = useState(false);
+  const [savingPreserveRequests, setSavingPreserveRequests] = useState(false);
 
   // Add shuttle form state
   const [showAddForm, setShowAddForm] = useState(false);
@@ -140,6 +142,7 @@ export const ShuttlesPage = () => {
       if (communityId) {
         const community = await fetchCommunityById(communityId);
         setOpsBypassMode(Boolean(community?.opsBypassMode));
+        setPreserveRequestsOnLogout(Boolean(community?.preserveRequestsOnLogout));
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load shuttles');
@@ -165,6 +168,26 @@ export const ShuttlesPage = () => {
       setError(e instanceof Error ? e.message : 'Failed to update bypass mode.');
     } finally {
       setSavingOpsBypass(false);
+    }
+  };
+
+  const togglePreserveRequestsOnLogout = async () => {
+    if (!communityId) return;
+    setSavingPreserveRequests(true);
+    setError('');
+    setNotice('');
+    try {
+      const next = !preserveRequestsOnLogout;
+      await updateCommunity(communityId, { preserveRequestsOnLogout: next });
+      setPreserveRequestsOnLogout(next);
+      setNotice(next
+        ? 'Preserve Requests enabled: passenger pickup requests survive logout.'
+        : 'Preserve Requests disabled: logout cancels pending pickup requests.'
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to update setting.');
+    } finally {
+      setSavingPreserveRequests(false);
     }
   };
 
@@ -355,6 +378,18 @@ export const ShuttlesPage = () => {
               : opsBypassMode
                 ? 'Bypass Mode: ON'
                 : 'Bypass Mode: OFF'}
+          </Button>
+          <Button
+            size="sm"
+            variant={preserveRequestsOnLogout ? 'default' : 'secondary'}
+            onClick={() => void togglePreserveRequestsOnLogout()}
+            disabled={savingPreserveRequests}
+          >
+            {savingPreserveRequests
+              ? 'Saving...'
+              : preserveRequestsOnLogout
+                ? 'Preserve Requests: ON'
+                : 'Preserve Requests: OFF'}
           </Button>
           <Button className="shrink-0" variant="outline" size="sm" onClick={() => void loadShuttles()} disabled={loading}>
             Refresh

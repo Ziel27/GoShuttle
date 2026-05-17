@@ -101,16 +101,17 @@ const listPendingRideRequestsForShift = async ({ communityId, shiftStart, driver
     },
     ...phaseFilter,
   })
-    .select('_id passengerId destination fareExpected createdAt')
+    .select('_id passengerId passengerName destination fareExpected createdAt')
     .populate('passengerId', 'firstName lastName')
     .lean();
 };
 
 const mapUnresolvedRideRequest = (request) => ({
   requestId: request._id,
-  passengerName: request.passengerId
-    ? `${request.passengerId.firstName} ${request.passengerId.lastName}`.trim()
-    : 'Unknown',
+  passengerName: request.passengerName
+    || (request.passengerId
+      ? `${request.passengerId.firstName} ${request.passengerId.lastName}`.trim()
+      : 'Unknown'),
   passengerId: request.passengerId?._id || request.passengerId,
   destinationLabel: request.destination?.label || 'Destination',
   fareExpected: request.fareExpected,
@@ -447,7 +448,7 @@ const updateOwnHomeDestination = async (req, res) => {
       return res.status(400).json({ error: 'label is required and must be a non-empty home address.' });
     }
 
-    const normalizedLabel = rawLabel.slice(0, 120);
+    const normalizedLabel = rawLabel.slice(0, 500);
     const userId = req.user._id;
 
     const community = await Community.findById(req.user.communityId).select('phaseGeofences').lean();

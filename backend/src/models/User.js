@@ -86,7 +86,7 @@ const userSchema = new mongoose.Schema(
           label: {
             type: String,
             trim: true,
-            maxlength: [120, 'Home destination label cannot exceed 120 characters.'],
+            maxlength: [500, 'Home destination label cannot exceed 500 characters.'],
             default: 'Home',
           },
           location: {

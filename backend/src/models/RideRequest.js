@@ -93,6 +93,14 @@ const rideRequestSchema = new mongoose.Schema(
           required: true,
         },
       },
+      radiusMeters: {
+        type: Number,
+        default: null,
+      },
+      fixedId: {
+        type: mongoose.Schema.Types.ObjectId,
+        default: null,
+      },
     },
     fareExpected: {
       type: Number,

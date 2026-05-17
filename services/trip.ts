@@ -28,6 +28,7 @@ export type PickupIntent = {
     type: 'Point';
     coordinates: [number, number];
   };
+  destinationRadiusMeters?: number | null;
   passengerHomePhase: string | null;
   fareType: 'standard' | 'priority';
   status: 'pending' | 'claimed' | 'dispatched' | 'queued' | 'bumped' | 'expired' | 'cancelled';
@@ -70,9 +71,11 @@ export type DispatchStatus = {
 
 export type PassengerRecentRide = {
   rideId: string;
-  status: 'boarded' | 'unboarded';
+  status: 'boarded' | 'unboarded' | 'completed';
   requestedAt: string;
   boardedAt: string;
+  unboardedAt: string | null;
+  completedAt: string | null;
   fareAtBoarding: number;
   pickupLocation: {
     type: 'Point';
@@ -102,6 +105,7 @@ export type OnboardDestinationPassenger = {
     coordinates: [number, number];
   };
   destinationIsFallback: boolean;
+  destinationRadiusMeters?: number | null;
   discountType: 'student' | 'pwd' | 'senior' | 'none';
   fareAtBoarding: number;
   originalFare: number | null;

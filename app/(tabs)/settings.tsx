@@ -359,6 +359,7 @@ export default function SettingsTabScreen() {
   const [passengerLogoutLoading, setPassengerLogoutLoading] = useState(false);
   const [phaseGeofences, setPhaseGeofences] = useState<PhaseGeofence[]>([]);
   const [opsBypassMode, setOpsBypassMode] = useState(false);
+  const [preserveRequestsOnLogout, setPreserveRequestsOnLogout] = useState(false);
   const [showHowToBookModal, setShowHowToBookModal] = useState(false);
   const [supportModalVisible, setSupportModalVisible] = useState(false);
   const [supportSubject, setSupportSubject] = useState('');
@@ -376,6 +377,7 @@ export default function SettingsTabScreen() {
         if (isMounted) {
           setCommunityName(community?.name ?? null);
           setOpsBypassMode(Boolean(community?.opsBypassMode));
+          setPreserveRequestsOnLogout(Boolean(community?.preserveRequestsOnLogout));
         }
       } catch (error) {
         if (isMounted) {
@@ -512,7 +514,15 @@ export default function SettingsTabScreen() {
         setSettingsFeedback(endingMessage);
       }
     } catch (error) {
-      setSettingsFeedback(error instanceof Error ? error.message : 'Failed to update shift');
+      const errStatus = (error as any).status;
+      const errData = (error as any).responseData;
+      const errMsg = error instanceof Error ? error.message : 'Failed to update shift';
+
+      if (errStatus === 409 && errData?.error?.includes('overdue')) {
+        setSettingsFeedback('You have an unsubmitted remittance from a previous shift. Please submit it or contact an admin before starting a new shift.');
+      } else {
+        setSettingsFeedback(errMsg);
+      }
     } finally {
       setShiftLoading(false);
     }
@@ -900,7 +910,7 @@ export default function SettingsTabScreen() {
               )}
               <View style={styles.homeAddressGroup}>
                 <ThemedText type="caption" style={{ color: mutedColor }}>
-                  Home Address Label (shown to driver)
+                  Home Address (shown to driver when you request a ride)
                 </ThemedText>
                 <TextInput
                   style={[
@@ -913,10 +923,13 @@ export default function SettingsTabScreen() {
                   ]}
                   value={homeAddressInput}
                   onChangeText={setHomeAddressInput}
-                  placeholder="e.g. Blk 10 Lot 5, Rose St, Sunridge"
+                  placeholder="e.g. Blk 10 Lot 5, Rose Street, Sunridge Village, Phase 2, Barangay San Isidro, City"
                   placeholderTextColor={mutedColor}
-                  autoCapitalize="words"
-                  maxLength={120}
+                  autoCapitalize="sentences"
+                  maxLength={500}
+                  multiline
+                  numberOfLines={3}
+                  textAlignVertical="top"
                 />
               </View>
               <PremiumButton
@@ -1301,7 +1314,9 @@ export default function SettingsTabScreen() {
                   if (passengerLogoutLoading) return;
                   setPassengerLogoutLoading(true);
                   try {
-                    await cancelMyPickupIntents(); // best-effort slot release
+                    if (!preserveRequestsOnLogout) {
+                      await cancelMyPickupIntents();
+                    }
                     setPassengerLogoutGuardVisible(false);
                     await logout();
                     router.replace(ROUTES.authLogin);
@@ -1315,7 +1330,7 @@ export default function SettingsTabScreen() {
                   <ActivityIndicator color={AppPalette.white} />
                 ) : (
                   <ThemedText style={{ color: AppPalette.white, fontSize: 13, fontFamily: OutfitFonts.semiBold }}>
-                    Cancel request & log out
+                    {preserveRequestsOnLogout ? 'Log out' : 'Cancel request & log out'}
                   </ThemedText>
                 )}
               </PremiumButton>
@@ -1536,7 +1551,7 @@ const styles = StyleSheet.create({
     gap: DesignTokens.spacing.xxs,
   },
   homeAddressInput: {
-    minHeight: 44,
+    minHeight: 80,
     borderWidth: 1,
     borderRadius: DesignTokens.radius.md,
     paddingHorizontal: DesignTokens.spacing.xs,

@@ -320,16 +320,17 @@ const listUnresolvedRideRequestsForShift = async ({ communityId, shiftStart, shu
     },
     ...phaseQuery,
   })
-    .select('_id passengerId destination fareExpected createdAt')
+    .select('_id passengerId passengerName destination fareExpected createdAt')
     .populate('passengerId', 'firstName lastName')
     .lean();
 };
 
 const mapUnresolvedRideRequest = (request) => ({
   requestId: request._id,
-passengerName: request.passengerId?.firstName
-          ? `${request.passengerId.firstName} ${request.passengerId.lastName || ''}`.trim()
-          : 'Unknown',
+  passengerName: request.passengerName
+    || (request.passengerId?.firstName
+      ? `${request.passengerId.firstName} ${request.passengerId.lastName || ''}`.trim()
+      : 'Unknown'),
   passengerId: request.passengerId?._id || request.passengerId,
   destinationLabel: request.destination?.label || 'Destination',
   fareExpected: request.fareExpected,
@@ -547,6 +548,8 @@ const passengerBoard = async (req, res) => {
               destinationLabel: rr.destination?.label || request.destinationLabel || 'Destination',
               destinationLocation: destLocation,
               destinationIsFallback: isFallback,
+              destinationFixedId: rr.destination?.fixedId || request.destinationFixedId || null,
+              destinationRadiusMeters: rr.destination?.radiusMeters ?? request.destinationRadiusMeters ?? null,
               requestedAt: rr.createdAt || request.createdAt,
               boardedAt,
               status: 'boarded',
@@ -557,6 +560,7 @@ const passengerBoard = async (req, res) => {
                 destinationLocation: destLocation,
                 destinationLabel: rr.destination?.label || request.destinationLabel || 'Destination',
                 destinationType: rr.destination?.type || request.destinationType || 'fixed',
+                destinationRadiusMeters: rr.destination?.radiusMeters ?? request.destinationRadiusMeters ?? null,
                 boardedAt,
               });
             }
@@ -573,8 +577,8 @@ const passengerBoard = async (req, res) => {
             passengerRidesToInsert.push({
               communityId: shuttle.communityId,
               passengerId: entry.passengerId || null,
-passengerName: entry.name || (entry.passengerId ? userNameCache[entry.passengerId] || null : null),
-      passengerPhone: entry.phone || null,
+              passengerName: entry.name || null,
+              passengerPhone: entry.phone || null,
               shuttleId: shuttle._id,
               driverId: req.user._id,
               tripId: activeTrip._id,
@@ -585,6 +589,8 @@ passengerName: entry.name || (entry.passengerId ? userNameCache[entry.passengerI
               destinationLabel: request.destinationLabel || 'Destination',
               destinationLocation: destLocation,
               destinationIsFallback: isFallback,
+              destinationFixedId: request.destinationFixedId || null,
+              destinationRadiusMeters: request.destinationRadiusMeters ?? null,
               requestedAt: request.createdAt,
               boardedAt,
               status: 'boarded',
@@ -595,6 +601,7 @@ passengerName: entry.name || (entry.passengerId ? userNameCache[entry.passengerI
                 destinationLocation: destLocation,
                 destinationLabel: request.destinationLabel || 'Destination',
                 destinationType: request.destinationType || 'fixed',
+                destinationRadiusMeters: request.destinationRadiusMeters ?? null,
                 boardedAt,
               });
             }
@@ -621,6 +628,8 @@ passengerName: entry.name || (entry.passengerId ? userNameCache[entry.passengerI
             destinationLabel: request.destinationLabel || 'Destination',
             destinationLocation: destLocation,
             destinationIsFallback: isFallback,
+            destinationFixedId: request.destinationFixedId || null,
+            destinationRadiusMeters: request.destinationRadiusMeters ?? null,
             requestedAt: request.createdAt,
             boardedAt,
             status: 'boarded',
@@ -631,6 +640,7 @@ passengerName: entry.name || (entry.passengerId ? userNameCache[entry.passengerI
               destinationLocation: destLocation,
               destinationLabel: request.destinationLabel || 'Destination',
               destinationType: request.destinationType || 'fixed',
+              destinationRadiusMeters: request.destinationRadiusMeters ?? null,
               boardedAt,
             });
           }
@@ -772,6 +782,7 @@ passengerName: entry.name || (entry.passengerId ? userNameCache[entry.passengerI
         destinationLocation: boarded.destinationLocation,
         destinationLabel: boarded.destinationLabel,
         destinationType: boarded.destinationType,
+        destinationRadiusMeters: boarded.destinationRadiusMeters ?? null,
         boardedAt: boarded.boardedAt,
         etaMinutes,
       });
@@ -863,22 +874,6 @@ const endShift = async (req, res) => {
     activeTrip.revenueCollected = activeTrip.passengersBoarded * activeTrip.fareAtTime;
     await activeTrip.save();
 
-    // Notify passengers still on board so their app UI reflects the shift ending
-    const boardedRides = await PassengerRide.find({
-      tripId: activeTrip._id,
-      status: 'boarded',
-    }).select('_id passengerId').lean();
-
-    if (boardedRides.length > 0) {
-      const endShiftIo = req.app.get('io');
-      const rideIds = boardedRides.map((r) => String(r._id));
-      for (const ride of boardedRides) {
-        if (ride.passengerId) {
-          endShiftIo.to(`user:${String(ride.passengerId)}`).emit('trip:passenger-auto-unboarded', { rideIds });
-        }
-      }
-    }
-
     // Mark any remaining boarded ride requests as completed for this trip
     await RideRequest.updateMany(
       { tripId: activeTrip._id, status: 'boarded' },
@@ -890,6 +885,23 @@ const endShift = async (req, res) => {
       { tripId: activeTrip._id, status: 'boarded' },
       { $set: { status: 'completed', completedAt: activeTrip.shiftEnd } }
     );
+
+    // Notify passengers still on board AFTER status update so their app UI reflects the shift ending
+    const boardedRides = await PassengerRide.find({
+      tripId: activeTrip._id,
+      status: 'completed',
+      completedAt: activeTrip.shiftEnd,
+    }).select('_id passengerId').lean();
+
+    if (boardedRides.length > 0) {
+      const endShiftIo = req.app.get('io');
+      const rideIds = boardedRides.map((r) => String(r._id));
+      for (const ride of boardedRides) {
+        if (ride.passengerId) {
+          endShiftIo.to(`user:${String(ride.passengerId)}`).emit('trip:passenger-auto-unboarded', { rideIds });
+        }
+      }
+    }
 
     // Mark associated PickupRequests as completed so they don't appear in passenger queues
     const boardedRideRequests = await RideRequest.find({
@@ -1100,6 +1112,8 @@ const createPickupIntent = async (req, res) => {
       type: 'Point',
       coordinates: [coords.lng, coords.lat],
     };
+    let destinationRadiusMeters = null;
+    let destinationFixedId = null;
 
     if (destinationPayload.type === 'fixed') {
       // Skip origin enforcement when an explicit pickupLocation is provided (booking-for-others)
@@ -1117,6 +1131,8 @@ const createPickupIntent = async (req, res) => {
       }
       destinationLabel = selectedFixed.name;
       destinationLocation = selectedFixed.location;
+      destinationRadiusMeters = selectedFixed.pickupRadiusMeters != null ? selectedFixed.pickupRadiusMeters : null;
+      destinationFixedId = selectedFixed._id;
     } else {
       // Skip origin enforcement when an explicit pickupLocation is provided (booking-for-others)
       if (!explicitPickupPoint && pickupOrigin.type !== 'fixed') {
@@ -1261,6 +1277,8 @@ const createPickupIntent = async (req, res) => {
           type: destinationType,
           label: destinationLabel,
           location: destinationLocation,
+          radiusMeters: destinationRadiusMeters,
+          fixedId: destinationFixedId,
         },
         fareExpected: isDiscounted ? passengerDiscountedFare : baseFareForType,
         originalFare: isDiscounted ? baseFareForType : null,
@@ -1296,6 +1314,8 @@ const createPickupIntent = async (req, res) => {
       destinationType,
       destinationLabel,
       destinationLocation,
+      destinationRadiusMeters,
+      destinationFixedId,
       passengerHomePhase: passsengerPhaseForDispatch,
       fareType,
       note,
@@ -1751,7 +1771,7 @@ const listPassengerRecentRides = async (req, res) => {
       passengerId: req.user._id,
     })
       .populate('shuttleId', 'plateNumber label')
-      .select('status requestedAt boardedAt fareAtBoarding pickupLocation destinationType destinationLabel destinationLocation shuttleId')
+      .select('status requestedAt boardedAt unboardedAt completedAt fareAtBoarding pickupLocation destinationType destinationLabel destinationLocation shuttleId')
       .sort({ boardedAt: -1 })
       .limit(10);
 
@@ -1760,6 +1780,8 @@ const listPassengerRecentRides = async (req, res) => {
       status: ride.status,
       requestedAt: ride.requestedAt,
       boardedAt: ride.boardedAt,
+      unboardedAt: ride.unboardedAt || null,
+      completedAt: ride.completedAt || null,
       fareAtBoarding: ride.fareAtBoarding,
       pickupLocation: ride.pickupLocation,
       destinationType: ride.destinationType,
@@ -3013,6 +3035,7 @@ const passengerUnboard = async (req, res) => {
       unboardCount: effectiveUnboardCount,
       currentCapacity: shuttle.currentCapacity,
       maxCapacity: shuttle.maxCapacity,
+      rideIds: unboardedRideIds.map(String),
       timestamp: now,
     });
 
@@ -3129,16 +3152,17 @@ const getCurrentPassengers = async (req, res) => {
       status: 'boarded',
     })
       .populate('passengerId', 'firstName lastName phone')
-      .select('passengerId boardedAt pickupLocation')
+      .select('passengerId passengerName boardedAt pickupLocation')
       .sort({ boardedAt: 1 }) // FIFO order
       .lean();
 
     // Transform response to match expected format
     const passengers = boardedPassengers.map((ride) => ({
       passengerId: ride.passengerId?._id || null,
-passengerName: ride.passengerId?.firstName
+      passengerName: ride.passengerName
+        || (ride.passengerId?.firstName
           ? `${ride.passengerId.firstName} ${ride.passengerId.lastName || ''}`.trim()
-          : 'Unknown',
+          : 'Unknown'),
       boardedAt: ride.boardedAt,
       boardLocation: ride.pickupLocation,
     }));
@@ -3184,32 +3208,47 @@ const listOnboardDestinations = async (req, res) => {
       return res.status(200).json({ shuttleId, count: 0, passengers: [] });
     }
 
+    const community = await Community.findById(shuttle.communityId).select('fixedDestinations').lean();
+    const fixedDestinationsMap = {};
+    if (community?.fixedDestinations) {
+      for (const fd of community.fixedDestinations) {
+        fixedDestinationsMap[String(fd._id)] = fd.pickupRadiusMeters != null ? fd.pickupRadiusMeters : null;
+      }
+    }
+
     const rides = await PassengerRide.find({
       tripId: activeTrip._id,
       status: 'boarded',
     })
       .populate('passengerId', 'firstName lastName')
-      .select('passengerId passengerName boardedAt destinationType destinationLabel destinationLocation destinationIsFallback discountType fareAtBoarding originalFare discountRevoked')
+      .select('passengerId passengerName boardedAt destinationType destinationLabel destinationLocation destinationIsFallback destinationFixedId discountType fareAtBoarding originalFare discountRevoked')
       .sort({ boardedAt: 1 })
       .lean();
 
-    const passengers = rides.map((ride) => ({
-      destinationIsFallback: ride.destinationIsFallback || false,
-      rideId: String(ride._id),
-      passengerId: ride.passengerId?._id || null,
-      passengerName: ride.passengerName
-        || (ride.passengerId?.firstName ? `${ride.passengerId.firstName} ${ride.passengerId.lastName || ''}`.trim() : null)
-        || ride.destinationLabel
-        || 'Passenger',
-      boardedAt: ride.boardedAt,
-      destinationType: ride.destinationType,
-      destinationLabel: ride.destinationLabel,
-      destinationLocation: ride.destinationLocation,
-      discountType: ride.discountType || 'none',
-      fareAtBoarding: ride.fareAtBoarding,
-      originalFare: ride.originalFare || null,
-      discountRevoked: ride.discountRevoked || false,
-    }));
+    const passengers = rides.map((ride) => {
+      let destinationRadiusMeters = null;
+      if (ride.destinationType === 'fixed' && ride.destinationFixedId) {
+        destinationRadiusMeters = fixedDestinationsMap[String(ride.destinationFixedId)] ?? null;
+      }
+      return {
+        destinationIsFallback: ride.destinationIsFallback || false,
+        rideId: String(ride._id),
+        passengerId: ride.passengerId?._id || null,
+        passengerName: ride.passengerName
+          || (ride.passengerId?.firstName ? `${ride.passengerId.firstName} ${ride.passengerId.lastName || ''}`.trim() : null)
+          || ride.destinationLabel
+          || 'Passenger',
+        boardedAt: ride.boardedAt,
+        destinationType: ride.destinationType,
+        destinationLabel: ride.destinationLabel,
+        destinationLocation: ride.destinationLocation,
+        destinationRadiusMeters,
+        discountType: ride.discountType || 'none',
+        fareAtBoarding: ride.fareAtBoarding,
+        originalFare: ride.originalFare || null,
+        discountRevoked: ride.discountRevoked || false,
+      };
+    });
 
     return res.status(200).json({ shuttleId, count: passengers.length, passengers });
   } catch (error) {
