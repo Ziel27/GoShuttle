@@ -1,0 +1,169 @@
+GOSSHUTTLE APP - TESTING NOTES
+What We Fixed and Improved - [Today's Date]
+
+================================================================================
+OVERVIEW
+================================================================================
+
+We spent today fixing several important issues in the GoShuttle app to make it
+work better for everyone. Here's what we accomplished:
+
+================================================================================
+1. RIDE HISTORY NOW SHOWS ALL PASSENGERS PROPERLY
+================================================================================
+
+BEFORE (Problem):
+- When 3 people traveled together (like a family or group of friends), the ride
+  history would show 3 separate entries for the same trip
+- Each entry would only show one person's name
+- The total fare wasn't clear
+
+AFTER (Fixed):
+- Now when a group travels together, they see ONE ride history entry
+- The entry shows ALL passenger names (e.g., "Alice, Bob, Charlie")
+- The total fare for the whole group is shown (e.g., "₱150.00 - 3 passengers")
+- Individual passenger details are still available when you tap on the ride
+
+================================================================================
+2. ACTIVE PICKUP REQUEST NOW SHOWS PICKUP ADDRESS
+================================================================================
+
+BEFORE (Problem):
+- When a driver was assigned a pickup request (especially for "Book for Others"
+  bookings), they could only see the drop-off destination
+- The pickup address wasn't showing, making it hard to know where to go
+
+AFTER (Fixed):
+- Drivers now see BOTH the pickup address AND the drop-off destination
+- A downward arrow (↓) separates the two locations for clarity
+- Example: "123 Main Street ↓ Fixed Test Location"
+
+================================================================================
+3. SHARE TRACKING LINK NOW WORKS PROPERLY
+================================================================================
+
+BEFORE (Problem):
+- When a passenger tried to share their ride tracking link, sometimes it would
+  only share a code/token instead of the actual clickable link
+- Recipients couldn't easily open the tracking page
+
+AFTER (Fixed):
+- The share button now always creates a full, working URL link
+- Recipients can tap the link directly to see the real-time tracking page
+
+================================================================================
+4. REAL-TIME TRACKING PAGE IMPROVEMENTS
+================================================================================
+
+AFTER (Fixed):
+- The public tracking page (for shared links) now shows BOTH the shuttle/driver
+  location AND the passenger pickup location
+- Updated the colors to match the app's green theme for consistency
+- The map now displays both markers so users can see the shuttle approaching
+
+================================================================================
+5. REVOKE DISCOUNT BUTTON FIX
+================================================================================
+
+BEFORE (Problem):
+- The "Revoke" button for discounts was showing for ALL passengers including
+  verified account owners (like seniors with verified ID)
+- This shouldn't happen - only unverified companions should have their discounts
+  revocable
+
+AFTER (Fixed):
+- Verified account owners with approved discounts see a green "Verified" badge
+  and NO revoke button (their discount is locked)
+- Companions with discounts see a yellow badge with a "Revoke" button (their
+  discount can be removed if needed)
+
+================================================================================
+6. FASTER UI RESPONSE WHEN UNBOARDING PASSENGERS
+================================================================================
+
+BEFORE (Problem):
+- When a driver clicked "Unboard" for passengers, the list would wait for the
+  server before updating
+- This caused a noticeable delay before passengers disappeared from the list
+
+AFTER (Fixed):
+- Passengers now disappear IMMEDIATELY when the driver clicks Unboard
+- The app feels more responsive and snappy
+- The server sync happens in the background
+
+================================================================================
+7. FIXED DESTINATION LABEL FORMATTING
+================================================================================
+
+AFTER (Fixed):
+- Destination labels now show cleanly without extra prefixes
+- Example: Shows "Test Location" instead of "Fixed - Test Location"
+
+================================================================================
+TESTING CHECKLIST
+================================================================================
+
+Here's what you should test to make sure everything works:
+
+[ ] As a DRIVER:
+    - Start your shift
+    - Create a ride request or receive an auto-dispatch
+    - Check that ACTIVE PICKUP REQUEST shows BOTH pickup address and destination
+    - Try sharing the tracking link - verify it creates a full clickable URL
+    - Complete a ride and check RIDE HISTORY shows ONE entry with all passengers
+    - As a passenger with a verified discount, check that NO Revoke button appears
+    - For companions with discounts, check that Revoke button IS visible
+
+[ ] As a PASSENGER (with or without companions):
+    - Book a ride (for yourself or "for someone else")
+    - Try the Share Tracking Link button - confirm it creates a full URL
+    - Complete the ride and check RIDE HISTORY shows properly
+    - If booking for others, check that all passenger names appear
+
+[ ] SHARED TRACKING LINK (tested by recipient):
+    - Open the shared tracking link
+    - Verify the page shows BOTH shuttle location AND pickup location
+    - Check that the theme colors look correct (green tones)
+
+================================================================================
+TEST ACCOUNTS
+================================================================================
+
+DRIVER ACCOUNT:
+- Email: carlo.driver@goshuttle.local
+- Password: Driver1234!
+
+PASSENGER ACCOUNT:
+(Use any passenger account you have set up)
+
+================================================================================
+IMPORTANT NOTES FOR TESTING
+================================================================================
+
+1. NEW DATA WORKS BEST: Some fixes work best with NEW ride data. If you test
+   with very old rides from before today's changes, those might not show the
+   improvements (like grouped passenger names). New rides you create from now
+   on will have all the fixes working properly.
+
+2. REVOKE DISCOUNT: This only applies to companions with discount types
+   (Student, PWD, Senior). If there's no discount, there's nothing to revoke.
+
+3. MULTI-PASSENGER BOOKING: To test the grouped ride history properly, create
+   a booking with "Add Passenger" or "Book for Others" with multiple people.
+
+================================================================================
+SUMMARY
+================================================================================
+
+Today's fixes make the app:
+- More informative (shows all addresses, all passengers, correct fares)
+- Easier to use (instant feedback, clear labels)
+- More reliable (proper discount handling, complete tracking)
+- Better designed (consistent green theme)
+
+The app is ready for testing again! Please report any issues you find so we
+can continue improving the experience.
+
+================================================================================
+Thank you for testing GoShuttle!
+================================================================================
