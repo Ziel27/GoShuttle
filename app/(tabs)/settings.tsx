@@ -608,12 +608,10 @@ export default function SettingsTabScreen() {
   };
 
   const handleLogout = async () => {
-    // Driver guard: must end shift first
-    if (isDriver && user?.status === 'driving' && !opsBypassMode) {
+    if (isDriver && user?.status === 'driving' && !opsBypassMode && !preserveRequestsOnLogout) {
       setLogoutGuardVisible(true);
       return;
     }
-    // NOTE (testing): passenger requests intentionally survive logout — no guard or cancellation.
     await logout();
     router.replace(ROUTES.authLogin);
   };
@@ -1213,7 +1211,9 @@ export default function SettingsTabScreen() {
               </View>
 
               <ThemedText type="caption" style={[{ color: mutedColor }, styles.modalDesc]}>
-                You’re currently on shift. To keep trip and remittance records accurate, please end your shift first, then log out.
+                {preserveRequestsOnLogout
+                  ? 'You\'re currently on shift. Logging out will keep your shift active — you\'ll still be "driving" when you log back in.'
+                  : 'You\'re currently on shift. To keep trip and remittance records accurate, please end your shift first, then log out.'}
               </ThemedText>
 
               <View style={styles.requestActions}>
@@ -1234,8 +1234,10 @@ export default function SettingsTabScreen() {
                     if (logoutGuardLoading) return;
                     setLogoutGuardLoading(true);
                     try {
-                      const ended = await endDriverShiftIfActive();
-                      if (!ended) return;
+                      if (!preserveRequestsOnLogout) {
+                        const ended = await endDriverShiftIfActive();
+                        if (!ended) return;
+                      }
                       setLogoutGuardVisible(false);
                       await logout();
                       router.replace(ROUTES.authLogin);
@@ -1249,7 +1251,7 @@ export default function SettingsTabScreen() {
                     <ActivityIndicator color={AppPalette.white} />
                   ) : (
                     <ThemedText style={{ color: AppPalette.white, fontSize: 13, fontFamily: OutfitFonts.semiBold }}>
-                      End shift & log out
+                      {preserveRequestsOnLogout ? 'Log out (keep shift)' : 'End shift & log out'}
                     </ThemedText>
                   )}
                 </PremiumButton>

@@ -1,0 +1,256 @@
+
+> goshuttle-backend@1.0.0 test
+> node --test --test-concurrency=1 tests/api.integration.test.js tests/security.integration.test.js
+
+TAP version 13
+# Subtest: GET /api/health returns service status
+ok 1 - GET /api/health returns service status
+  ---
+  duration_ms: 796.006952
+  ...
+# Subtest: POST /api/auth/login returns admin JWT token
+ok 2 - POST /api/auth/login returns admin JWT token
+  ---
+  duration_ms: 326.296468
+  ...
+# Subtest: GET /api/communities lists active communities
+ok 3 - GET /api/communities lists active communities
+  ---
+  duration_ms: 29.978452
+  ...
+# Subtest: POST /api/auth/register creates a passenger account
+ok 4 - POST /api/auth/register creates a passenger account
+  ---
+  duration_ms: 298.686259
+  ...
+# Subtest: POST /api/users creates a driver account as admin
+ok 5 - POST /api/users creates a driver account as admin
+  ---
+  duration_ms: 281.285973
+  ...
+# Subtest: POST /api/auth/login returns token for created driver
+ok 6 - POST /api/auth/login returns token for created driver
+  ---
+  duration_ms: 255.794871
+  ...
+# Subtest: POST /api/shuttles creates a shuttle for admin community
+ok 7 - POST /api/shuttles creates a shuttle for admin community
+  ---
+  duration_ms: 22.015627
+  ...
+# Subtest: PUT /api/shuttles/:id/location accepts in-bound GPS coordinate
+ok 8 - PUT /api/shuttles/:id/location accepts in-bound GPS coordinate
+  ---
+  duration_ms: 23.81024
+  ...
+# Subtest: PUT /api/shuttles/:id/location rejects out-of-bound GPS coordinate
+ok 9 - PUT /api/shuttles/:id/location rejects out-of-bound GPS coordinate
+  ---
+  duration_ms: 20.227766
+  ...
+# Passenger board error: ValidationError: PassengerRide validation failed: destinationLocation.coordinates: Path `destinationLocation.coordinates` is required.
+#     at Document.invalidate (/home/ziel/Desktop/shuttle-service/shuttle-service/backend/node_modules/mongoose/lib/document.js:3381:32)
+#     at /home/ziel/Desktop/shuttle-service/shuttle-service/backend/node_modules/mongoose/lib/document.js:3142:17
+#     at /home/ziel/Desktop/shuttle-service/shuttle-service/backend/node_modules/mongoose/lib/schemaType.js:1446:9
+#     at process.processTicksAndRejections (node:internal/process/task_queues:77:11)
+# Subtest: POST /api/trips/passenger-board increments trip and shuttle capacity
+not ok 10 - POST /api/trips/passenger-board increments trip and shuttle capacity
+  ---
+  duration_ms: 37.496899
+  location: '/home/ziel/Desktop/shuttle-service/shuttle-service/backend/tests/api.integration.test.js:207:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    
+    500 !== 200
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 200
+  actual: 500
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (/home/ziel/Desktop/shuttle-service/shuttle-service/backend/tests/api.integration.test.js:216:10)
+    process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    async Test.run (node:internal/test_runner/test:632:9)
+    async Test.processPendingSubtests (node:internal/test_runner/test:374:7)
+  ...
+# Subtest: POST /api/trips/shift-end completes active trip and resets shuttle capacity
+ok 11 - POST /api/trips/shift-end completes active trip and resets shuttle capacity
+  ---
+  duration_ms: 41.702063
+  ...
+# Subtest: POST /api/trips/:tripId/remittance allows driver remittance submission
+ok 12 - POST /api/trips/:tripId/remittance allows driver remittance submission
+  ---
+  duration_ms: 44.715056
+  ...
+# Subtest: POST /api/trips/:tripId/remittance rejects duplicate submission
+ok 13 - POST /api/trips/:tripId/remittance rejects duplicate submission
+  ---
+  duration_ms: 15.25445
+  ...
+# Subtest: GET /api/trips/analytics returns community totals for admin
+ok 14 - GET /api/trips/analytics returns community totals for admin
+  ---
+  duration_ms: 13.92303
+  ...
+# Subtest: PATCH /api/shuttles/:id/assign-driver assigns driver to shuttle as admin
+ok 15 - PATCH /api/shuttles/:id/assign-driver assigns driver to shuttle as admin
+  ---
+  duration_ms: 18.699869
+  ...
+# Subtest: GET /api/trips/driver-analytics returns grouped metrics by driver
+ok 16 - GET /api/trips/driver-analytics returns grouped metrics by driver
+  ---
+  duration_ms: 13.188541
+  ...
+# Subtest: GET /api/trips/remittance-summary returns expected vs remitted totals
+ok 17 - GET /api/trips/remittance-summary returns expected vs remitted totals
+  ---
+  duration_ms: 23.459968
+  ...
+# Subtest: PATCH /api/trips/remittances/:id/verify marks remittance as verified
+ok 18 - PATCH /api/trips/remittances/:id/verify marks remittance as verified
+  ---
+  duration_ms: 24.504253
+  ...
+# Subtest: POST /api/trips/pickup-intent creates a passenger pickup pin
+ok 19 - POST /api/trips/pickup-intent creates a passenger pickup pin
+  ---
+  duration_ms: 36.068427
+  ...
+# Subtest: DELETE /api/trips/pickup-intent/:intentId lets passenger cancel own pending intent
+ok 20 - DELETE /api/trips/pickup-intent/:intentId lets passenger cancel own pending intent
+  ---
+  duration_ms: 19.421594
+  ...
+# Subtest: DELETE /api/trips/pickup-intent/:intentId rejects non-pending cancellations
+ok 21 - DELETE /api/trips/pickup-intent/:intentId rejects non-pending cancellations
+  ---
+  duration_ms: 15.051722
+  ...
+# Subtest: DELETE /api/trips/pickup-intent/:intentId lets admin cancel passenger intent
+ok 22 - DELETE /api/trips/pickup-intent/:intentId lets admin cancel passenger intent
+  ---
+  duration_ms: 40.225372
+  ...
+# Subtest: GET /api/trips/pickup-intents returns active demand pins for driver
+ok 23 - GET /api/trips/pickup-intents returns active demand pins for driver
+  ---
+  duration_ms: 39.882744
+  ...
+# Subtest: PUT /api/shuttles/:id/location suppresses auto-boarding immediately after manual board
+ok 24 - PUT /api/shuttles/:id/location suppresses auto-boarding immediately after manual board
+  ---
+  duration_ms: 130.949657
+  ...
+# Subtest: PUT /api/shuttles/:id/location suppresses auto-unboarding immediately after manual unboard
+ok 25 - PUT /api/shuttles/:id/location suppresses auto-unboarding immediately after manual unboard
+  ---
+  duration_ms: 88.223857
+  ...
+# Subtest: POST /api/trips/shift-end blocks unresolved ride requests even without active trip
+ok 26 - POST /api/trips/shift-end blocks unresolved ride requests even without active trip
+  ---
+  duration_ms: 58.048088
+  ...
+# Subtest: PATCH /api/users/me blocks driver offline transition with unresolved ride requests
+ok 27 - PATCH /api/users/me blocks driver offline transition with unresolved ride requests
+  ---
+  duration_ms: 80.161987
+  ...
+# Subtest: PATCH /api/users/:id marks unresolved ride requests as ignored on admin-forced driver offline
+ok 28 - PATCH /api/users/:id marks unresolved ride requests as ignored on admin-forced driver offline
+  ---
+  duration_ms: 50.538666
+  ...
+# Subtest: POST /api/trips/:tripId/remittance auto-flags when ignored ride requests exist and verify is blocked
+ok 29 - POST /api/trips/:tripId/remittance auto-flags when ignored ride requests exist and verify is blocked
+  ---
+  duration_ms: 42.617479
+  ...
+# Subtest: GET /api/users without token returns 401
+ok 30 - GET /api/users without token returns 401
+  ---
+  duration_ms: 3213.383663
+  ...
+# Subtest: Passenger cannot access admin /api/users endpoint
+ok 31 - Passenger cannot access admin /api/users endpoint
+  ---
+  duration_ms: 11.685491
+  ...
+# Subtest: Driver cannot access admin analytics endpoint
+ok 32 - Driver cannot access admin analytics endpoint
+  ---
+  duration_ms: 8.71682
+  ...
+# Subtest: Passenger cannot update own status endpoint
+ok 33 - Passenger cannot update own status endpoint
+  ---
+  duration_ms: 9.261365
+  ...
+# Subtest: Driver cannot update home destination endpoint
+ok 34 - Driver cannot update home destination endpoint
+  ---
+  duration_ms: 9.456038
+  ...
+# Subtest: Register with invalid email fails validation
+ok 35 - Register with invalid email fails validation
+  ---
+  duration_ms: 5.56616
+  ...
+# Subtest: Register with invalid communityId fails validation
+ok 36 - Register with invalid communityId fails validation
+  ---
+  duration_ms: 4.916139
+  ...
+# Subtest: Admin cannot create community with invalid polygon
+ok 37 - Admin cannot create community with invalid polygon
+  ---
+  duration_ms: 9.1783
+  ...
+# Subtest: Driver location update with invalid coordinates returns 400
+ok 38 - Driver location update with invalid coordinates returns 400
+  ---
+  duration_ms: 9.744465
+  ...
+# Subtest: Passenger board rejects over-capacity attempts
+ok 39 - Passenger board rejects over-capacity attempts
+  ---
+  duration_ms: 12.288535
+  ...
+# Subtest: Admin cannot update a different community
+ok 40 - Admin cannot update a different community
+  ---
+  duration_ms: 10.361615
+  ...
+# Subtest: Socket connection without token is rejected
+ok 41 - Socket connection without token is rejected
+  ---
+  duration_ms: 20.276246
+  ...
+# Subtest: Socket user cannot emit shuttle updates for another community
+ok 42 - Socket user cannot emit shuttle updates for another community
+  ---
+  duration_ms: 18.522058
+  ...
+# Subtest: Socket driver cannot emit location for unassigned shuttle in same community
+ok 43 - Socket driver cannot emit location for unassigned shuttle in same community
+  ---
+  duration_ms: 13.867897
+  ...
+# Subtest: Socket assigned driver can emit location update for own shuttle
+ok 44 - Socket assigned driver can emit location update for own shuttle
+  ---
+  duration_ms: 23.748696
+  ...
+1..44
+# tests 44
+# suites 0
+# pass 43
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 11425.164909
