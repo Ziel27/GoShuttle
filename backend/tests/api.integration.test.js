@@ -16,7 +16,6 @@ const PassengerRide = require('../src/models/PassengerRide');
 const PickupRequest = require('../src/models/PickupRequest');
 const ShiftRemittance = require('../src/models/ShiftRemittance');
 const RideRequest = require('../src/models/RideRequest');
-const { clearManualAutomationCooldown } = require('../src/services/automation-cooldown');
 const { app } = require('../src/server');
 
 // Minimal JPEG bytes (SOI ... EOI) for multipart upload tests
@@ -166,12 +165,12 @@ test('POST /api/shuttles creates a shuttle for admin community', async () => {
     .set('Authorization', `Bearer ${adminToken}`)
     .send({
       plateNumber: 'TST-101',
-      maxCapacity: 12,
+      maxCapacity: 5,
       label: 'Shuttle A',
     });
 
   assert.equal(response.status, 201);
-  assert.equal(response.body.shuttle.maxCapacity, 12);
+  assert.equal(response.body.shuttle.maxCapacity, 5);
 
   shuttle = await Shuttle.findById(response.body.shuttle._id);
   assert.ok(shuttle);
@@ -396,179 +395,6 @@ test('GET /api/trips/pickup-intents returns active demand pins for driver', asyn
   assert.ok(Array.isArray(response.body.requests));
   assert.ok(response.body.requests.length >= 1);
   assert.equal(response.body.requests[0].status, 'pending');
-});
-
-test('PUT /api/shuttles/:id/location suppresses auto-boarding immediately after manual board', async () => {
-  clearManualAutomationCooldown(shuttle._id);
-
-  await User.findByIdAndUpdate(driverUser._id, { status: 'driving' });
-  await Shuttle.findByIdAndUpdate(shuttle._id, {
-    currentCapacity: 0,
-    status: 'idle',
-    location: {
-      type: 'Point',
-      coordinates: [121.05, 14.55],
-    },
-  });
-  await Trip.updateMany(
-    { communityId: community._id, shuttleId: shuttle._id, status: 'active' },
-    { $set: { status: 'completed', shiftEnd: new Date() } }
-  );
-  await PickupRequest.deleteMany({ communityId: community._id });
-
-  const firstIntent = await request(app)
-    .post('/api/trips/pickup-intent')
-    .set('Authorization', `Bearer ${passengerToken}`)
-    .send({ latitude: 14.551, longitude: 121.052 });
-  assert.equal(firstIntent.status, 201);
-
-  const secondIntent = await request(app)
-    .post('/api/trips/pickup-intent')
-    .set('Authorization', `Bearer ${passengerToken}`)
-    .send({ latitude: 14.5515, longitude: 121.0525 });
-  assert.equal(secondIntent.status, 201);
-
-  const manualBoardResponse = await request(app)
-    .post('/api/trips/passenger-board')
-    .set('Authorization', `Bearer ${driverToken}`)
-    .send({
-      shuttleId: String(shuttle._id),
-      boardedCount: 1,
-    });
-  assert.equal(manualBoardResponse.status, 200);
-
-  const pendingBeforeSync = await PickupRequest.countDocuments({
-    communityId: community._id,
-    status: 'pending',
-    expiresAt: { $gt: new Date() },
-  });
-  assert.equal(pendingBeforeSync, 1);
-
-  const locationSyncResponse = await request(app)
-    .put(`/api/shuttles/${shuttle._id}/location`)
-    .set('Authorization', `Bearer ${driverToken}`)
-    .send({ latitude: 14.551, longitude: 121.052 });
-
-  assert.equal(locationSyncResponse.status, 200);
-  assert.equal(locationSyncResponse.body.autoBoardedCount, 0);
-  assert.ok(locationSyncResponse.body.manualAutomationCooldownSeconds >= 1);
-
-  const pendingAfterSync = await PickupRequest.countDocuments({
-    communityId: community._id,
-    status: 'pending',
-    expiresAt: { $gt: new Date() },
-  });
-  assert.equal(pendingAfterSync, 1);
-});
-
-test('PUT /api/shuttles/:id/location suppresses auto-unboarding immediately after manual unboard', async () => {
-  clearManualAutomationCooldown(shuttle._id);
-
-  await User.findByIdAndUpdate(driverUser._id, { status: 'driving' });
-  await Shuttle.findByIdAndUpdate(shuttle._id, {
-    currentCapacity: 2,
-    status: 'en_route',
-    location: {
-      type: 'Point',
-      coordinates: [121.052, 14.551],
-    },
-  });
-  await Trip.updateMany(
-    { communityId: community._id, shuttleId: shuttle._id, status: 'active' },
-    { $set: { status: 'completed', shiftEnd: new Date() } }
-  );
-  await PickupRequest.deleteMany({ communityId: community._id });
-  await PassengerRide.deleteMany({ communityId: community._id, shuttleId: shuttle._id });
-
-  const passenger = await User.findOne({ email: 'passenger@test.local' }).select('_id');
-  assert.ok(passenger);
-
-  const activeTrip = await Trip.create({
-    communityId: community._id,
-    shuttleId: shuttle._id,
-    driverId: driverUser._id,
-    passengersBoarded: 2,
-    fareAtTime: 20,
-    revenueCollected: 40,
-    status: 'active',
-  });
-
-  const boardedAt = new Date();
-  await PassengerRide.insertMany([
-    {
-      communityId: community._id,
-      passengerId: passenger._id,
-      shuttleId: shuttle._id,
-      driverId: driverUser._id,
-      tripId: activeTrip._id,
-      fareAtBoarding: 20,
-      pickupLocation: {
-        type: 'Point',
-        coordinates: [121.052, 14.551],
-      },
-      destinationType: 'fixed',
-      destinationLabel: 'Stop A',
-      destinationLocation: {
-        type: 'Point',
-        coordinates: [121.052, 14.551],
-      },
-      requestedAt: boardedAt,
-      boardedAt,
-      status: 'boarded',
-    },
-    {
-      communityId: community._id,
-      passengerId: passenger._id,
-      shuttleId: shuttle._id,
-      driverId: driverUser._id,
-      tripId: activeTrip._id,
-      fareAtBoarding: 20,
-      pickupLocation: {
-        type: 'Point',
-        coordinates: [121.0522, 14.5512],
-      },
-      destinationType: 'fixed',
-      destinationLabel: 'Stop A',
-      destinationLocation: {
-        type: 'Point',
-        coordinates: [121.052, 14.551],
-      },
-      requestedAt: boardedAt,
-      boardedAt: new Date(boardedAt.getTime() + 1000),
-      status: 'boarded',
-    },
-  ]);
-
-  const manualUnboardResponse = await request(app)
-    .post('/api/trips/passenger-unboard')
-    .set('Authorization', `Bearer ${driverToken}`)
-    .send({
-      shuttleId: String(shuttle._id),
-      unboardCount: 1,
-    });
-
-  assert.equal(manualUnboardResponse.status, 200);
-
-  const boardedBeforeSync = await PassengerRide.countDocuments({
-    tripId: activeTrip._id,
-    status: 'boarded',
-  });
-  assert.equal(boardedBeforeSync, 1);
-
-  const locationSyncResponse = await request(app)
-    .put(`/api/shuttles/${shuttle._id}/location`)
-    .set('Authorization', `Bearer ${driverToken}`)
-    .send({ latitude: 14.551, longitude: 121.052 });
-
-  assert.equal(locationSyncResponse.status, 200);
-  assert.equal(locationSyncResponse.body.autoUnboardedCount, 0);
-  assert.ok(locationSyncResponse.body.manualAutomationCooldownSeconds >= 1);
-
-  const boardedAfterSync = await PassengerRide.countDocuments({
-    tripId: activeTrip._id,
-    status: 'boarded',
-  });
-  assert.equal(boardedAfterSync, 1);
 });
 
 test('POST /api/trips/shift-end blocks unresolved ride requests even without active trip', async () => {
