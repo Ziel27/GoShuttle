@@ -1734,9 +1734,9 @@ export default function HomeScreen() {
 
     try {
       setUnboardingSubmitting(true);
-      await unboardPassenger(assignedShuttle._id, 1);
+      await unboardPassenger(assignedShuttle._id, activeDropoffPassengerCount);
       await loadShuttles();
-      setPreferenceAwareFeedback('Passenger drop-off recorded manually.', 'ride');
+      setPreferenceAwareFeedback(`${activeDropoffPassengerCount} passenger${activeDropoffPassengerCount > 1 ? 's' : ''} dropped off.`, 'ride');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to record drop-off.';
       setPreferenceAwareFeedback(message, 'critical');
@@ -1783,8 +1783,8 @@ export default function HomeScreen() {
 
     try {
       setBoardingSubmitting(true);
-      await boardPassenger(assignedShuttle._id, 1, { requestIds: [activePassengerPickupRequest._id] });
-      setActivePassengerManualBoardCount(prev => prev + 1);
+      await boardPassenger(assignedShuttle._id, remainingManualPickupSlots, { requestIds: [activePassengerPickupRequest._id] });
+      setActivePassengerManualBoardCount(prev => prev + remainingManualPickupSlots);
       await loadShuttles();
       // Refresh onboard destinations to get the server's updated state
       if (assignedShuttle) {
@@ -2895,11 +2895,11 @@ const showDestinationLabel = false;
                     onPress={onDriverBoard}
                     disabled={boardingSubmitting || assignedShuttle.currentCapacity >= assignedShuttle.maxCapacity || !isDriverOnShift || (!activePassengerPickupRequest && !driverAssignedPickupRequest) || !isWithinPickupRadius || !activePassengerPickupFitsCapacity || remainingManualPickupSlots === 0 || (isWithinDropoffRadius && activeDropoffPassengerCount > 0)}
                     accessibilityRole="button"
-                    accessibilityLabel="Board one passenger manually"
+                    accessibilityLabel={`Board ${remainingManualPickupSlots} passenger${remainingManualPickupSlots > 1 ? 's' : ''} manually`}
                   >
                     <Ionicons name={boardingSubmitting ? 'time-outline' : 'add-circle-outline'} size={18} color={palette.white} />
                     <ThemedText style={[styles.driverActionButtonText, styles.driverActionButtonTextOnColor]}>
-                      {boardingSubmitting ? 'Recording...' : `Board Passenger +1${remainingManualPickupSlots > 1 ? ` (${remainingManualPickupSlots} left)` : ''}`}
+                      {boardingSubmitting ? 'Recording...' : `Board ${remainingManualPickupSlots} Passenger${remainingManualPickupSlots > 1 ? 's' : ''}`}
                     </ThemedText>
                   </Pressable>
 
@@ -2913,11 +2913,11 @@ const showDestinationLabel = false;
                     onPress={onDriverUnboard}
                     disabled={unboardingSubmitting || assignedShuttle.currentCapacity === 0 || !isDriverOnShift || activeDropoffPassengerCount === 0}
                     accessibilityRole="button"
-                    accessibilityLabel="Unboard one passenger manually"
+                    accessibilityLabel={`Unboard ${activeDropoffPassengerCount} passenger${activeDropoffPassengerCount > 1 ? 's' : ''}`}
                   >
                     <Ionicons name={unboardingSubmitting ? 'time-outline' : 'remove-circle-outline'} size={18} color={dangerColor} />
                     <ThemedText style={[styles.driverActionButtonText, { color: dangerColor }]}>
-                      {unboardingSubmitting ? 'Recording...' : `Unboard Passenger${activeDropoffPassengerCount > 1 ? ` (${activeDropoffPassengerCount})` : ''}`}
+                      {unboardingSubmitting ? 'Recording...' : `Unboard ${activeDropoffPassengerCount} Passenger${activeDropoffPassengerCount > 1 ? 's' : ''}`}
                     </ThemedText>
                   </Pressable>
                 </View>
