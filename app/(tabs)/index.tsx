@@ -389,6 +389,10 @@ export default function HomeScreen() {
     : null;
 
   const assignedShuttleId = assignedShuttle?._id;
+  const assignedShuttleRef = useRef<Shuttle | null>(assignedShuttle);
+  useEffect(() => {
+    assignedShuttleRef.current = assignedShuttle;
+  }, [assignedShuttle]);
 
   const isDriverOnShift = user?.status === 'driving';
 
@@ -877,8 +881,8 @@ export default function HomeScreen() {
       // For drivers: only show pickup intents that this driver's assigned shuttle
       // can fully accommodate (require space for all passengers in the request).
       if (user?.role === 'driver') {
-        if (!assignedShuttle) return;
-        const availableSeats = assignedShuttle.maxCapacity - (assignedShuttle.currentCapacity ?? 0);
+        if (!assignedShuttleRef.current) return;
+        const availableSeats = assignedShuttleRef.current.maxCapacity - (assignedShuttleRef.current.currentCapacity ?? 0);
         if (availableSeats < passengerCount) return;
       }
 
@@ -899,7 +903,7 @@ export default function HomeScreen() {
           if (!current || String(current._id) !== String(payload.requestId)) return current;
           // If the claim was made by this driver's shuttle, keep the assigned request so
           // the driver can complete boarding. Otherwise clear it.
-          if (payload.shuttleId && assignedShuttle && String(payload.shuttleId) === String(assignedShuttle._id)) {
+          if (payload.shuttleId && assignedShuttleRef.current && String(payload.shuttleId) === String(assignedShuttleRef.current._id)) {
             return current;
           }
           return null;
@@ -950,9 +954,9 @@ export default function HomeScreen() {
       // so the driver UI shows newly boarded passengers immediately.
       (async () => {
         try {
-          if (user?.role === 'driver' && assignedShuttle?._id && String(assignedShuttle._id) === String(payload.shuttleId)) {
+          if (user?.role === 'driver' && assignedShuttleRef.current?._id && String(assignedShuttleRef.current._id) === String(payload.shuttleId)) {
             if (!isAppActive()) return;
-            const passengers = await listOnboardDestinations(assignedShuttle._id);
+            const passengers = await listOnboardDestinations(assignedShuttleRef.current._id);
             setOnboardDestinations(passengers);
           }
         } catch (err) {
@@ -1263,7 +1267,7 @@ export default function HomeScreen() {
       socket.off('dispatch:shuttle-pending-updated', onDispatchShuttlePendingUpdated);
       socket.off('dispatch:timeout', onDispatchTimeout);
     };
-  }, [activeCommunityId, assignedShuttle, dispatchedShuttle, isAppActive, loadShuttles, queueReasonMessage, refreshPassengerDispatch, setPreferenceAwareFeedback, token, user?._id, user?.role]);
+  }, [activeCommunityId, assignedShuttleId, dispatchedShuttle, isAppActive, loadShuttles, queueReasonMessage, refreshPassengerDispatch, setPreferenceAwareFeedback, token, user?._id, user?.role]);
 
 
   useEffect(() => {
