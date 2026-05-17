@@ -2554,12 +2554,7 @@ export default function HomeScreen() {
                       accessible
                       accessibilityLabel="Passenger pickup location"
                     >
-                      <View style={styles.pickupMarkerStack}>
-                        <View style={[styles.pickupIndicatorBadge, { backgroundColor: AppPalette.danger }]}>
-                          <Ionicons name="arrow-down-circle" size={14} color={palette.white} />
-                        </View>
-                        <MapIndicator iconName="person" />
-                      </View>
+                      <MapIndicator iconName="person" />
                       <Callout tooltip>
                         <View style={[styles.calloutContainer, { backgroundColor: bgColor, borderColor }]}> 
                           <ThemedText type="defaultSemiBold" style={{ color: textColor, fontSize: 14 }}>
@@ -5625,23 +5620,6 @@ const styles = StyleSheet.create({
   calloutSeparator: {
     height: 1,
     marginVertical: DesignTokens.spacing.xs,
-  },
-  pickupMarkerStack: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  pickupIndicatorBadge: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 2,
-    shadowColor: '#000',
-    shadowOpacity: 0.15,
-    shadowRadius: 3,
-    shadowOffset: { width: 0, height: 1 },
-    elevation: 2,
   },
   mapIndicatorWrapper: {
     width: 22,
