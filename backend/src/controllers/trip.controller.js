@@ -670,6 +670,8 @@ passengerName: entry.name || (entry.passengerId ? userNameCache[entry.passengerI
         );
       }
 
+      // Get io instance before the loop that uses it
+      const io = req.app.get('io');
       // MARK PICKUPREQUEST AS BOARDED when all linked RideRequests are now boarded
       const claimedPickupIds = pendingRequests.map((r) => r._id);
       for (const request of pendingRequests) {
@@ -730,7 +732,6 @@ passengerName: entry.name || (entry.passengerId ? userNameCache[entry.passengerI
     if (session) await session.commitTransaction();
 
     // Emit event after successful transaction
-    const io = req.app.get('io');
     const communityRoom = `community:${String(shuttle.communityId)}`;
     io.to(communityRoom).emit('trip:passenger-boarded', {
       tripId: activeTrip._id,
