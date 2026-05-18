@@ -8,6 +8,7 @@ export type PickupIntentEventPayload = {
   requestId?: string;
   _id?: string;
   passengerId?: string;
+  bookingOwner?: string | null;
   location?: {
     type?: 'Point';
     coordinates?: [number, number];
@@ -29,6 +30,12 @@ export type PickupIntentEventPayload = {
   note?: string | null;
   trackingToken?: string | null;
   trackingUrl?: string | null;
+  fareType?: 'standard' | 'priority';
+  passengerManifest?: Array<{
+    passengerId?: string | null;
+    name?: string | null;
+    phone?: string | null;
+  }>;
 };
 
 export const toShuttleCoordinate = (shuttle: Shuttle): LatLng | null => {
@@ -137,6 +144,7 @@ export const toPickupIntent = (payload: PickupIntentEventPayload): PickupIntent 
     _id: id,
     communityId: '',
     passengerId: payload.passengerId || '',
+    bookingOwner: payload.bookingOwner ?? null,
     location: {
       type: 'Point',
       coordinates: [point.longitude, point.latitude],
@@ -161,9 +169,10 @@ export const toPickupIntent = (payload: PickupIntentEventPayload): PickupIntent 
       },
     destinationRadiusMeters: payload.destinationRadiusMeters ?? null,
     passengerHomePhase: null,
-    fareType: 'standard',
+    fareType: payload.fareType || 'standard',
     status: payload.status || 'pending',
     expiresAt: payload.expiresAt || new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+    passengerManifest: payload.passengerManifest || undefined,
     note: payload.note || null,
     trackingToken: payload.trackingToken || null,
     trackingUrl: payload.trackingUrl || null,

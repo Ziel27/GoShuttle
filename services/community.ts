@@ -8,8 +8,6 @@ export interface CommunityBoundaries {
 export interface Community {
   _id: string;
   name: string;
-  opsBypassMode?: boolean;
-  preserveRequestsOnLogout?: boolean;
   baseFare?: number;
   priorityFareMultiplier?: number;
   boundaries?: CommunityBoundaries;

@@ -75,10 +75,6 @@ export const ShuttlesPage = () => {
   const [assignmentDrafts, setAssignmentDrafts] = useState<Record<string, string>>({});
   const [phaseAssignmentDrafts, setPhaseAssignmentDrafts] = useState<Record<string, string>>({});
   const [phaseGeofences, setPhaseGeofences] = useState<PhaseGeofence[]>([]);
-  const [opsBypassMode, setOpsBypassMode] = useState(false);
-  const [savingOpsBypass, setSavingOpsBypass] = useState(false);
-  const [preserveRequestsOnLogout, setPreserveRequestsOnLogout] = useState(false);
-  const [savingPreserveRequests, setSavingPreserveRequests] = useState(false);
 
   // Add shuttle form state
   const [showAddForm, setShowAddForm] = useState(false);
@@ -141,8 +137,6 @@ export const ShuttlesPage = () => {
 
       if (communityId) {
         const community = await fetchCommunityById(communityId);
-        setOpsBypassMode(Boolean(community?.opsBypassMode));
-        setPreserveRequestsOnLogout(Boolean(community?.preserveRequestsOnLogout));
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load shuttles');
@@ -150,46 +144,6 @@ export const ShuttlesPage = () => {
       setLoading(false);
     }
   }, [communityId]);
-
-  const toggleOpsBypassMode = async () => {
-    if (!communityId) return;
-    setSavingOpsBypass(true);
-    setError('');
-    setNotice('');
-    try {
-      const next = !opsBypassMode;
-      await updateCommunity(communityId, { opsBypassMode: next });
-      setOpsBypassMode(next);
-      setNotice(next
-        ? 'Bypass Mode enabled: pickup allowed without on-duty shuttles; drivers can logout without ending shift.'
-        : 'Bypass Mode disabled: normal restrictions restored.'
-      );
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to update bypass mode.');
-    } finally {
-      setSavingOpsBypass(false);
-    }
-  };
-
-  const togglePreserveRequestsOnLogout = async () => {
-    if (!communityId) return;
-    setSavingPreserveRequests(true);
-    setError('');
-    setNotice('');
-    try {
-      const next = !preserveRequestsOnLogout;
-      await updateCommunity(communityId, { preserveRequestsOnLogout: next });
-      setPreserveRequestsOnLogout(next);
-      setNotice(next
-        ? 'Preserve Requests enabled: passenger pickup requests survive logout.'
-        : 'Preserve Requests disabled: logout cancels pending pickup requests.'
-      );
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to update setting.');
-    } finally {
-      setSavingPreserveRequests(false);
-    }
-  };
 
   useEffect(() => {
     void loadShuttles();
@@ -366,30 +320,6 @@ export const ShuttlesPage = () => {
             }}
           >
             {showAddForm ? 'Cancel' : '+ Add Shuttle'}
-          </Button>
-          <Button
-            size="sm"
-            variant={opsBypassMode ? 'default' : 'secondary'}
-            onClick={() => void toggleOpsBypassMode()}
-            disabled={savingOpsBypass}
-          >
-            {savingOpsBypass
-              ? 'Saving...'
-              : opsBypassMode
-                ? 'Bypass Mode: ON'
-                : 'Bypass Mode: OFF'}
-          </Button>
-          <Button
-            size="sm"
-            variant={preserveRequestsOnLogout ? 'default' : 'secondary'}
-            onClick={() => void togglePreserveRequestsOnLogout()}
-            disabled={savingPreserveRequests}
-          >
-            {savingPreserveRequests
-              ? 'Saving...'
-              : preserveRequestsOnLogout
-                ? 'Preserve Requests: ON'
-                : 'Preserve Requests: OFF'}
           </Button>
           <Button className="shrink-0" variant="outline" size="sm" onClick={() => void loadShuttles()} disabled={loading}>
             Refresh

@@ -118,8 +118,6 @@ export const updateCommunity = async (
     boundaries?: { type: 'Polygon'; coordinates: number[][][] };
     branding?: { primaryColor?: string; logoUrl?: string };
     isActive?: boolean;
-    opsBypassMode?: boolean;
-    preserveRequestsOnLogout?: boolean;
     discountSettings?: {
       enabled: boolean;
       studentPct: number;

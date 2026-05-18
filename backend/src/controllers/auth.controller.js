@@ -578,18 +578,7 @@ const resetPassword = async (req, res) => {
 const logout = async (req, res) => {
   try {
     if (req.user?._id) {
-      const userDoc = await User.findById(req.user._id).select('role communityId status').lean();
-      if (userDoc && userDoc.role === 'driver' && userDoc.status === 'driving') {
-        const Community = require('../models/Community');
-        const community = await Community.findById(userDoc.communityId).select('preserveRequestsOnLogout').lean();
-        if (community?.preserveRequestsOnLogout) {
-          // Keep driver on shift — do not change status
-        } else {
-          await User.findByIdAndUpdate(req.user._id, { status: 'offline' });
-        }
-      } else {
-        await User.findByIdAndUpdate(req.user._id, { status: 'offline' });
-      }
+      await User.findByIdAndUpdate(req.user._id, { status: 'offline' });
     }
   } catch {
     // Non-fatal — still clear the cookie

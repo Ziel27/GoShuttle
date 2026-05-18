@@ -259,7 +259,6 @@ export default function HomeScreen() {
   });
   const [ownerVerifiedDiscountType, setOwnerVerifiedDiscountType] = useState<'student' | 'pwd' | 'senior' | 'none'>('none');
   const [phaseGeofences, setPhaseGeofences] = useState<PhaseGeofence[]>([]);
-  const [opsBypassMode, setOpsBypassMode] = useState(false);
   const [showHowToBookModal, setShowHowToBookModal] = useState(false);
   const [dismissedWarningIds, setDismissedWarningIds] = useState<Set<string>>(new Set());
 
@@ -760,7 +759,7 @@ export default function HomeScreen() {
   }, [shuttles]);
 
   const noDriversOnDuty = passengerStats.activeShiftCount === 0;
-  const pickupDisabled = pickupSubmitting || activePassengerPickupIntents.length > 0 || (!opsBypassMode && noDriversOnDuty);
+  const pickupDisabled = pickupSubmitting || activePassengerPickupIntents.length > 0 || noDriversOnDuty;
 
   const setPreferenceAwareFeedback = useCallback((
     message: string,
@@ -1490,7 +1489,6 @@ export default function HomeScreen() {
         const ring = community?.boundaries?.coordinates?.[0] || [];
         const destinationRows = (community?.fixedDestinations || []).filter((item) => item.isActive !== false);
         setFixedDestinations(destinationRows);
-        setOpsBypassMode(Boolean((community as any)?.opsBypassMode));
 
         // Capture fare info for passenger UI
         if (community?.baseFare !== undefined) {

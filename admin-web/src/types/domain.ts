@@ -3,8 +3,6 @@ export type Role = 'admin' | 'driver' | 'passenger';
 export type Community = {
   _id: string;
   name: string;
-  opsBypassMode?: boolean;
-  preserveRequestsOnLogout?: boolean;
   boundaries?: {
     type: 'Polygon';
     coordinates: number[][][];

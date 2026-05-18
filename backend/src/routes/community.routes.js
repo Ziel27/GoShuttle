@@ -223,7 +223,6 @@ router.put('/:id', authenticate, authorize('admin'), async (req, res) => {
     if (req.body.branding !== undefined) update.branding = req.body.branding;
     if (req.body.isActive !== undefined) update.isActive = Boolean(req.body.isActive);
     if (req.body.fixedDestinations !== undefined) update.fixedDestinations = req.body.fixedDestinations;
-    if (req.body.opsBypassMode !== undefined) update.opsBypassMode = Boolean(req.body.opsBypassMode);
 
     if (req.body.discountSettings !== undefined) {
       const ds = req.body.discountSettings;
@@ -257,7 +256,6 @@ router.put('/:id', authenticate, authorize('admin'), async (req, res) => {
       boundaries: req.body.boundaries !== undefined,
       fixedDestinations: req.body.fixedDestinations !== undefined,
       branding: req.body.branding !== undefined,
-      opsBypassMode: req.body.opsBypassMode !== undefined,
     });
 
     return res.status(200).json({ message: 'Community updated.', community });

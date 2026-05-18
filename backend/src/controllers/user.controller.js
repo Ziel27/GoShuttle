@@ -391,6 +391,19 @@ const updateOwnStatus = async (req, res) => {
       }
     }
 
+    if (status === 'offline' && req.user.role === 'driver') {
+      await Shuttle.updateOne(
+        { driverId: userId, isActive: true },
+        {
+          $set: {
+            location: { type: 'Point', coordinates: [] },
+            lastLocationUpdate: null,
+            status: 'idle',
+          }
+        }
+      );
+    }
+
     if (status === 'driving' && req.user.role === 'driver') {
       const blockers = await ShiftRemittance.find({
         driverId: userId,

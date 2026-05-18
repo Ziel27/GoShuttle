@@ -358,8 +358,6 @@ export default function SettingsTabScreen() {
   const [passengerLogoutGuardVisible, setPassengerLogoutGuardVisible] = useState(false);
   const [passengerLogoutLoading, setPassengerLogoutLoading] = useState(false);
   const [phaseGeofences, setPhaseGeofences] = useState<PhaseGeofence[]>([]);
-  const [opsBypassMode, setOpsBypassMode] = useState(false);
-  const [preserveRequestsOnLogout, setPreserveRequestsOnLogout] = useState(false);
   const [showHowToBookModal, setShowHowToBookModal] = useState(false);
   const [supportModalVisible, setSupportModalVisible] = useState(false);
   const [supportSubject, setSupportSubject] = useState('');
@@ -376,8 +374,6 @@ export default function SettingsTabScreen() {
         const community = await getCommunityById(user.communityId);
         if (isMounted) {
           setCommunityName(community?.name ?? null);
-          setOpsBypassMode(Boolean(community?.opsBypassMode));
-          setPreserveRequestsOnLogout(Boolean(community?.preserveRequestsOnLogout));
         }
       } catch (error) {
         if (isMounted) {
@@ -608,7 +604,7 @@ export default function SettingsTabScreen() {
   };
 
   const handleLogout = async () => {
-    if (isDriver && user?.status === 'driving' && !opsBypassMode && !preserveRequestsOnLogout) {
+    if (isDriver && user?.status === 'driving') {
       setLogoutGuardVisible(true);
       return;
     }
@@ -1211,9 +1207,7 @@ export default function SettingsTabScreen() {
               </View>
 
               <ThemedText type="caption" style={[{ color: mutedColor }, styles.modalDesc]}>
-                {preserveRequestsOnLogout
-                  ? 'You\'re currently on shift. Logging out will keep your shift active — you\'ll still be "driving" when you log back in.'
-                  : 'You\'re currently on shift. To keep trip and remittance records accurate, please end your shift first, then log out.'}
+                You're currently on shift. To keep trip and remittance records accurate, please end your shift first, then log out.
               </ThemedText>
 
               <View style={styles.requestActions}>
@@ -1234,10 +1228,8 @@ export default function SettingsTabScreen() {
                     if (logoutGuardLoading) return;
                     setLogoutGuardLoading(true);
                     try {
-                      if (!preserveRequestsOnLogout) {
-                        const ended = await endDriverShiftIfActive();
-                        if (!ended) return;
-                      }
+                      const ended = await endDriverShiftIfActive();
+                      if (!ended) return;
                       setLogoutGuardVisible(false);
                       await logout();
                       router.replace(ROUTES.authLogin);
@@ -1251,7 +1243,7 @@ export default function SettingsTabScreen() {
                     <ActivityIndicator color={AppPalette.white} />
                   ) : (
                     <ThemedText style={{ color: AppPalette.white, fontSize: 13, fontFamily: OutfitFonts.semiBold }}>
-                      {preserveRequestsOnLogout ? 'Log out (keep shift)' : 'End shift & log out'}
+                      End shift & log out
                     </ThemedText>
                   )}
                 </PremiumButton>
@@ -1316,9 +1308,7 @@ export default function SettingsTabScreen() {
                   if (passengerLogoutLoading) return;
                   setPassengerLogoutLoading(true);
                   try {
-                    if (!preserveRequestsOnLogout) {
-                      await cancelMyPickupIntents();
-                    }
+                    await cancelMyPickupIntents();
                     setPassengerLogoutGuardVisible(false);
                     await logout();
                     router.replace(ROUTES.authLogin);
@@ -1332,7 +1322,7 @@ export default function SettingsTabScreen() {
                   <ActivityIndicator color={AppPalette.white} />
                 ) : (
                   <ThemedText style={{ color: AppPalette.white, fontSize: 13, fontFamily: OutfitFonts.semiBold }}>
-                    {preserveRequestsOnLogout ? 'Log out' : 'Cancel request & log out'}
+                    Cancel request & log out
                   </ThemedText>
                 )}
               </PremiumButton>

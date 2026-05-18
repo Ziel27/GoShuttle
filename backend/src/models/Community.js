@@ -143,14 +143,6 @@ const communitySchema = new mongoose.Schema(
       ),
       default: () => ({ enabled: false, studentPct: 0, pwdPct: 0, seniorPct: 0 }),
     },
-    opsBypassMode: {
-      type: Boolean,
-      default: false,
-    },
-    preserveRequestsOnLogout: {
-      type: Boolean,
-      default: false,
-    },
     isActive: {
       type: Boolean,
       default: true,
